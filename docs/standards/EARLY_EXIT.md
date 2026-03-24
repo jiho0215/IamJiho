@@ -17,10 +17,10 @@ function processOrder(order) {
 
   // Happy path — all preconditions met, no nesting
   validated = validateInventory(order.items)
-  if (!validated.isSuccess) return validated
+  if (!validated.ok) return validated
 
   charged = chargePayment(order.total)
-  if (!charged.isSuccess) return charged
+  if (!charged.ok) return charged
 
   return Result.ok(createConfirmation(order))
 }

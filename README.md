@@ -21,6 +21,17 @@ Type `/dev` in any project. The skill auto-detects the appropriate workflow:
 - Structured logging with correlation IDs
 - Performance budgets
 
+## Prerequisites
+
+The full development cycle integrates with these superpowers skills (Phases 2, 3, 5, 6). If unavailable, those phases operate without skill-specific guidance:
+
+- `superpowers:brainstorming`
+- `superpowers:writing-plans`
+- `superpowers:test-driven-development`
+- `superpowers:executing-plans`
+- `superpowers:verification-before-completion`
+- `superpowers:requesting-code-review`
+
 ## Installation
 
 Add to your global Claude settings:

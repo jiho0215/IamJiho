@@ -11,7 +11,6 @@ tools:
   - Glob
   - Grep
   - Bash
-  - LSP
 ---
 
 # Architect Agent

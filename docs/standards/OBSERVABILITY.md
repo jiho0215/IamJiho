@@ -73,7 +73,7 @@ Every service exposes a health check endpoint that returns:
 
 ## Rules
 
-1. **Every public function logs its entry and exit** (at appropriate levels)
+1. **Significant public functions log their entry and/or exit** — specifically: external calls, business operations, error paths, and operations with side effects. Pure utility functions, simple getters, and trivial transformations do not require entry/exit logging.
 2. **Every error is logged with full context** (correlation ID, operation, inputs)
 3. **Every external call has a trace span** with timing
 4. **Every service has a health check** that tests real dependencies

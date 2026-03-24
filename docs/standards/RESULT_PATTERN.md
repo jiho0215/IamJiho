@@ -12,12 +12,12 @@ Every function that can fail returns a Result containing either a success value 
 Result<T> = Success<T> | Failure
 
 Success<T> {
-  isSuccess: true
+  ok: true
   value: T
 }
 
 Failure {
-  isSuccess: false
+  ok: false
   error: {
     code: string          // Machine-readable error code (e.g., "NOT_FOUND")
     message: string       // Human-readable description
@@ -42,9 +42,9 @@ return Result.fail({
 
 // Handling the result
 result = getUserById(id)
-if (!result.isSuccess) {
+if (!result.ok) {
   // Handle error — the type system forces you to check
-  log.warn("User not found", { error: result.error, userId: id })
+  log.info("User not found", { error: result.error, userId: id })
   return Result.fail(result.error)  // Propagate
 }
 user = result.value  // Safe to access

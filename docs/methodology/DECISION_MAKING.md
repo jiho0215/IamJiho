@@ -20,7 +20,7 @@ The orchestrator collects all agent outputs and combines them:
 
 ### Step 3: Issue Resolution Loop
 
-**Maximum 5 iterations.** For each valid issue:
+**Maximum 5 iterations total across all issues in a single phase.** In each iteration, address all open issues simultaneously, not one at a time. For each valid issue:
 
 1. Dispatch agents in parallel to propose solutions with reasoning
 2. Orchestrator evaluates proposals and selects the best by reasoning quality
@@ -50,7 +50,8 @@ An issue is **invalid** if it:
 
 Dispatch all agents in parallel for one final review:
 - Each confirms zero valid issues from their perspective
-- If ANY agent finds a new issue → back to Step 3 (counts toward iteration limit)
+- If ANY agent finds a new issue → back to Step 3 (counts against the same 5-iteration budget for this phase)
+- If the budget is exhausted during or after the Final Confirmation Round, escalate remaining issues to the user
 - Only proceed when ALL agents confirm zero issues
 
 ## Architecture Decision Records (ADRs)
@@ -69,5 +70,6 @@ Once an ADR's status is "Accepted", its content is immutable. To change a decisi
 1. Create a new ADR
 2. Add `supersedes: ADR-NNN` to the new ADR's frontmatter
 3. Update the old ADR's status to "Superseded by ADR-NNN"
+4. Update the old ADR's `superseded_by` frontmatter field to the new ADR's ID
 
 This preserves the decision history — you can always trace why things changed.

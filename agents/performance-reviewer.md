@@ -63,11 +63,11 @@ Read `${CLAUDE_PLUGIN_ROOT}/docs/standards/PERFORMANCE.md` for full standards. S
 ### Performance Assessment
 | Area | Status | Notes |
 |------|--------|-------|
-| Time complexity | pass/concern | [Details] |
-| Memory usage | pass/concern | [Details] |
-| Network efficiency | pass/concern | [Details] |
-| Bundle size | pass/concern | [Details] |
-| Performance budgets | defined/missing | [Details] |
+| Time complexity | pass/fail | [Details] |
+| Memory usage | pass/fail | [Details] |
+| Network efficiency | pass/fail | [Details] |
+| Bundle size | pass/fail | [Details] |
+| Performance budgets | pass/fail | [Details] |
 
 ### Issues Found
 For each issue:

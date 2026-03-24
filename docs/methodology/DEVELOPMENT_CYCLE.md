@@ -1,6 +1,6 @@
 # Development Cycle
 
-The development framework enforces a 7-phase cycle for every feature, task, or change. No exceptions regardless of task size.
+The development framework enforces a 7-phase cycle for new feature development and significant changes. Standalone review, test analysis, and documentation maintenance use abbreviated workflows (see skills/dev.md Sections C-E).
 
 ## Core Philosophy
 
@@ -16,7 +16,7 @@ The development framework enforces a 7-phase cycle for every feature, task, or c
 | 3. Planning | Interactive → Gate | Create implementation plan, get user approval |
 | 4. Testing Strategy | Autonomous | Design test approach, produce test plan |
 | 5. Implementation | Autonomous | TDD implementation following the plan |
-| 6. Verification | Autonomous | Run all tests, verify standards, code review |
+| 6. Verification & Code Review | Autonomous | Run all tests, verify standards, code review |
 | 7. Documentation | Autonomous | Update docs, ADRs, test documentation |
 
 ## Phase Details

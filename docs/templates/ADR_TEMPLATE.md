@@ -1,7 +1,7 @@
 ---
 id: ADR-NNN
 title: "[Decision Title]"
-status: Proposed | Accepted | Superseded
+status: Proposed | Accepted | Superseded by ADR-NNN
 date: YYYY-MM-DD
 supersedes: ""
 superseded_by: ""
