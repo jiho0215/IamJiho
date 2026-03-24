@@ -1,32 +1,8 @@
-# Decision Making — Multi-Agent Consensus Protocol
+# Decision Making — Issue Validity & ADR Lifecycle
 
-Every phase of the development cycle uses this protocol to ensure decisions are thorough, well-reasoned, and validated from multiple perspectives.
+The full multi-agent consensus protocol is defined in the `dev-framework:multi-agent-consensus` skill. This document covers supplementary guidance: issue validity criteria and ADR lifecycle rules.
 
-## The Protocol
-
-### Step 1: Independent Analysis
-
-Dispatch 3+ agents in parallel. Each agent works independently with no visibility into other agents' outputs. This isolation prevents groupthink and ensures diverse perspectives.
-
-**Mechanism:** Multiple `Agent` tool calls in a single message. Each agent runs as a separate subprocess with its own context.
-
-### Step 2: Discussion Round
-
-The orchestrator collects all agent outputs and combines them:
-- Identify areas of agreement (these are likely correct)
-- Identify conflicts (these need resolution)
-- Identify gaps (these need additional analysis)
-- Tag each issue with severity and the agent that raised it
-
-### Step 3: Issue Resolution Loop
-
-**Maximum 5 iterations total across all issues in a single phase.** In each iteration, address all open issues simultaneously, not one at a time. For each valid issue:
-
-1. Dispatch agents in parallel to propose solutions with reasoning
-2. Orchestrator evaluates proposals and selects the best by reasoning quality
-3. Apply the selected solution
-
-**Issue Validity Criteria:**
+## Issue Validity Criteria
 
 An issue is **valid** if it:
 - Causes incorrect behavior
@@ -40,19 +16,7 @@ An issue is **invalid** if it:
 - Is out of scope for the current task
 - Is a duplicate of another issue
 
-**Non-convergence:** If the loop reaches 5 iterations without zero issues, escalate to the user with:
-- The remaining issues
-- What was tried for each
-- Why it didn't converge
-- The user decides: accept current state, provide guidance, or extend the loop
-
-### Step 4: Final Confirmation Round
-
-Dispatch all agents in parallel for one final review:
-- Each confirms zero valid issues from their perspective
-- If ANY agent finds a new issue → back to Step 3 (counts against the same 5-iteration budget for this phase)
-- If the budget is exhausted during or after the Final Confirmation Round, escalate remaining issues to the user
-- Only proceed when ALL agents confirm zero issues
+**Non-convergence:** If the consensus protocol does not converge within `max_iterations`, escalate to the user with the remaining issues, what was tried, and why it didn't converge. The user decides: accept current state, provide guidance, or extend the loop.
 
 ## Architecture Decision Records (ADRs)
 

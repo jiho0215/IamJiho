@@ -10,6 +10,13 @@ You are orchestrating a rigorous, multi-agent development cycle. Every decision 
 
 Read the referenced documentation files from this skill's `references/` directory when you need detailed guidance on any standard or methodology.
 
+## Companion Skills
+
+This skill depends on two companion skills. Invoke them as described below:
+
+- **`dev-framework:project-docs`** — Ensures every repository has a proper `docs/` structure before work begins. Invoke at the start of every workflow (Sections A-E). If the docs structure is missing, this skill scaffolds it.
+- **`dev-framework:multi-agent-consensus`** — The reusable consensus protocol engine. Every phase that says "run the consensus protocol" should invoke this skill with the appropriate parameters (agents, max_iterations, zero_threshold, task_type, agents_list, context). See that skill's SKILL.md for the full parameter spec.
+
 ## Workflow Routing
 
 Detect the appropriate workflow from context. If ambiguous, ask the user.
@@ -27,28 +34,35 @@ Detect the appropriate workflow from context. If ambiguous, ask the user.
 
 For new or uninitialized projects.
 
-1. Ask the user for: project name, language/framework, test runner, linter, performance budgets (or accept defaults from `references/standards/PERFORMANCE.md`), and existing conventions
-2. Explore the project directory for existing files to auto-detect language/framework
-3. Create directory structure: `docs/`, `docs/adr/`, `docs/specs/`, `docs/test-plans/`, `tests/` (or framework equivalent), `src/` (or equivalent)
-4. Create CLAUDE.md with project-specific configuration referencing the generic standards from `references/standards/`
-5. Create ADR-001: Project Setup (use template from `references/templates/ADR_TEMPLATE.md`)
-6. Set up test configuration for the detected test runner
-7. Map generic standards to concrete implementations:
+1. **Invoke `dev-framework:project-docs`** to verify/scaffold the `docs/` directory structure
+2. Ask the user for: project name, language/framework, test runner, linter, performance budgets (or accept defaults from `references/standards/PERFORMANCE.md`), and existing conventions
+3. Explore the project directory for existing files to auto-detect language/framework
+4. Create additional directory structure: `tests/` (or framework equivalent), `src/` (or equivalent)
+5. Create CLAUDE.md with project-specific configuration referencing the generic standards from `references/standards/`
+6. Create ADR-001: Project Setup (use template from `references/templates/ADR_TEMPLATE.md`)
+7. Set up test configuration for the detected test runner
+8. Map generic standards to concrete implementations:
    - **Result pattern:** Generate a language-specific Result type. Read `references/standards/RESULT_PATTERN.md` for the pattern.
    - **Test types:** Map Unit/Integration/Smoke/E2E to the project's testing tools
    - **Observability:** Map to the project's logging/tracing libraries
    - Delegate to language-specific Claude skills if available, or use detected framework conventions
-8. Confirm initialization is complete. Present a summary of what was created and tell the user: "Type `/dev [feature description]` to begin the full development cycle for your first feature."
+9. Confirm initialization is complete. Present a summary of what was created and tell the user: "Type `/dev [feature description]` to begin the full development cycle for your first feature."
 
 ---
 
 ## Section B: Full Development Cycle
 
+**Prerequisite**: Invoke `dev-framework:project-docs` to verify the project's `docs/` structure exists before starting.
+
 The primary workflow. 7 phases. Phases 1-3 are interactive (heavy user communication). Phase 3 ends with a user gate. Phases 4-7 are autonomous after user confirmation.
 
 ### Multi-Agent Consensus Protocol
 
-Every phase uses this protocol: parallel independent analysis → discussion round → resolution loop (max 5 iterations total across all issues in the phase) → final confirmation. Read `references/methodology/DECISION_MAKING.md` for the full protocol definition, issue validity criteria, and escalation rules.
+Every phase uses the `dev-framework:multi-agent-consensus` skill. Invoke it with the appropriate `task_type`, `agents_list`, and `context` for each phase. Default configuration: `agents: 3`, `max_iterations: 10`, `zero_threshold: 2`. Individual phases may override these defaults (e.g., `max_iterations: 5` for time-boxed phases). Read `references/methodology/DECISION_MAKING.md` for issue validity criteria and ADR lifecycle rules.
+
+### Decision Logging
+
+After each consensus round that produces a significant decision, the **dev skill (orchestrator)** is responsible for invoking `dev-framework:project-docs` to append the decision to the project's `docs/decisions.md`. The multi-agent-consensus skill produces a "Decisions Made" section in its output — use that as the source.
 
 ---
 
@@ -77,11 +91,14 @@ Output: ADR documents and architecture design with zero unresolved issues. Write
 
 ### Phase 3: PLANNING (Interactive → User Gate)
 
-3 agents independently review the implementation plan.
-
 Invoke the `superpowers:writing-plans` skill for structured plan creation. If unavailable, create the plan inline with step-by-step breakdown.
 
-Run the consensus protocol on the plan. After the final confirmation round:
+Run the consensus protocol with these agents:
+- `requirements-analyst` — validates plan covers all requirements
+- `architect` — validates plan aligns with architecture decisions
+- `test-strategist` — validates plan includes testability considerations
+
+After the final confirmation round:
 
 **USER REVIEW & CONFIRMATION GATE**
 Present the final plan to the user. Include:
@@ -127,7 +144,12 @@ After implementation, run the consensus protocol (max 5 iterations — see DECIS
 3. Invoke the `superpowers:verification-before-completion` skill. If unavailable, manually verify all acceptance criteria from Phase 1.
 4. Invoke the `superpowers:requesting-code-review` skill. If unavailable, use the `references/templates/CODE_REVIEW_CHECKLIST.md` template to conduct review inline.
 
-Run the consensus protocol with 3 agents verifying against:
+Run the consensus protocol with these agents:
+- `code-quality-reviewer` — standards compliance
+- `observability-reviewer` — telemetry and logging completeness
+- `performance-reviewer` — performance budget adherence
+
+Verify against:
 - Original requirements from Phase 1
 - Architecture decisions from Phase 2
 - Implementation plan from Phase 3
