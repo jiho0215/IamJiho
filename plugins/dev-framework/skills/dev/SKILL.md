@@ -1,19 +1,14 @@
 ---
 name: dev
-description: >
-  Single entry point for the rigorous multi-agent development framework. Invoke when user explicitly
-  types /dev, or describes a non-trivial software task requiring structured quality practices: new
-  feature development, project initialization, architecture design, code quality review, testing
-  strategy, or documentation maintenance. Trigger on phrases like "development cycle", "init project",
-  "code review", "testing strategy", "update docs". Do not invoke for single-line fixes, questions,
-  or exploratory conversations.
+version: 1.0.0
+description: "This skill should be used when the user wants to build a feature, initialize a project, review code quality, plan a testing strategy, or maintain documentation using a rigorous multi-agent workflow. It orchestrates 3+ specialized agents per phase with consensus cycles to ensure thorough requirements, architecture, implementation, and verification. Use for any non-trivial development task that benefits from structured quality practices."
 ---
 
 # Development Framework — `/dev`
 
 You are orchestrating a rigorous, multi-agent development cycle. Every decision matters. Move slow, do it right. Reduce revisits and refactoring.
 
-Read the referenced documentation files from the plugin's `docs/` directory when you need detailed guidance on any standard or methodology. The plugin root is `${CLAUDE_PLUGIN_ROOT}`.
+Read the referenced documentation files from this skill's `references/` directory when you need detailed guidance on any standard or methodology.
 
 ## Workflow Routing
 
@@ -32,14 +27,14 @@ Detect the appropriate workflow from context. If ambiguous, ask the user.
 
 For new or uninitialized projects.
 
-1. Ask the user for: project name, language/framework, test runner, linter, performance budgets (or accept defaults from `${CLAUDE_PLUGIN_ROOT}/docs/standards/PERFORMANCE.md`), and existing conventions
+1. Ask the user for: project name, language/framework, test runner, linter, performance budgets (or accept defaults from `references/standards/PERFORMANCE.md`), and existing conventions
 2. Explore the project directory for existing files to auto-detect language/framework
 3. Create directory structure: `docs/`, `docs/adr/`, `docs/specs/`, `docs/test-plans/`, `tests/` (or framework equivalent), `src/` (or equivalent)
-4. Create CLAUDE.md with project-specific configuration referencing the generic standards from `${CLAUDE_PLUGIN_ROOT}/docs/standards/`
-5. Create ADR-001: Project Setup (use template from `${CLAUDE_PLUGIN_ROOT}/docs/templates/ADR_TEMPLATE.md`)
+4. Create CLAUDE.md with project-specific configuration referencing the generic standards from `references/standards/`
+5. Create ADR-001: Project Setup (use template from `references/templates/ADR_TEMPLATE.md`)
 6. Set up test configuration for the detected test runner
 7. Map generic standards to concrete implementations:
-   - **Result pattern:** Generate a language-specific Result type. Read `${CLAUDE_PLUGIN_ROOT}/docs/standards/RESULT_PATTERN.md` for the pattern.
+   - **Result pattern:** Generate a language-specific Result type. Read `references/standards/RESULT_PATTERN.md` for the pattern.
    - **Test types:** Map Unit/Integration/Smoke/E2E to the project's testing tools
    - **Observability:** Map to the project's logging/tracing libraries
    - Delegate to language-specific Claude skills if available, or use detected framework conventions
@@ -53,7 +48,7 @@ The primary workflow. 7 phases. Phases 1-3 are interactive (heavy user communica
 
 ### Multi-Agent Consensus Protocol
 
-Every phase uses this protocol: parallel independent analysis → discussion round → resolution loop (max 5 iterations total across all issues in the phase) → final confirmation. Read `${CLAUDE_PLUGIN_ROOT}/docs/methodology/DECISION_MAKING.md` for the full protocol definition, issue validity criteria, and escalation rules.
+Every phase uses this protocol: parallel independent analysis → discussion round → resolution loop (max 5 iterations total across all issues in the phase) → final confirmation. Read `references/methodology/DECISION_MAKING.md` for the full protocol definition, issue validity criteria, and escalation rules.
 
 ---
 
@@ -76,7 +71,7 @@ Run the consensus protocol with the same 3 agents on architecture design.
 
 Invoke the `superpowers:brainstorming` skill for design exploration. If unavailable, enumerate 2-3 design alternatives inline with trade-offs. This handles proposing 2-3 approaches, evaluating trade-offs, and selecting the best architecture.
 
-Produce Architecture Decision Records using the template at `${CLAUDE_PLUGIN_ROOT}/docs/templates/ADR_TEMPLATE.md`. Read `${CLAUDE_PLUGIN_ROOT}/docs/methodology/DECISION_MAKING.md` for ADR lifecycle rules.
+Produce Architecture Decision Records using the template at `references/templates/ADR_TEMPLATE.md`. Read `references/methodology/DECISION_MAKING.md` for ADR lifecycle rules.
 
 Output: ADR documents and architecture design with zero unresolved issues. Write ADRs to `docs/adr/ADR-NNN-[title].md`.
 
@@ -106,13 +101,13 @@ Dispatch 3 agents in parallel:
 
 Run the consensus protocol (max 5 iterations — see DECISION_MAKING.md; escalate if unresolved).
 
-Read `${CLAUDE_PLUGIN_ROOT}/docs/methodology/TESTING_STRATEGY.md` for requirements.
+Read `references/methodology/TESTING_STRATEGY.md` for requirements.
 
 Requirements:
 - Map tests to requirements (traceability matrix)
 - Define all 4 test types: Unit, Integration, Smoke, E2E
 - Coverage target: >= 90% branch coverage
-- Produce a test plan document using `${CLAUDE_PLUGIN_ROOT}/docs/templates/TEST_PLAN_TEMPLATE.md`
+- Produce a test plan document using `references/templates/TEST_PLAN_TEMPLATE.md`
 
 ### Phase 5: IMPLEMENTATION (Autonomous)
 
@@ -121,7 +116,7 @@ Invoke the `superpowers:test-driven-development` skill — write tests first, th
 Invoke the `superpowers:executing-plans` skill to execute the plan from Phase 3. If unavailable, follow the plan steps sequentially.
 
 After implementation, run the consensus protocol (max 5 iterations — see DECISION_MAKING.md; escalate if unresolved) with these review agents:
-- `code-quality-reviewer` — standards compliance (read `${CLAUDE_PLUGIN_ROOT}/docs/standards/` files)
+- `code-quality-reviewer` — standards compliance (read `references/standards/` files)
 - `observability-reviewer` — telemetry, logging, tracing
 - `performance-reviewer` — performance characteristics
 
@@ -130,7 +125,7 @@ After implementation, run the consensus protocol (max 5 iterations — see DECIS
 1. Run ALL tests (unit, integration, smoke, E2E)
 2. Verify test coverage >= 90% branch coverage
 3. Invoke the `superpowers:verification-before-completion` skill. If unavailable, manually verify all acceptance criteria from Phase 1.
-4. Invoke the `superpowers:requesting-code-review` skill. If unavailable, use the `${CLAUDE_PLUGIN_ROOT}/docs/templates/CODE_REVIEW_CHECKLIST.md` template to conduct review inline.
+4. Invoke the `superpowers:requesting-code-review` skill. If unavailable, use the `references/templates/CODE_REVIEW_CHECKLIST.md` template to conduct review inline.
 
 Run the consensus protocol with 3 agents verifying against:
 - Original requirements from Phase 1
@@ -138,7 +133,7 @@ Run the consensus protocol with 3 agents verifying against:
 - Implementation plan from Phase 3
 - All coding standards: Result pattern, early exit, observability, performance, file size limits
 
-Read these standards from `${CLAUDE_PLUGIN_ROOT}/docs/standards/`:
+Read these standards from `references/standards/`:
 - `RESULT_PATTERN.md` — uniform Result<T> responses
 - `EARLY_EXIT.md` — guard clause patterns
 - `ERROR_HANDLING.md` — error categorization
@@ -168,8 +163,8 @@ Standalone quality review, independent of the full cycle.
    - `observability-reviewer`
    - `performance-reviewer`
 2. Run the consensus protocol (discussion round → resolution loop → final confirmation)
-3. Each agent reads the relevant standards from `${CLAUDE_PLUGIN_ROOT}/docs/standards/`
-4. Produce a review report using `${CLAUDE_PLUGIN_ROOT}/docs/templates/CODE_REVIEW_CHECKLIST.md` as the output template, with findings, severity, and recommended fixes
+3. Each agent reads the relevant standards from `references/standards/`
+4. Produce a review report using `references/templates/CODE_REVIEW_CHECKLIST.md` as the output template, with findings, severity, and recommended fixes
 
 ---
 
@@ -178,7 +173,7 @@ Standalone quality review, independent of the full cycle.
 Standalone testing strategy analysis.
 
 1. Analyze the codebase for test coverage gaps
-2. Read `${CLAUDE_PLUGIN_ROOT}/docs/methodology/TESTING_STRATEGY.md`
+2. Read `references/methodology/TESTING_STRATEGY.md`
 3. Design or update the test plan ensuring all 4 test types are represented
 4. Verify branch coverage target (>= 90%)
 5. Run the consensus protocol with `test-strategist`, `architect`, and `requirements-analyst`
@@ -189,8 +184,8 @@ Standalone testing strategy analysis.
 
 Standalone documentation maintenance.
 
-1. Read `${CLAUDE_PLUGIN_ROOT}/docs/methodology/DOCUMENTATION_STANDARDS.md`
+1. Read `references/methodology/DOCUMENTATION_STANDARDS.md`
 2. Scan for undocumented decisions, features, or changes
 3. Update ADRs, specs, test plans
 4. Ensure the project's `docs/` directory is current
-5. Verify all ADRs follow the template at `${CLAUDE_PLUGIN_ROOT}/docs/templates/ADR_TEMPLATE.md`
+5. Verify all ADRs follow the template at `references/templates/ADR_TEMPLATE.md`

@@ -23,7 +23,7 @@ project-root/
 
 ### Architecture Decision Records (ADRs)
 
-Capture every architectural or design decision. Use the ADR template from `${CLAUDE_PLUGIN_ROOT}/docs/templates/ADR_TEMPLATE.md`.
+Capture every architectural or design decision. Use the ADR template from `${CLAUDE_PLUGIN_ROOT}/skills/dev/references/templates/ADR_TEMPLATE.md`.
 
 **When to write an ADR:**
 - Choosing a technology or library
@@ -35,7 +35,7 @@ Capture every architectural or design decision. Use the ADR template from `${CLA
 
 ### Feature Specifications
 
-Document what each feature does, why it exists, and how it works. Use the template from `${CLAUDE_PLUGIN_ROOT}/docs/templates/FEATURE_SPEC_TEMPLATE.md`.
+Document what each feature does, why it exists, and how it works. Use the template from `${CLAUDE_PLUGIN_ROOT}/skills/dev/references/templates/FEATURE_SPEC_TEMPLATE.md`.
 
 **When to write a spec:**
 - Before implementing any new feature (Phase 1-3 of the cycle)
@@ -43,7 +43,7 @@ Document what each feature does, why it exists, and how it works. Use the templa
 
 ### Test Plans
 
-Document the testing strategy for each feature. Use the template from `${CLAUDE_PLUGIN_ROOT}/docs/templates/TEST_PLAN_TEMPLATE.md`.
+Document the testing strategy for each feature. Use the template from `${CLAUDE_PLUGIN_ROOT}/skills/dev/references/templates/TEST_PLAN_TEMPLATE.md`.
 
 **When to write a test plan:**
 - During Phase 4 of the development cycle

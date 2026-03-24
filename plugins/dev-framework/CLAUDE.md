@@ -11,11 +11,10 @@ Language-agnostic development framework with multi-agent consensus cycles.
 
 ## Plugin Structure
 
-- `skills/dev.md` — Single `/dev` entry point with context-aware routing
+- `commands/dev.md` — `/dev` command entry point that delegates to the skill
+- `skills/dev/SKILL.md` — Core skill with context-aware workflow routing
+- `skills/dev/references/` — Bundled reference documentation (methodology, standards, templates)
 - `agents/` — 6 specialized review agents
-- `docs/methodology/` — Development cycle, decision making, testing, documentation
-- `docs/standards/` — Result pattern, early exit, errors, observability, performance, code quality
-- `docs/templates/` — ADR, feature spec, test plan, code review checklist
 
 ## Prerequisites
 

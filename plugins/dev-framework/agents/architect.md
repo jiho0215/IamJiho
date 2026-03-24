@@ -1,9 +1,34 @@
 ---
 name: architect
-description: >
-  Analyzes features, tasks, and changes from the system design perspective. Focuses on component
-  boundaries, data flow, dependencies, and patterns. Ensures scalability, maintainability, and
-  consistency with existing architecture. Use this agent during architecture design and verification phases.
+description: |
+  Use this agent when you need to evaluate system design, component boundaries, data flow, dependencies, or architectural patterns for a feature, task, or change. Trigger when the user asks about architecture decisions, system structure, scalability concerns, or wants a design review before or after implementation.
+
+  <example>
+  Context: User is planning a new feature that introduces a caching layer between the API and database.
+  user: "I want to add Redis caching to our user profile endpoint. Can you review whether this fits our architecture?"
+  assistant: "I'll use the architect agent to analyze how a Redis caching layer fits into the existing system design and component boundaries."
+  <commentary>
+  User is asking about an architectural decision involving a new component. The architect agent should evaluate component boundaries, data flow, and integration points.
+  </commentary>
+  </example>
+
+  <example>
+  Context: The multi-agent consensus protocol has produced implementation code and the user wants a design-level review.
+  user: "The agents have finished implementing the event-driven notification system. Review the architecture before we move on."
+  assistant: "I'll use the architect agent to verify the notification system's architecture aligns with our existing patterns and scalability requirements."
+  <commentary>
+  A major feature has been implemented and needs architectural verification. The architect agent checks component boundaries, dependency direction, and pattern consistency.
+  </commentary>
+  </example>
+
+  <example>
+  Context: User is refactoring a monolithic service into smaller modules.
+  user: "I'm breaking the order-processing module into separate services for validation, payment, and fulfillment. Does this decomposition make sense?"
+  assistant: "I'll use the architect agent to evaluate the proposed service decomposition for clean boundaries, data flow, and dependency management."
+  <commentary>
+  User is making a structural change that affects component boundaries and dependencies. The architect agent analyzes whether the decomposition follows good architectural principles.
+  </commentary>
+  </example>
 model: sonnet
 color: cyan
 tools:

@@ -1,9 +1,34 @@
 ---
 name: performance-reviewer
-description: >
-  Reviews code for performance characteristics. Focuses on time complexity, memory usage, network
-  calls, and bundle size. Checks performance budgets and identifies unnecessary work. Use this
-  agent during implementation review and verification phases.
+description: |
+  Use this agent when you need to review code for performance characteristics, including time complexity, memory usage, network call efficiency, and bundle size. Trigger when implementation is complete and needs a performance assessment, or when the multi-agent consensus protocol requires a performance perspective.
+
+  <example>
+  Context: User has implemented a data export feature that processes large datasets.
+  user: "The CSV export for the analytics dashboard is done. It needs to handle up to 100k rows. Can you check the performance?"
+  assistant: "I'll use the performance-reviewer agent to evaluate the CSV export for time complexity, memory usage with large datasets, and potential N+1 query patterns."
+  <commentary>
+  User has completed a feature with explicit scale requirements. The performance-reviewer checks for algorithmic efficiency, memory pressure, and unnecessary work.
+  </commentary>
+  </example>
+
+  <example>
+  Context: During a multi-agent consensus review, the performance perspective is needed on a new API endpoint.
+  user: "Run the review agents on the search endpoint before we ship."
+  assistant: "I'll use the performance-reviewer agent to assess the search endpoint's time complexity, query efficiency, and response time under load."
+  <commentary>
+  User wants a multi-agent review before shipping. The performance-reviewer provides the runtime efficiency perspective as part of the consensus protocol.
+  </commentary>
+  </example>
+
+  <example>
+  Context: The application startup time has increased after adding new dependencies.
+  user: "App startup feels slower after we added the new plugins. Review what's impacting performance."
+  assistant: "I'll use the performance-reviewer agent to analyze the startup path for unnecessary dependencies, redundant initialization, and bundle size impact."
+  <commentary>
+  User reports a performance regression. The performance-reviewer identifies unnecessary work, oversized dependencies, and optimization opportunities.
+  </commentary>
+  </example>
 model: sonnet
 color: magenta
 tools:
@@ -27,7 +52,7 @@ You represent the user waiting for a response and the infrastructure budget. You
 
 ## Performance Checklist
 
-Read `${CLAUDE_PLUGIN_ROOT}/docs/standards/PERFORMANCE.md` for full standards. Summary:
+Read `${CLAUDE_PLUGIN_ROOT}/skills/dev/references/standards/PERFORMANCE.md` for full standards. Summary:
 
 ### Time Complexity
 - Algorithms use appropriate data structures (no O(n^2) when O(n log n) is available)
