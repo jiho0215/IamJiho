@@ -5,5 +5,9 @@
   "author": {
     "name": "Jiho Lee",
     "email": "ianjiholee@gmail.com"
-  }
+  },
+  "homepage": "https://github.com/jiho0215/IamJiho",
+  "repository": "https://github.com/jiho0215/IamJiho",
+  "license": "MIT",
+  "keywords": ["development", "tdd", "code-review", "multi-agent", "consensus", "testing", "observability", "documentation"]
 }
