@@ -1,0 +1,16 @@
+{
+  "name": "dev-framework-marketplace",
+  "description": "Language-agnostic development framework with multi-agent consensus cycles for rigorous software development",
+  "owner": {
+    "name": "Jiho Lee",
+    "email": "ianjiholee@gmail.com"
+  },
+  "plugins": [
+    {
+      "name": "dev-framework",
+      "description": "Language-agnostic development framework with multi-agent consensus cycle. Single /dev entry point for rigorous TDD, 90%+ coverage, Result<T> pattern, early exit, observability, and performance budgets.",
+      "source": "./plugins/dev-framework",
+      "category": "development"
+    }
+  ]
+}
