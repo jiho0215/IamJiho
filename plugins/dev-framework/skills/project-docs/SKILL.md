@@ -1,7 +1,7 @@
 ---
 name: project-docs
 version: 1.0.0
-description: "Enforce and maintain a project documentation structure in every repository. Use this skill whenever the dev-framework interacts with a repository — before ANY implementation work, verify docs/ exists with adr/, specs/, test-plans/, and a decisions log. If missing, scaffold it. Also use when the user says 'update docs', 'document this decision', 'add ADR', or any documentation-related request. This is a prerequisite skill that other dev-framework skills depend on."
+description: "Enforce, maintain, and refactor project documentation in every repository. Use this skill whenever the dev-framework interacts with a repository — before ANY implementation work, verify docs/ exists with adr/, specs/, test-plans/, and a decisions log. If missing, scaffold it. Also analyzes existing docs for staleness, redundancy, bloat, and accuracy drift, then refactors to keep documentation concise, small, and organized. Use when the user says 'update docs', 'clean up docs', 'refactor docs', 'document this decision', 'add ADR', or any documentation-related request. This is a prerequisite skill that other dev-framework skills depend on."
 ---
 
 # Project Documentation Structure — `project-docs`
@@ -96,6 +96,49 @@ When any decision is made (by user, by consensus protocol, or by framework defau
 - **Reasoning**: Why this choice was made
 - **Priority**: User decision | Team convention | Framework default
 - **Source**: User / Consensus (Phase N) / Framework init
+```
+
+## Documentation Hygiene — Analyze & Refactor
+
+Every time this skill runs, it should also scan existing docs for opportunities to improve clarity, reduce size, and maintain accuracy. Documentation that grows unchecked becomes noise — concise docs are more valuable than comprehensive ones.
+
+### When to Refactor
+
+Perform a hygiene pass:
+- At the start of every dev-framework workflow (alongside verification)
+- After Phase 7 (Documentation) completes
+- When the user explicitly asks to clean up docs
+- When `docs/decisions.md` exceeds ~50 entries (promote patterns to ADRs, archive resolved items)
+
+### What to Look For
+
+1. **Stale content**: Decisions that were superseded but not marked. Specs that describe features differently than the current implementation. Test plans referencing deleted tests.
+2. **Redundancy**: The same decision captured in both `decisions.md` AND an ADR — keep the ADR, remove the duplicate from decisions.md with a pointer. Multiple specs covering overlapping scope — merge them.
+3. **Bloat**: Files exceeding ~200 lines — split into focused documents. Decision log with resolved/obsolete entries — archive them to `docs/adr/` or remove with a summary note.
+4. **Accuracy drift**: Doc content that contradicts the actual codebase. Out-of-date architecture diagrams. Coverage numbers or test counts that no longer match reality.
+5. **Organization**: Files in the wrong directory (a decision in specs/, a spec in adr/). Inconsistent naming conventions. Missing cross-references between related docs.
+
+### How to Refactor
+
+Follow these principles:
+
+- **Concise over comprehensive**: A 20-line doc that captures the essential decision is better than a 200-line doc that buries it in context. Remove boilerplate, hedging language, and obvious statements.
+- **One concern per file**: If a spec covers two features, split it. If an ADR addresses three decisions, break it into three ADRs.
+- **Archive, don't delete**: Move obsolete content to a `docs/archive/` directory (create if needed) rather than deleting. Add a one-line note explaining why it was archived.
+- **Preserve user decisions**: When refactoring, never remove or alter user decisions. They are immutable. If a user decision appears stale, flag it for the user to confirm before touching it.
+- **Update cross-references**: After any refactor (rename, split, merge, archive), verify that all documents referencing the changed file are updated.
+
+### Refactor Output
+
+After a hygiene pass, briefly report what changed:
+
+```markdown
+### Doc Hygiene Report
+- **Archived**: [list of files moved to docs/archive/ with reason]
+- **Merged**: [list of files combined with reason]
+- **Split**: [list of files broken apart with reason]
+- **Updated**: [list of files with stale content corrected]
+- **No changes needed**: [if everything is clean]
 ```
 
 ## Integration with Other Skills
