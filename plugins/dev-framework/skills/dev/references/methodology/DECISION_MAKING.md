@@ -18,6 +18,8 @@ An issue is **invalid** if it:
 
 **Non-convergence:** If the consensus protocol does not converge within `max_iterations`, escalate to the user with the remaining issues, what was tried, and why it didn't converge. The user decides: accept current state, provide guidance, or extend the loop.
 
+**Mandatory re-validation:** Fixing issues without re-dispatching agents does not count toward convergence. See the "Critical Rule — Never Short-Circuit the Loop" section in the `dev-framework:multi-agent-consensus` SKILL.md.
+
 ## Architecture Decision Records (ADRs)
 
 Every architectural or design decision is documented as an ADR.

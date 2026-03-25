@@ -40,6 +40,23 @@ Invoke multi-agent-consensus with:
   context: "Review implementation of user authentication feature against requirements in docs/specs/auth-requirements.md"
 ```
 
+## Critical Rule — Never Short-Circuit the Loop
+
+**NEVER fix issues and declare convergence in a single pass.** The protocol requires:
+
+1. Dispatch agents → find issues → fix issues → **re-dispatch agents to verify fixes**
+2. Only declare CONVERGED after `zero_threshold` consecutive rounds with zero NEW issues
+3. A round where you fix issues but do not re-validate is **NOT** a zero-issue round — it is an incomplete iteration
+
+If you catch yourself thinking *"I fixed everything, so it's done"* — **STOP**. That thought is the exact moment the loop matters most. Fixes can introduce new issues, miss edge cases, or be incomplete. Only the re-validation round can confirm the fix actually worked.
+
+**Common violations to watch for:**
+- Running 1 reviewer, fixing issues, declaring "done" without re-running reviewers
+- Substituting a manual single-agent check for the full N-agent parallel dispatch
+- Counting a "fix round" as a "zero-issue round" because you believe the fixes are correct
+
+---
+
 ## Protocol Phases
 
 The protocol has three phases. The caller chooses which phase(s) to run. Each phase follows the same core loop but with different objectives.
@@ -130,11 +147,13 @@ For each validated issue (highest severity first):
 
 **Step 4 — Iteration Check**
 After resolving all issues in this round:
-- If validated issues found > 0: increment iteration counter, go back to Step 1
-- If validated issues found = 0: increment zero counter
+- If validated issues found > 0: increment iteration counter, apply fixes, **then go back to Step 1 to re-validate the fixes** (this is mandatory — never skip re-validation)
+- If validated issues found = 0 (agents were dispatched and found nothing new): increment zero counter
   - If zero counter >= `zero_threshold`: **CONVERGED** — stop
-  - Otherwise: go back to Step 1 for confirmation
+  - Otherwise: go back to Step 1 for one more confirmation round
 - If iteration counter >= `max_iterations`: **FORCED STOP** — escalate remaining issues to caller
+
+**Important:** The zero counter only increments when agents are dispatched and return zero issues. Fixing issues without re-dispatching agents does not count toward convergence.
 
 ---
 

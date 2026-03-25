@@ -6,6 +6,7 @@ The development framework enforces a 7-phase cycle for new feature development a
 
 - **Move slow, do it right.** Reduce revisits and refactoring.
 - **Full rigor always.** 3+ agents per step, discussion loops until zero issues.
+- **Never short-circuit validation.** Fixing issues without re-running agents is not convergence. Every fix must be verified by a fresh agent dispatch. See `multi-agent-consensus` SKILL.md "Critical Rule" section.
 
 ## Phases Overview
 
@@ -63,8 +64,8 @@ The development framework enforces a 7-phase cycle for new feature development a
 
 1. Invoke `superpowers:test-driven-development` — tests first
 2. Invoke `superpowers:executing-plans` — follow the plan
-3. 3 review agents (code-quality, observability, performance) review the implementation
-4. Run consensus protocol on review findings
+3. **Mandatory:** Invoke `dev-framework:multi-agent-consensus` with 3 review agents (code-quality, observability, performance). Do NOT substitute a manual single-agent review — the iteration loop is required for convergence.
+4. Run consensus protocol on review findings until convergence (see multi-agent-consensus SKILL.md "Critical Rule" section)
 
 ### Phase 6: Verification
 

@@ -46,7 +46,12 @@ For new or uninitialized projects.
    - **Test types:** Map Unit/Integration/Smoke/E2E to the project's testing tools
    - **Observability:** Map to the project's logging/tracing libraries
    - Delegate to language-specific Claude skills if available, or use detected framework conventions
-9. Confirm initialization is complete. Present a summary of what was created and tell the user: "Type `/dev [feature description]` to begin the full development cycle for your first feature."
+9. **Validate scaffolded output.** Invoke `dev-framework:multi-agent-consensus` with:
+   - `task_type: validate`
+   - `agents_list: [code-quality-reviewer, architect, requirements-analyst]`
+   - `context: "Validate all scaffolded files against the actual codebase. Ensure documented state (provider trees, file paths, API endpoints, type shapes, storage mechanisms) matches reality. Flag any aspirational documentation that contradicts the current code."`
+   - This step catches the most dangerous class of documentation bugs: docs that describe a target architecture as if it were already implemented.
+10. Confirm initialization is complete. Present a summary of what was created and tell the user: "Type `/dev [feature description]` to begin the full development cycle for your first feature."
 
 ---
 
@@ -132,10 +137,12 @@ Invoke the `superpowers:test-driven-development` skill — write tests first, th
 
 Invoke the `superpowers:executing-plans` skill to execute the plan from Phase 3. If unavailable, follow the plan steps sequentially.
 
-After implementation, run the consensus protocol (max 5 iterations — see DECISION_MAKING.md; escalate if unresolved) with these review agents:
+After implementation, you **MUST** invoke `dev-framework:multi-agent-consensus` with `task_type: validate` (max 5 iterations — see DECISION_MAKING.md; escalate if unresolved) with these review agents:
 - `code-quality-reviewer` — standards compliance (read `references/standards/` files)
 - `observability-reviewer` — telemetry, logging, tracing
 - `performance-reviewer` — performance characteristics
+
+**Do NOT substitute a manual single-agent review for the consensus protocol.** The iteration loop is what catches issues that a single pass misses. A single reviewer finding issues, followed by fixes without re-validation, is NOT convergence.
 
 ### Phase 6: VERIFICATION & CODE REVIEW (Autonomous)
 
