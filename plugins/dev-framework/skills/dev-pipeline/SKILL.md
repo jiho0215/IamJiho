@@ -19,12 +19,14 @@ These superpowers skills are invoked at specific phases. If unavailable, the pha
 
 | Skill | Phase | Purpose |
 |-------|-------|---------|
-| `superpowers:brainstorming` | 3 | Design exploration before plan creation |
+| `superpowers:brainstorming` | 1 | Requirements gathering through dialogue |
+| `feature-dev:code-explorer` | 2 | Deep codebase analysis, execution path tracing |
+| `feature-dev:code-architect` | 3 | Feature architecture design from codebase patterns |
 | `superpowers:writing-plans` | 3 | Structured implementation plan |
 | `superpowers:test-driven-development` | 4, 7 | TDD methodology for test planning and coverage fill |
-| `superpowers:executing-plans` | 5 | Execute plan with review checkpoints |
-| `superpowers:subagent-driven-development` | 5 | Parallel task execution with two-stage review |
-| `superpowers:dispatching-parallel-agents` | 5 | Independent subtask parallelization |
+| `superpowers:subagent-driven-development` | 5 | Task execution with two-stage review (default) |
+| `superpowers:executing-plans` | 5 | Sequential plan execution (alternative) |
+| `superpowers:dispatching-parallel-agents` | 5 | Independent subtask parallelization (alternative) |
 | `superpowers:requesting-code-review` | 6 | Structured review request to consensus agents |
 | `superpowers:receiving-code-review` | 6, 8 | Rigorous evaluation of review feedback |
 | `superpowers:verification-before-completion` | 10 | Run verification commands before claiming done |
@@ -89,28 +91,35 @@ Follow resume protocol in `references/session-management.md`. Detect mid-phase c
 
 ---
 
-## Phase 1: JIRA Fetch
+## Phase 1: Requirements Gathering
 
-Invoke `config.phases["1"].skill` (default: `/essentials-jira`) via the Skill tool with the TICKET_ID.
+Invoke `superpowers:brainstorming` — gather requirements for TICKET_ID through dialogue:
+1. If user provides a ticket URL or description, extract requirements, acceptance criteria, and constraints.
+2. If user provides minimal context, ask clarifying questions one at a time.
+3. Produce structured requirements document in the session folder.
 
-**Output:** Ticket requirements in session folder.
+**Output:** Requirements in session folder.
 **Update:** progress-log.json (phase 1 complete).
-**Banner:** `--- Phase 1 Complete: JIRA Fetch ---`
+**Banner:** `--- Phase 1 Complete: Requirements Gathering ---`
 
-## Phase 2: Codebase Prime
+## Phase 2: Codebase Exploration
 
-Invoke `config.phases["2"].skill` (default: `/essentials-prime`).
+Invoke `feature-dev:code-explorer` — deeply analyze the existing codebase:
+1. Trace execution paths related to the feature area.
+2. Map architecture layers, patterns, and abstractions.
+3. Document dependencies and integration points.
+4. Identify conventions the new code must follow.
 
-**Output:** Codebase context loaded.
+**Output:** Codebase context loaded into session.
 **Update:** progress-log.json.
-**Banner:** `--- Phase 2 Complete: Codebase Prime ---`
+**Banner:** `--- Phase 2 Complete: Codebase Exploration ---`
 
 ## Phase 3: Plan & Review
 
 **Load now:** Read `references/review-loop-protocol.md` into context.
 
-1. Invoke `superpowers:brainstorming` — explore design approaches, propose 2-3 alternatives, settle on recommended approach.
-2. Invoke `config.phases["3"].skill` (default: `/essentials-analyze`) for design analysis.
+1. Invoke `feature-dev:code-architect` — design feature architecture based on Phase 2 findings. Analyze patterns, propose component design, data flows, and integration blueprint.
+2. Invoke `dev-framework:multi-agent-consensus` with `task_type: plan`, `agents_list: [requirements-analyst, architect, test-strategist]` — validate the design with 3 agents.
 3. Invoke `superpowers:writing-plans` — generate structured implementation plan with bite-sized tasks.
 4. Inject CHRONIC_PATTERNS as a prevention checklist in the plan.
 5. **Self-review loop:** Follow `review-loop-protocol.md`. Run in self-review mode.
@@ -136,12 +145,11 @@ The test-planning skill generates a layered test plan with:
 
 ## Phase 5: Implementation
 
-Invoke `config.phases["5"].skill` (default: `/essentials-execute`).
+Execute the Phase 3 plan using the most appropriate approach:
 
-**Companion skills (invoke as appropriate for the task):**
-- `superpowers:executing-plans` — if implementing sequentially from the Phase 3 plan.
-- `superpowers:subagent-driven-development` — if plan has independent tasks suitable for parallel subagent dispatch with two-stage review (spec compliance → code quality).
-- `superpowers:dispatching-parallel-agents` — if multiple independent subtasks can run concurrently.
+- **Default:** Invoke `superpowers:subagent-driven-development` — dispatch fresh subagent per task from the plan, with two-stage review (spec compliance → code quality) per task.
+- **Sequential alternative:** Invoke `superpowers:executing-plans` — if tasks have strong sequential dependencies.
+- **Parallel alternative:** Invoke `superpowers:dispatching-parallel-agents` — if multiple independent subtasks can run concurrently without shared state.
 
 Reference `{SESSION_DIR}/tdd-plan.md` for test strategy during implementation. Follow TDD: write failing test first, then implement.
 

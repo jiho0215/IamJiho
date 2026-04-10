@@ -52,16 +52,15 @@ Superpowers skills (optional — phases degrade gracefully if unavailable):
 External configuration (must be set up before first use):
 - `~/.claude/autodev/config.json` — pipeline configuration (single source of truth for thresholds, paths, phase skills)
 
-External skills (invoked by config — pipeline degrades if unavailable):
-- `essentials-jira` (Phase 1), `essentials-prime` (Phase 2), `essentials-analyze` (Phase 3), `essentials-execute` (Phase 5)
-
-Superpowers skills (optional — phases degrade gracefully if unavailable):
-- `superpowers:brainstorming` (Phase 3 — design exploration)
-- `superpowers:writing-plans` (Phase 3 — structured plan creation)
+All skills are Anthropic official — zero external dependencies:
+- `superpowers:brainstorming` (Phase 1 — requirements gathering)
+- `feature-dev:code-explorer` (Phase 2 — codebase analysis)
+- `feature-dev:code-architect` (Phase 3 — architecture design)
+- `superpowers:writing-plans` (Phase 3 — structured plan)
 - `superpowers:test-driven-development` (Phase 4, 7 — TDD methodology)
-- `superpowers:executing-plans` (Phase 5 — sequential plan execution)
-- `superpowers:subagent-driven-development` (Phase 5 — parallel task dispatch)
-- `superpowers:dispatching-parallel-agents` (Phase 5 — independent subtask parallelization)
+- `superpowers:subagent-driven-development` (Phase 5 — task execution with two-stage review)
+- `superpowers:executing-plans` (Phase 5 — sequential alternative)
+- `superpowers:dispatching-parallel-agents` (Phase 5 — parallel alternative)
 - `superpowers:requesting-code-review` (Phase 6 — structured review request)
 - `superpowers:receiving-code-review` (Phase 6, 8 — rigorous feedback evaluation)
 - `superpowers:verification-before-completion` (Phase 10 — evidence before claims)
