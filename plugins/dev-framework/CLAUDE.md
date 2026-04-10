@@ -49,23 +49,32 @@ Superpowers skills (optional — phases degrade gracefully if unavailable):
 - `superpowers:requesting-code-review` (Phase 6)
 
 ### /dev-pipeline prerequisites
-External configuration (must be set up before first use):
-- `~/.claude/autodev/config.json` — pipeline configuration (single source of truth for thresholds, paths, phase skills)
+External configuration (auto-created on first run with defaults if absent):
+- `~/.claude/autodev/config.json` — pipeline configuration (single source of truth for thresholds, paths, and skill/agent mappings)
 
-All skills are Anthropic official — zero external dependencies:
-- `superpowers:brainstorming` (Phase 1 — requirements gathering)
-- `feature-dev:code-explorer` (Phase 2 — codebase analysis)
-- `feature-dev:code-architect` (Phase 3 — architecture design)
-- `superpowers:writing-plans` (Phase 3 — structured plan)
-- `superpowers:test-driven-development` (Phase 4, 7 — TDD methodology)
-- `superpowers:subagent-driven-development` (Phase 5 — task execution with two-stage review)
-- `superpowers:executing-plans` (Phase 5 — sequential alternative)
-- `superpowers:dispatching-parallel-agents` (Phase 5 — parallel alternative)
-- `superpowers:requesting-code-review` (Phase 6 — structured review request)
-- `superpowers:receiving-code-review` (Phase 6, 8 — rigorous feedback evaluation)
-- `superpowers:verification-before-completion` (Phase 10 — evidence before claims)
-- `superpowers:finishing-a-development-branch` (Phase 10 — commit/push/PR options)
-- `superpowers:systematic-debugging` (any failure — root cause investigation)
+All default skills are Anthropic official — zero external dependencies. Each skill is configurable via `config.pipeline.skills.*` and agents via `config.pipeline.agents.*`. Override any mapping in config.json to swap in custom skills.
+
+Default skill mappings (see `references/session-management.md` for full config schema):
+
+| Config Key | Default | Phase |
+|------------|---------|-------|
+| `skills.requirements` | `superpowers:brainstorming` | 1 |
+| `skills.exploration` | `feature-dev:code-explorer` | 2 |
+| `skills.architect` | `feature-dev:code-architect` | 3 |
+| `skills.consensus` | `dev-framework:multi-agent-consensus` | 3, 6, 8 |
+| `skills.planning` | `superpowers:writing-plans` | 3 |
+| `skills.tdd` | `superpowers:test-driven-development` | 4, 7 |
+| `skills.testPlanning` | `dev-framework:test-planning` | 4 |
+| `skills.implementation` | `superpowers:subagent-driven-development` | 5 |
+| `skills.implementationSequential` | `superpowers:executing-plans` | 5 |
+| `skills.implementationParallel` | `superpowers:dispatching-parallel-agents` | 5 |
+| `skills.requestReview` | `superpowers:requesting-code-review` | 6 |
+| `skills.receiveReview` | `superpowers:receiving-code-review` | 6, 8 |
+| `skills.verification` | `superpowers:verification-before-completion` | 10 |
+| `skills.finishing` | `superpowers:finishing-a-development-branch` | 10 |
+| `skills.debugging` | `superpowers:systematic-debugging` | Any failure |
+| `agents.plan` | `[requirements-analyst, architect, test-strategist]` | 3 |
+| `agents.review` | `[code-quality-reviewer, performance-reviewer, observability-reviewer]` | 6, 8 |
 
 ### Bundled Hooks (auto-registered, no setup needed)
 
@@ -74,5 +83,7 @@ All skills are Anthropic official — zero external dependencies:
 | Chronic pattern loader | SessionStart | Reads patterns file, outputs to session context |
 | Push guard | PreToolUse (git push) | Blocks push if pipeline started but not completed for branch |
 | Test failure capture | PostToolUse (dotnet test) | Logs failed test runs to session folder |
+| **Phase gate** | **Called by SKILL.md** | **Validates progress map at phase boundaries (begin/end). Blocks on failure (exit 2)** |
+| **Progress validator** | **PostToolUse (phase-gate.sh)** | **Independent post-gate validation of progress-log.json consistency** |
 | State preservation | PreCompact | Serializes pipeline state before context truncation |
 | Session cleanup | SessionEnd | Cleans temp files, marks interrupted pipelines |

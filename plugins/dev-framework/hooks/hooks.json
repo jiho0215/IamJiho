@@ -31,6 +31,15 @@
           "if": "Bash(dotnet test *)",
           "timeout": 1
         }]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [{
+          "type": "command",
+          "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/phase-progress-validator.sh",
+          "if": "Bash(*phase-gate.sh*)",
+          "timeout": 3
+        }]
       }
     ],
     "PreCompact": [

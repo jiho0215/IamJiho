@@ -190,3 +190,20 @@ If `~/.claude/autodev/config.json` is missing or a key is absent, use these fall
 | `paths.sessionsDir` | `~/.claude/autodev/sessions` |
 | `paths.autodevRoot` | `~/.claude/autodev` |
 | `sessionFolderFormat` | `{repo}--{branch}` |
+| `pipeline.skills.requirements` | `superpowers:brainstorming` |
+| `pipeline.skills.exploration` | `feature-dev:code-explorer` |
+| `pipeline.skills.architect` | `feature-dev:code-architect` |
+| `pipeline.skills.consensus` | `dev-framework:multi-agent-consensus` |
+| `pipeline.skills.planning` | `superpowers:writing-plans` |
+| `pipeline.skills.tdd` | `superpowers:test-driven-development` |
+| `pipeline.skills.testPlanning` | `dev-framework:test-planning` |
+| `pipeline.skills.implementation` | `superpowers:subagent-driven-development` |
+| `pipeline.skills.implementationSequential` | `superpowers:executing-plans` |
+| `pipeline.skills.implementationParallel` | `superpowers:dispatching-parallel-agents` |
+| `pipeline.skills.requestReview` | `superpowers:requesting-code-review` |
+| `pipeline.skills.receiveReview` | `superpowers:receiving-code-review` |
+| `pipeline.skills.verification` | `superpowers:verification-before-completion` |
+| `pipeline.skills.finishing` | `superpowers:finishing-a-development-branch` |
+| `pipeline.skills.debugging` | `superpowers:systematic-debugging` |
+| `pipeline.agents.plan` | `["requirements-analyst", "architect", "test-strategist"]` |
+| `pipeline.agents.review` | `["code-quality-reviewer", "performance-reviewer", "observability-reviewer"]` |
