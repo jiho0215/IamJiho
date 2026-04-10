@@ -11,17 +11,56 @@ Language-agnostic development framework with multi-agent consensus cycles.
 
 ## Plugin Structure
 
-- `commands/dev.md` — `/dev` command entry point that delegates to the skill
-- `skills/dev/SKILL.md` — Core skill with context-aware workflow routing
+### /dev — Interactive Development (existing)
+- `commands/dev.md` — `/dev` command entry point
+- `skills/dev/SKILL.md` — Core skill with context-aware workflow routing (7 phases)
 - `skills/dev/references/` — Bundled reference documentation (methodology, standards, templates)
-- `agents/` — 6 specialized review agents
+
+### /dev-pipeline — Autonomous Pipeline (new)
+- `commands/dev-pipeline.md` — `/dev-pipeline TICKET [--from N] [--status]`
+- `skills/dev-pipeline/SKILL.md` — 10-phase autonomous pipeline with single human gate
+- `skills/dev-pipeline/references/` — Review loop, mistake tracker, session management protocols
+- `hooks/` — Bundled harness enforcement (auto-registered)
+
+### Shared
+- `agents/` — 6 specialized review agents (used by both /dev and /dev-pipeline)
+- `skills/multi-agent-consensus/SKILL.md` — Reusable consensus loop (used by both)
+
+## /dev-pipeline — How It Differs from /dev
+
+| Aspect | /dev | /dev-pipeline |
+|--------|------|---------------|
+| Human gates | Multiple (Phase 3 approval) | One (Phase 10 only) |
+| Review mechanism | Internal agents via consensus | Same agents via consensus |
+| Learning | None | Cross-session mistake tracking |
+| JIRA integration | None | Phase 1 fetches ticket |
+| Decision logging | docs/decisions.md | Session folder decision-log.json |
+| Push protection | None | Hook blocks unreviewed pushes |
 
 ## Prerequisites
 
-This plugin orchestrates the following superpowers skills. If any are unavailable, the corresponding phase will operate without skill-specific guidance:
+### /dev prerequisites
+Superpowers skills (optional — phases degrade gracefully if unavailable):
 - `superpowers:brainstorming` (Phase 2)
 - `superpowers:writing-plans` (Phase 3)
 - `superpowers:test-driven-development` (Phase 5)
 - `superpowers:executing-plans` (Phase 5)
 - `superpowers:verification-before-completion` (Phase 6)
 - `superpowers:requesting-code-review` (Phase 6)
+
+### /dev-pipeline prerequisites
+External configuration (must be set up before first use):
+- `~/.claude/autodev/config.json` — pipeline configuration (single source of truth for thresholds, paths, phase skills)
+
+External skills (invoked by config — pipeline degrades if unavailable):
+- `essentials-jira` (Phase 1), `essentials-prime` (Phase 2), `essentials-analyze` (Phase 3), `essentials-execute` (Phase 5)
+
+### Bundled Hooks (auto-registered, no setup needed)
+
+| Hook | Event | What It Does |
+|------|-------|-------------|
+| Chronic pattern loader | SessionStart | Reads patterns file, outputs to session context |
+| Push guard | PreToolUse (git push) | Blocks push if pipeline started but not completed for branch |
+| Test failure capture | PostToolUse (dotnet test) | Logs failed test runs to session folder |
+| State preservation | PreCompact | Serializes pipeline state before context truncation |
+| Session cleanup | SessionEnd | Cleans temp files, marks interrupted pipelines |

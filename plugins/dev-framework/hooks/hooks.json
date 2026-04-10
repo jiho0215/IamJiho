@@ -1,0 +1,57 @@
+{
+  "description": "Dev-pipeline harness: pattern loading, push guard, test capture, session lifecycle, state preservation",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [{
+          "type": "command",
+          "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/load-chronic-patterns.sh",
+          "timeout": 3
+        }]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [{
+          "type": "command",
+          "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/push-guard.sh",
+          "if": "Bash(git push *)",
+          "timeout": 5
+        }]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [{
+          "type": "command",
+          "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/test-failure-capture.sh",
+          "if": "Bash(dotnet test *)",
+          "timeout": 1
+        }]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "*",
+        "hooks": [{
+          "type": "command",
+          "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/precompact.sh",
+          "timeout": 1
+        }]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "*",
+        "hooks": [{
+          "type": "command",
+          "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/sessionend.sh",
+          "timeout": 2
+        }]
+      }
+    ]
+  }
+}

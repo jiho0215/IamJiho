@@ -1,7 +1,7 @@
 {
   "name": "dev-framework",
-  "description": "Language-agnostic development framework with multi-agent consensus cycle. Single /dev entry point for rigorous TDD, 90%+ coverage, Result<T> pattern, early exit, observability, and performance budgets.",
-  "version": "1.0.0",
+  "description": "Language-agnostic development framework with multi-agent consensus cycle and autonomous dev pipeline. Commands: /dev (interactive 7-phase), /dev-pipeline (autonomous 10-phase with cross-session learning).",
+  "version": "1.1.0",
   "author": {
     "name": "Jiho Lee",
     "email": "ianjiholee@gmail.com"
@@ -9,5 +9,6 @@
   "homepage": "https://github.com/jiho0215/IamJiho",
   "repository": "https://github.com/jiho0215/IamJiho",
   "license": "MIT",
-  "keywords": ["development", "tdd", "code-review", "multi-agent", "consensus", "testing", "observability", "documentation"]
+  "hooks": "./hooks/hooks.json",
+  "keywords": ["development", "tdd", "code-review", "multi-agent", "consensus", "testing", "observability", "documentation", "pipeline", "autonomous", "learning"]
 }
