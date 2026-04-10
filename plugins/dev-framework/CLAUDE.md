@@ -55,6 +55,19 @@ External configuration (must be set up before first use):
 External skills (invoked by config — pipeline degrades if unavailable):
 - `essentials-jira` (Phase 1), `essentials-prime` (Phase 2), `essentials-analyze` (Phase 3), `essentials-execute` (Phase 5)
 
+Superpowers skills (optional — phases degrade gracefully if unavailable):
+- `superpowers:brainstorming` (Phase 3 — design exploration)
+- `superpowers:writing-plans` (Phase 3 — structured plan creation)
+- `superpowers:test-driven-development` (Phase 4, 7 — TDD methodology)
+- `superpowers:executing-plans` (Phase 5 — sequential plan execution)
+- `superpowers:subagent-driven-development` (Phase 5 — parallel task dispatch)
+- `superpowers:dispatching-parallel-agents` (Phase 5 — independent subtask parallelization)
+- `superpowers:requesting-code-review` (Phase 6 — structured review request)
+- `superpowers:receiving-code-review` (Phase 6, 8 — rigorous feedback evaluation)
+- `superpowers:verification-before-completion` (Phase 10 — evidence before claims)
+- `superpowers:finishing-a-development-branch` (Phase 10 — commit/push/PR options)
+- `superpowers:systematic-debugging` (any failure — root cause investigation)
+
 ### Bundled Hooks (auto-registered, no setup needed)
 
 | Hook | Event | What It Does |
