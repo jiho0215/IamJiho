@@ -1,10 +1,10 @@
 #!/bin/bash
-# phase-gate.sh — Phase boundary validation for dev-pipeline
+# phase-gate.sh — Phase boundary validation for the unified /dev workflow.
 # Called by SKILL.md at the start and end of each phase.
 # Validates progress-log.json state and blocks (exit 2) on failure.
 #
 # Usage:
-#   bash phase-gate.sh verify          — check progress-log.json exists and is valid (Pre-Pipeline)
+#   bash phase-gate.sh verify          — check progress-log.json exists and is valid (Pre-Workflow)
 #   bash phase-gate.sh begin <phase>   — validate prerequisites before phase starts
 #   bash phase-gate.sh end <phase>     — validate progress map was updated after phase
 #
@@ -40,8 +40,8 @@ if [ "$ACTION" != "verify" ]; then
         echo "PHASE GATE ERROR: Usage: phase-gate.sh begin|end <phase-number>"
         exit 2
     fi
-    if ! [[ "$PHASE" =~ ^[0-9]+$ ]] || [ "$PHASE" -lt 1 ] || [ "$PHASE" -gt 10 ]; then
-        echo "PHASE GATE ERROR: Phase must be 1-10, got '$PHASE'"
+    if ! [[ "$PHASE" =~ ^[0-9]+$ ]] || [ "$PHASE" -lt 1 ] || [ "$PHASE" -gt 7 ]; then
+        echo "PHASE GATE ERROR: Phase must be 1-7, got '$PHASE'"
         exit 2
     fi
 fi
@@ -64,6 +64,7 @@ sanitize_branch() {
 
 # --- Resolve session directory ---
 SESSIONS_DIR=$(cfg '.paths.sessionsDir' "$HOME/.claude/autodev/sessions")
+SESSIONS_DIR="${SESSIONS_DIR/#\~/$HOME}"
 
 BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null || echo "unknown")
 REPO=$(basename "$(git remote get-url origin 2>/dev/null \
@@ -77,31 +78,28 @@ SESSION_NAME="${SESSION_NAME/\{branch\}/$SANITIZED_BRANCH}"
 SESSION_DIR="$SESSIONS_DIR/$SESSION_NAME"
 PROGRESS_LOG="$SESSION_DIR/progress-log.json"
 
-# --- Phase name lookup ---
+# --- Phase name lookup (unified /dev 7-phase workflow) ---
 phase_name() {
   case "$1" in
-    1)  echo "Requirements Gathering" ;;
-    2)  echo "Codebase Exploration" ;;
-    3)  echo "Plan & Review" ;;
-    4)  echo "TDD Plan" ;;
-    5)  echo "Implementation" ;;
-    6)  echo "Post-Implementation Review" ;;
-    7)  echo "Test Coverage Fill" ;;
-    8)  echo "Final Review" ;;
-    9)  echo "Mistake Capture" ;;
-    10) echo "Human Gate" ;;
-    *)  echo "Unknown" ;;
+    1) echo "Requirements" ;;
+    2) echo "Research" ;;
+    3) echo "Plan + Freeze Doc (GATE 1)" ;;
+    4) echo "Test Planning" ;;
+    5) echo "Implementation + Layer 1 Review" ;;
+    6) echo "Verification + Layer 2 Review" ;;
+    7) echo "Documentation + Mistake Capture (GATE 2)" ;;
+    *) echo "Unknown" ;;
   esac
 }
 
 # =============================================
-# VERIFY — check progress-log.json exists and is valid (Pre-Pipeline only)
+# VERIFY — check progress-log.json exists and is valid (Pre-Workflow only)
 # =============================================
 if [ "$ACTION" = "verify" ]; then
     if [ ! -f "$PROGRESS_LOG" ]; then
         echo "PHASE GATE FAILED [verify]"
         echo "  progress-log.json does not exist at: $PROGRESS_LOG"
-        echo "  Pre-Pipeline must initialize session files first."
+        echo "  Pre-Workflow must initialize session files first."
         exit 2
     fi
     if ! jq empty "$PROGRESS_LOG" 2>/dev/null; then
@@ -133,8 +131,8 @@ if [ "$ACTION" = "begin" ]; then
         if [ "$PHASE" -eq 1 ]; then
             echo "PHASE GATE FAILED [Phase $PHASE: $NAME]"
             echo "  progress-log.json does not exist at: $PROGRESS_LOG"
-            echo "  Pre-Pipeline must initialize session files before Phase 1."
-            echo "  Run the Pre-Pipeline steps first."
+            echo "  Pre-Workflow must initialize session files before Phase 1."
+            echo "  Run the Pre-Workflow steps first."
         else
             echo "PHASE GATE FAILED [Phase $PHASE: $NAME]"
             echo "  progress-log.json not found. Session may be corrupted."
@@ -172,8 +170,8 @@ if [ "$ACTION" = "begin" ]; then
     # --- Check 4: previous phase must be completed/skipped/failed (Phase 2+) ---
     # 'failed' is accepted because --from N resumes past a known failure.
     # 'in-progress' is NOT accepted — indicates a crash that wasn't resolved by
-    # the resume handler. The resume protocol (Pre-Pipeline step 7) must resolve
-    # mid-phase crashes before gates run.
+    # the resume handler. The resume protocol (see references/autonomous/session-management.md
+    # § Resume Protocol) must resolve mid-phase crashes before gates run.
     if [ "$PHASE" -gt 1 ]; then
         PREV=$((PHASE - 1))
         PREV_STATUS=$(jq -r ".phases[] | select(.phase == $PREV) | .status // \"missing\"" "$PROGRESS_LOG" 2>/dev/null)
@@ -190,7 +188,7 @@ if [ "$ACTION" = "begin" ]; then
             echo "PHASE GATE FAILED [Phase $PHASE: $NAME]"
             echo "  Phase $PREV ($(phase_name "$PREV")) status is '$PREV_STATUS', expected one of: $VALID_PREV."
             echo "  Complete or resolve Phase $PREV before starting Phase $PHASE."
-            echo "  If resuming after a crash, ensure the resume handler (Pre-Pipeline step 7) resolved the state."
+            echo "  If resuming after a crash, ensure the resume protocol (references/autonomous/session-management.md § Resume Protocol) resolved the state."
             exit 2
         fi
 

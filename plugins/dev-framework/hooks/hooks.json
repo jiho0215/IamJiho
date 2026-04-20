@@ -1,5 +1,5 @@
 {
-  "description": "Dev-pipeline harness: pattern loading, push guard, test capture, session lifecycle, state preservation",
+  "description": "Dev-framework harness: config bootstrap, pattern loading, freeze-doc gate, push guard, test capture, session lifecycle, state preservation",
   "hooks": {
     "SessionStart": [
       {
@@ -12,6 +12,14 @@
       }
     ],
     "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [{
+          "type": "command",
+          "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/freeze-gate.sh",
+          "timeout": 3
+        }]
+      },
       {
         "matcher": "Bash",
         "hooks": [{

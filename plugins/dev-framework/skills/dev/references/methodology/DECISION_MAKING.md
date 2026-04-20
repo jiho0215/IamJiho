@@ -1,6 +1,6 @@
 # Decision Making — Issue Validity & ADR Lifecycle
 
-The full multi-agent consensus protocol is defined in the `dev-framework:multi-agent-consensus` skill. This document covers supplementary guidance: issue validity criteria and ADR lifecycle rules.
+The full multi-agent consensus protocol lives in `references/protocols/multi-agent-consensus.md` (read via the Read tool; not a Skill tool call). This document covers supplementary guidance: issue validity criteria and ADR lifecycle rules.
 
 ## Issue Validity Criteria
 
@@ -18,7 +18,7 @@ An issue is **invalid** if it:
 
 **Non-convergence:** If the consensus protocol does not converge within `max_iterations`, escalate to the user with the remaining issues, what was tried, and why it didn't converge. The user decides: accept current state, provide guidance, or extend the loop.
 
-**Mandatory re-validation:** Fixing issues without re-dispatching agents does not count toward convergence. See the "Critical Rule — Never Short-Circuit the Loop" section in the `dev-framework:multi-agent-consensus` SKILL.md.
+**Mandatory re-validation:** Fixing issues without re-dispatching agents does not count toward convergence. See the "Critical Rule — Never Short-Circuit the Loop" section in `references/protocols/multi-agent-consensus.md`.
 
 ## Architecture Decision Records (ADRs)
 

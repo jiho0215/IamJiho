@@ -1,7 +1,7 @@
 {
   "name": "dev-framework",
-  "description": "Language-agnostic development framework with multi-agent consensus cycle and autonomous dev pipeline. Commands: /dev (interactive 7-phase), /dev-pipeline (autonomous 10-phase with cross-session learning).",
-  "version": "1.1.0",
+  "description": "Single-purpose AI-led development framework. One command /dev with interactive (default) and autonomous (--autonomous TICKET) modes. 7-phase full cycle with multi-agent consensus reviews, freeze-doc-enforced research/execution boundary, and two user approval gates. Also supports /dev init, review, test, docs, --status, --from N.",
+  "version": "2.0.0",
   "author": {
     "name": "Jiho Lee",
     "email": "ianjiholee@gmail.com"

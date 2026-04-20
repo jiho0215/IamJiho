@@ -26,6 +26,7 @@ sanitize_branch() {
 
 TEST_CMD=$(cfg '.hooks.testCapture.testCommand' 'dotnet test')
 SESSIONS_DIR=$(cfg '.paths.sessionsDir' "$HOME/.claude/autodev/sessions")
+SESSIONS_DIR="${SESSIONS_DIR/#\~/$HOME}"
 
 INPUT=$(cat)
 COMMAND=$(echo "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null)
@@ -44,12 +45,22 @@ if [ "$EXIT_CODE" != "0" ]; then
     SESSION_FORMAT=$(cfg '.sessionFolderFormat' '{repo}--{branch}')
     SESSION_NAME="${SESSION_FORMAT/\{repo\}/$REPO}"
     SESSION_NAME="${SESSION_NAME/\{branch\}/$SANITIZED_BRANCH}"
-    LOG="$SESSIONS_DIR/$SESSION_NAME/test-failures.log"
+    SESSION_DIR="$SESSIONS_DIR/$SESSION_NAME"
+    LOG="$SESSION_DIR/test-failures.log"
+    PROGRESS_LOG="$SESSION_DIR/progress-log.json"
+
+    # Correlate with the current run: pull runId and currentPhase if available.
+    RUN_ID="unknown"
+    CURRENT_PHASE="unknown"
+    if [ -f "$PROGRESS_LOG" ]; then
+        RUN_ID=$(jq -r '.runId // "unknown"' "$PROGRESS_LOG" 2>/dev/null || echo "unknown")
+        CURRENT_PHASE=$(jq -r '.currentPhase // "unknown"' "$PROGRESS_LOG" 2>/dev/null || echo "unknown")
+    fi
 
     mkdir -p "$(dirname "$LOG")"
     TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
     FIRST_LINE=$(printf '%s' "$COMMAND" | head -1)
-    printf '[%s] FAIL: %s\n' "$TIMESTAMP" "$FIRST_LINE" >> "$LOG"
+    printf '[%s] FAIL runId=%s phase=%s: %s\n' "$TIMESTAMP" "$RUN_ID" "$CURRENT_PHASE" "$FIRST_LINE" >> "$LOG"
 fi
 
 exit 0

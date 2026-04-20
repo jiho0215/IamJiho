@@ -1,89 +1,158 @@
 # Dev Framework Plugin
 
-Language-agnostic development framework with multi-agent consensus cycles.
+Single-purpose plugin for AI-led, end-to-end software development. One command. One skill. One workflow.
 
 ## Core Philosophy
 
-1. Move slow, do it right. Reduce revisits and refactoring.
-2. Full rigor always. 3+ agents per step, discussion loops until zero issues.
-3. Language-agnostic. Works with any tech stack.
-4. Documentation as a first-class artifact.
+1. **One purpose.** AI leads development from requirement to completion. The user answers questions, discusses, confirms at two gates, and completes. Every file in this plugin exists to serve that single workflow.
+2. **Move slow, do it right.** Reduce revisits and refactoring. Multi-agent consensus reviews with 10-iteration / 2-consecutive-zero convergence.
+3. **Research-execution boundary is physical.** Phase 1-3 decisions are frozen in a single freeze doc artifact; src/** edits are blocked by a hook until the user approves at GATE 1; git push is blocked until GATE 2 approval.
+4. **Language-agnostic.** Works with any tech stack. (Exception noted: `test-failure-capture.sh` default is `dotnet test` — override via `config.hooks.testCapture.testCommand`; tracked for correction.)
+5. **Documentation as a first-class artifact.** `project-docs` protocol enforces `docs/` structure before any implementation begins.
+
+## The Workflow
+
+```
+/dev [feature description]        Interactive full cycle (default)
+/dev --autonomous TICKET-123       Autonomous full cycle
+/dev --from N                      Resume at phase N
+/dev --status                      Show current session status
+/dev init                          Initialize a new project
+/dev review                        Standalone review
+/dev test                          Standalone test planning
+/dev docs                          Standalone docs maintenance
+```
+
+Full cycle phases (both modes):
+
+```
+1. Requirements          (populates freeze doc §1, §5, §6)
+2. Research              (populates freeze doc §2-§4, §7, §8)
+3. Plan + Freeze Doc  →  🚪 GATE 1 (interactive approves; autonomous auto-approves with audit)
+[freeze-gate hook ACTIVE — src/** edits blocked unless freeze doc APPROVED]
+4. Test Planning
+5. Implementation + Layer 1 Review (multi-agent consensus, 10 max / 2 zero)
+6. Verification + Coverage Fill + Layer 2 Review (same convergence rules)
+7. Documentation + Mistake Capture  →  🚪 GATE 2 (always interactive)
+[push-guard hook — blocks git push until GATE 2 approved]
+```
 
 ## Plugin Structure
 
-### /dev — Interactive Development (existing)
-- `commands/dev.md` — `/dev` command entry point
-- `skills/dev/SKILL.md` — Core skill with context-aware workflow routing (7 phases)
-- `skills/dev/references/` — Bundled reference documentation (methodology, standards, templates)
+```
+plugins/dev-framework/
+├── CLAUDE.md                  this file
+├── README.md
+├── .claude-plugin/
+├── commands/
+│   └── dev.md                 only command — routes to dev skill
+├── agents/                    six review/plan agents (shared)
+├── hooks/
+│   ├── hooks.json
+│   └── scripts/
+│       ├── ensure-config.sh          config bootstrap (single source of truth)
+│       ├── freeze-gate.sh            block src/** edits unless freeze doc APPROVED
+│       ├── push-guard.sh             block git push until GATE 2
+│       ├── phase-gate.sh             phase boundary validation
+│       ├── phase-progress-validator.sh  independent progress consistency check
+│       ├── load-chronic-patterns.sh  SessionStart: inject mistake patterns
+│       ├── precompact.sh             PreCompact: preserve pipeline state
+│       ├── sessionend.sh             SessionEnd: temp cleanup + interrupted marker
+│       └── test-failure-capture.sh   audit failed test runs
+└── skills/
+    └── dev/                   the only skill
+        ├── SKILL.md
+        └── references/
+            ├── methodology/          DECISION_MAKING, DEVELOPMENT_CYCLE, DOCUMENTATION_STANDARDS, TESTING_STRATEGY
+            ├── standards/            CODE_QUALITY, EARLY_EXIT, ERROR_HANDLING, OBSERVABILITY, PERFORMANCE, RESULT_PATTERN
+            ├── templates/            ADR_TEMPLATE, CODE_REVIEW_CHECKLIST, FEATURE_SPEC_TEMPLATE, FREEZE_DOC_TEMPLATE, TEST_PLAN_TEMPLATE
+            ├── protocols/            internal protocols (multi-agent-consensus, project-docs, test-planning)
+            └── autonomous/           session-management, review-loop-protocol, mistake-tracker-protocol
+```
 
-### /dev-pipeline — Autonomous Pipeline (new)
-- `commands/dev-pipeline.md` — `/dev-pipeline TICKET [--from N] [--status]`
-- `skills/dev-pipeline/SKILL.md` — 10-phase autonomous pipeline with single human gate
-- `skills/dev-pipeline/references/` — Review loop, mistake tracker, session management protocols
-- `hooks/` — Bundled harness enforcement (auto-registered)
+All protocol files are **internal references** read by `SKILL.md` via the Read tool. They are not discoverable as standalone skills and are not exposed to the user.
 
-### Shared
-- `agents/` — 6 specialized review agents (used by both /dev and /dev-pipeline)
-- `skills/multi-agent-consensus/SKILL.md` — Reusable consensus loop (used by both)
+## User Gates
 
-## /dev-pipeline — How It Differs from /dev
+| Gate | Phase | Mode behavior | Physical artifact |
+|---|---|---|---|
+| **GATE 1** — Freeze doc approval | End of Phase 3 | Interactive: user approves by category. Autonomous: auto-approves with audit note. | Freeze doc frontmatter `status: APPROVED` + `approvedAt`/`approvedBy`/`approvalMode`. |
+| **GATE 2** — Final approval | End of Phase 7 | Always user-interactive (both modes). | `pipeline-complete.md` marker in session folder + progress-log `status: completed`. |
 
-| Aspect | /dev | /dev-pipeline |
-|--------|------|---------------|
-| Human gates | Multiple (Phase 3 approval) | One (Phase 10 only) |
-| Review mechanism | Internal agents via consensus | Same agents via consensus |
-| Learning | None | Cross-session mistake tracking |
-| JIRA integration | None | Phase 1 fetches ticket |
-| Decision logging | docs/decisions.md | Session folder decision-log.json |
-| Push protection | None | Hook blocks unreviewed pushes |
+Between the two gates, `freeze-gate.sh` blocks src/** edits; after GATE 2, `push-guard.sh` allows `git push`.
+
+## Execution Question Zones (Phases 4-7)
+
+Four zones govern how the LLM handles questions during execution:
+
+| Zone | Description | Behavior |
+|---|---|---|
+| 🛑 Frozen | Changes a freeze-doc §1-§8 decision | HALT; request ticket update |
+| ✅ Non-Frozen | In `freezeDoc.nonFrozenAllowList` (observability, railroad, pure-function-composition) | May ask user |
+| 🤔 Ambiguous | Technical, not covered above | 4-tier rule: existing code → follow; reference repo → follow; initial impl → ask; else → self-decide |
+| ⚙️ Self-decide | Pure technical (naming, extraction, internal boundaries) | Decide without asking |
+
+See `skills/dev/references/templates/FREEZE_DOC_TEMPLATE.md` §9 for the full "Ask with Suggestion" format.
+
+## Config
+
+All configuration lives in `~/.claude/autodev/config.json` (single source of truth). Created on first `/dev` invocation via `hooks/scripts/ensure-config.sh`. Every field has a documented fallback in `skills/dev/references/autonomous/session-management.md`.
+
+Key sections:
+- `pipeline.maxReviewIterations` (default 10)
+- `pipeline.consecutiveZerosToExit` (default 2)
+- `pipeline.testCoverageTarget` (default 90)
+- `pipeline.skills.*` — per-phase skill mappings (swap in custom skills as needed)
+- `pipeline.agents.plan`, `pipeline.agents.review` — agent rosters
+- `pipeline.freezeDoc.categories` — 8 categories by default; extend to add custom categories (also drop a template into `~/.claude/autodev/freeze-categories/`)
+- `pipeline.freezeDoc.nonFrozenAllowList` — question-allowed list during execution
+
+## Hooks
+
+| Hook | Event | Purpose |
+|---|---|---|
+| `load-chronic-patterns.sh` | SessionStart | Load recurring-mistake patterns into session context |
+| `freeze-gate.sh` | PreToolUse (Edit\|Write) | Block src/** edits unless freeze doc is APPROVED for this feature on this branch |
+| `push-guard.sh` | PreToolUse (Bash git push) | Block `git push` until `pipeline-complete.md` marker exists (GATE 2 approval) or ticket-scoped bypass is active |
+| `phase-gate.sh` | Called by SKILL.md | Validate progress-log.json at phase boundaries (begin/end). Blocks on failure (exit 2) |
+| `phase-progress-validator.sh` | PostToolUse (phase-gate) | Independent post-gate consistency check (warning-only, exit 0) |
+| `test-failure-capture.sh` | PostToolUse (dotnet test) | Log failed test runs to session folder (audit trail) |
+| `precompact.sh` | PreCompact | Serialize pipeline state before context truncation |
+| `sessionend.sh` | SessionEnd | Clean temp files, mark interrupted pipelines |
 
 ## Prerequisites
 
-### /dev prerequisites
-Superpowers skills (optional — phases degrade gracefully if unavailable):
-- `superpowers:brainstorming` (Phase 2)
-- `superpowers:writing-plans` (Phase 3)
-- `superpowers:test-driven-development` (Phase 5)
-- `superpowers:executing-plans` (Phase 5)
-- `superpowers:verification-before-completion` (Phase 6)
-- `superpowers:requesting-code-review` (Phase 6)
+External skills the default config references. If any are unavailable, the phase that uses them operates without skill-specific guidance (graceful degradation):
 
-### /dev-pipeline prerequisites
-External configuration (auto-created on first run with defaults if absent):
-- `~/.claude/autodev/config.json` — pipeline configuration (single source of truth for thresholds, paths, and skill/agent mappings)
+| Config key | Default |
+|---|---|
+| `pipeline.skills.requirements` | `superpowers:brainstorming` |
+| `pipeline.skills.exploration` | `feature-dev:code-explorer` |
+| `pipeline.skills.architect` | `feature-dev:code-architect` |
+| `pipeline.skills.planning` | `superpowers:writing-plans` |
+| `pipeline.skills.tdd` | `superpowers:test-driven-development` |
+| `pipeline.skills.implementation` | `superpowers:subagent-driven-development` |
+| `pipeline.skills.implementationSequential` | `superpowers:executing-plans` |
+| `pipeline.skills.implementationParallel` | `superpowers:dispatching-parallel-agents` |
+| `pipeline.skills.requestReview` | `superpowers:requesting-code-review` |
+| `pipeline.skills.receiveReview` | `superpowers:receiving-code-review` |
+| `pipeline.skills.verification` | `superpowers:verification-before-completion` |
+| `pipeline.skills.finishing` | `superpowers:finishing-a-development-branch` |
+| `pipeline.skills.debugging` | `superpowers:systematic-debugging` |
 
-All default skills are Anthropic official — zero external dependencies. Each skill is configurable via `config.pipeline.skills.*` and agents via `config.pipeline.agents.*`. Override any mapping in config.json to swap in custom skills.
+Override any mapping in `~/.claude/autodev/config.json` to swap in custom skills.
 
-Default skill mappings (see `references/session-management.md` for full config schema):
+## Session State
 
-| Config Key | Default | Phase |
-|------------|---------|-------|
-| `skills.requirements` | `superpowers:brainstorming` | 1 |
-| `skills.exploration` | `feature-dev:code-explorer` | 2 |
-| `skills.architect` | `feature-dev:code-architect` | 3 |
-| `skills.consensus` | `dev-framework:multi-agent-consensus` | 3, 6, 8 |
-| `skills.planning` | `superpowers:writing-plans` | 3 |
-| `skills.tdd` | `superpowers:test-driven-development` | 4, 7 |
-| `skills.testPlanning` | `dev-framework:test-planning` | 4 |
-| `skills.implementation` | `superpowers:subagent-driven-development` | 5 |
-| `skills.implementationSequential` | `superpowers:executing-plans` | 5 |
-| `skills.implementationParallel` | `superpowers:dispatching-parallel-agents` | 5 |
-| `skills.requestReview` | `superpowers:requesting-code-review` | 6 |
-| `skills.receiveReview` | `superpowers:receiving-code-review` | 6, 8 |
-| `skills.verification` | `superpowers:verification-before-completion` | 10 |
-| `skills.finishing` | `superpowers:finishing-a-development-branch` | 10 |
-| `skills.debugging` | `superpowers:systematic-debugging` | Any failure |
-| `agents.plan` | `[requirements-analyst, architect, test-strategist]` | 3 |
-| `agents.review` | `[code-quality-reviewer, performance-reviewer, observability-reviewer]` | 6, 8 |
+Per-repo-branch session folders at `~/.claude/autodev/sessions/{repo}--{branch}/`:
 
-### Bundled Hooks (auto-registered, no setup needed)
-
-| Hook | Event | What It Does |
-|------|-------|-------------|
-| Chronic pattern loader | SessionStart | Reads patterns file, outputs to session context |
-| Push guard | PreToolUse (git push) | Blocks push if pipeline started but not completed for branch |
-| Test failure capture | PostToolUse (dotnet test) | Logs failed test runs to session folder |
-| **Phase gate** | **Called by SKILL.md** | **Validates progress map at phase boundaries (begin/end). Blocks on failure (exit 2)** |
-| **Progress validator** | **PostToolUse (phase-gate.sh)** | **Independent post-gate validation of progress-log.json consistency** |
-| State preservation | PreCompact | Serializes pipeline state before context truncation |
-| Session cleanup | SessionEnd | Cleans temp files, marks interrupted pipelines |
+| File | Purpose |
+|---|---|
+| `progress-log.json` + `.md` | Phase timing, metrics, status; includes `mode` (full-cycle, review, test, docs, init), `freezeDocPath`, `plannedFiles`, `featureSlug` |
+| `decision-log.json` + `.md` | Every decision with reasoning |
+| `pipeline-issues.json` | Review findings per phase |
+| `tdd-plan.md` | Phase 4 output |
+| `pipeline-complete.md` | GATE 2 marker (authorizes push) |
+| `bypass.json` | Ticket-scoped freeze-gate override (live during session; deleted at GATE 2) |
+| `bypass-audit.jsonl` | Durable bypass audit trail (written by `sessionend.sh` on crash/interrupt; merged into freeze doc `bypassHistory` at GATE 2, filtered by `runId`) |
+| `test-failures.log` | Test failure audit trail (hook-written) |

@@ -1,5 +1,11 @@
 # Dev Framework Plugin
 
+> **⚠️ Notice — README is pending update to v2.0.0 (consolidated workflow).**
+>
+> As of v2.0.0, this plugin has been restructured: `/dev-pipeline` is removed and `/dev` is the single command (with `--autonomous TICKET` for the former pipeline behavior). The workflow has 7 phases (not 10) with two user gates (freeze doc approval at Phase 3, final approval at Phase 7). Review iterations default to 10 (not 5) with 2 consecutive zero-issue rounds for early exit. See **[CLAUDE.md](./CLAUDE.md)** for the current plugin structure and [skills/dev/SKILL.md](./skills/dev/SKILL.md) for the authoritative workflow definition. The content below is v1.0.0 and is being rewritten.
+
+---
+
 A language-agnostic development framework with multi-agent consensus cycles for Claude Code. Every phase dispatches 3+ specialized agents in parallel, runs consensus discussion rounds, and resolves issues until zero remain.
 
 ## Overview
@@ -82,11 +88,11 @@ Asks clarifying questions one at a time, then dispatches `requirements-analyst`,
 
 **Output**: Validated requirements document written to `docs/specs/[feature]-requirements.md`.
 
-### Phase 2: Architecture (Interactive)
+### Phase 2: Research — Codebase + Architecture (Interactive)
 
 **Goal**: Design architecture with trade-off analysis and ADRs.
 
-Runs the same 3 agents on architecture design. Integrates with `superpowers:brainstorming` for design exploration when available, or enumerates 2-3 alternatives inline.
+Runs 3 agents on codebase exploration and architecture design. Invokes `feature-dev:code-explorer` to trace execution paths, map architecture layers, and identify existing conventions, then `feature-dev:code-architect` to design the feature architecture based on exploration findings. Populates freeze doc §2 (API Contracts), §3 (3rd Party), §4 (Data), §7 (Security), §8 (Performance).
 
 **Output**: Architecture Decision Records written to `docs/adr/ADR-NNN-[title].md`.
 
@@ -205,14 +211,20 @@ Scans for undocumented decisions, updates ADRs, specs, and test plans.
 
 ## Prerequisites
 
-The full development cycle integrates with these superpowers skills when available. If any are unavailable, the corresponding phase operates with inline alternatives:
+The full development cycle integrates with a set of external skills that the pipeline invokes through config keys. All are optional — if any is unavailable, the corresponding phase operates with inline alternatives (graceful degradation).
 
-- `superpowers:brainstorming` (Phase 2 -- design exploration)
-- `superpowers:writing-plans` (Phase 3 -- structured plan creation)
-- `superpowers:test-driven-development` (Phase 5 -- TDD workflow)
-- `superpowers:executing-plans` (Phase 5 -- plan execution)
-- `superpowers:verification-before-completion` (Phase 6 -- acceptance criteria verification)
-- `superpowers:requesting-code-review` (Phase 6 -- code review)
+The authoritative list with config keys and defaults is in **[CLAUDE.md — Prerequisites](./CLAUDE.md)** (the `Prerequisites` section maps each `pipeline.skills.*` key to its default skill). Summary of phases that integrate external skills:
+
+- Phase 1 (Requirements): `pipeline.skills.requirements`
+- Phase 2 (Research): `pipeline.skills.exploration`, `pipeline.skills.architect`
+- Phase 3 (Plan + Freeze Doc): `pipeline.skills.planning`
+- Phase 4 (Test Planning): `pipeline.skills.tdd`
+- Phase 5 (Implementation + Layer 1 Review): `pipeline.skills.implementation` (or `implementationSequential`/`implementationParallel`), `pipeline.skills.requestReview`, `pipeline.skills.receiveReview`
+- Phase 6 (Verification + Layer 2 Review): `pipeline.skills.verification`, same review skills as Phase 5
+- Phase 7 (Documentation + Mistake Capture → GATE 2): `pipeline.skills.finishing`
+- Any phase failure: `pipeline.skills.debugging`
+
+Override any mapping in `~/.claude/autodev/config.json`.
 
 ## Troubleshooting
 
@@ -236,7 +248,7 @@ The full development cycle integrates with these superpowers skills when availab
 
 ### Consensus loop does not converge
 
-**Issue**: Agents cannot reach agreement within 5 iterations.
+**Issue**: Agents cannot reach agreement within the review iteration cap (v2.0.0 default: 10 iterations with early exit on 2 consecutive zero-issue rounds).
 
 **Solution**: Unresolved issues are escalated to you automatically. Review the competing perspectives, make a decision, and the workflow continues. This is by design -- some decisions require human judgment.
 
@@ -254,7 +266,7 @@ The full development cycle integrates with these superpowers skills when availab
 
 ## Version
 
-1.0.0
+2.0.0
 
 ## Author
 

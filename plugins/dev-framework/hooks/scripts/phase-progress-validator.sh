@@ -43,6 +43,7 @@ sanitize_branch() {
 
 # --- Resolve session directory ---
 SESSIONS_DIR=$(cfg '.paths.sessionsDir' "$HOME/.claude/autodev/sessions")
+SESSIONS_DIR="${SESSIONS_DIR/#\~/$HOME}"
 BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null || echo "unknown")
 REPO=$(basename "$(git remote get-url origin 2>/dev/null \
     || git rev-parse --show-toplevel 2>/dev/null \
