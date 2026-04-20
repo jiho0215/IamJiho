@@ -46,6 +46,38 @@ Every request gets a **correlation ID** that flows through all components:
 - Message queue operations
 - Significant business operations
 
+#### Correlation IDs across async boundaries
+
+Ambient-context mechanisms for correlation IDs — `AsyncLocal<T>` in .NET, `ContextVar` in Python,
+`AsyncLocalStorage` in Node — **do not survive queue hand-offs**. The HTTP request's async root
+and a `BackgroundService` / queue consumer's async root are distinct; whatever context you pushed
+during the request disappears when the consumer picks up the work.
+
+The failure mode is silent: logs simply omit the correlation ID, and end-to-end traces break
+exactly where they're most useful (the async task that actually did the work).
+
+**Rule:** When work crosses an async boundary, carry the correlation ID explicitly on the payload
+AND re-push it into the logging context at the consumer entry point.
+
+```
+# Producer (inside HTTP request)
+queueItem.correlationId = currentRequest.correlationId  // explicit payload field
+queue.enqueue(queueItem)
+
+# Consumer (BackgroundService, message handler, job runner)
+item = queue.dequeue()
+with logContext.push("correlationId", item.correlationId ?? "bg-" + uuid()):
+    # all downstream logs inherit the correlation ID automatically
+    await process(item)
+```
+
+**Fallback when there's no originating request** (scheduled job, retry resubmission, startup task):
+generate a distinguishable ID such as `bg-{uuid}` so the event is still traceable and filterable.
+
+This rule applies to: message queues, `Channel<T>` / bounded queues, `BackgroundService`,
+scheduled jobs, cross-process calls (gRPC metadata, Service Bus `ApplicationProperties` or
+native `CorrelationId`), and any fire-and-forget dispatch.
+
 ### 3. Metrics
 
 Capture quantitative data about system behavior:
