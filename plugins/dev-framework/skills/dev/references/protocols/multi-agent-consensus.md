@@ -1,14 +1,10 @@
----
-name: multi-agent-consensus
-version: 1.0.0
-description: "Reusable multi-agent consensus protocol for any task requiring high-quality, validated outcomes. Use this skill whenever the dev-framework needs parallel agent review, planning, implementation, or validation with iterative convergence. Invoke for code reviews, architecture decisions, testing strategies, or any task where multiple independent perspectives improve quality. Also use when the user mentions 'consensus', 'multi-agent review', 'iterate until zero issues', or wants N agents to independently work on the same problem and converge."
----
-
 # Multi-Agent Consensus Protocol
 
-A standalone, reusable protocol for running N agents in parallel on any task, then converging to the best solution through structured discussion and iterative validation.
+> Internal reference for `skills/dev/SKILL.md`. Invoked by reading this file, not via the Skill tool.
 
-This skill is the engine behind the dev-framework's quality guarantees. It works the same way whether you're reviewing requirements, designing architecture, validating code, or resolving issues.
+A reusable protocol for running N agents in parallel on any task, then converging to the best solution through structured discussion and iterative validation.
+
+This is the engine behind the dev-framework's quality guarantees. It works the same way whether reviewing requirements, designing architecture, validating code, or resolving issues.
 
 ## Why This Works
 
@@ -222,9 +218,9 @@ Every invocation produces a structured report:
 
 ## Integration Notes
 
-This skill is invoked by the `dev` skill's SKILL.md in every phase that uses the "Multi-Agent Consensus Protocol". The dev skill provides the specific agents, context, and parameters — this skill provides the protocol mechanics.
+This protocol is read (via the Read tool) by `skills/dev/SKILL.md` in every phase that uses multi-agent consensus. The orchestrator provides the specific agents, context, and parameters — this file provides the protocol mechanics.
 
-When a consensus round resolves a significant decision, the caller should invoke the `project-docs` skill to log it in the project's `docs/decisions.md`.
+When a consensus round resolves a significant decision, the orchestrator should follow `references/protocols/project-docs.md` to log it in `docs/decisions.md`.
 
 ## Discussion Quality Guidelines
 

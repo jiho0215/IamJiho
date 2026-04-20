@@ -1,12 +1,8 @@
----
-name: project-docs
-version: 1.0.0
-description: "Enforce, maintain, and refactor project documentation in every repository. Use this skill whenever the dev-framework interacts with a repository — before ANY implementation work, verify docs/ exists with adr/, specs/, test-plans/, and a decisions log. If missing, scaffold it. Also analyzes existing docs for staleness, redundancy, bloat, and accuracy drift, then refactors to keep documentation concise, small, and organized. Use when the user says 'update docs', 'clean up docs', 'refactor docs', 'document this decision', 'add ADR', or any documentation-related request. This is a prerequisite skill that other dev-framework skills depend on."
----
+# Project Documentation Structure
 
-# Project Documentation Structure — `project-docs`
+> Internal reference for `skills/dev/SKILL.md`. Invoked by reading this file, not via the Skill tool.
 
-Every repository the dev-framework touches requires a documentation home. This skill ensures that home exists, is well-organized, and stays current. Documentation is a first-class artifact — not an afterthought.
+Every repository the dev-framework touches requires a documentation home. This protocol ensures that home exists, is well-organized, and stays current. Documentation is a first-class artifact — not an afterthought.
 
 ## Why This Matters
 
@@ -77,11 +73,12 @@ Create empty directories. These get populated during the full development cycle 
 
 ## When to Update Documentation
 
-- **Before implementation**: Verify structure exists (this skill)
+- **Before implementation**: Verify structure exists (this protocol)
 - **During Phase 1 (Requirements)**: Write to `docs/specs/`
-- **During Phase 2 (Architecture)**: Write to `docs/adr/`
-- **During Phase 4 (Testing Strategy)**: Write to `docs/test-plans/`
-- **During Phase 7 (Documentation)**: Update all of the above
+- **During Phase 2 (Research — Codebase + Architecture)**: Write to `docs/adr/`
+- **During Phase 3 (Plan + Freeze Doc)**: Write freeze doc to `docs/specs/[feature-slug]-freeze.md`
+- **During Phase 4 (Test Planning)**: Write to `docs/test-plans/`
+- **During Phase 7 (Documentation + Mistake Capture)**: Update all of the above
 - **Any time a decision is made**: Append to `docs/decisions.md`
 - **User requests a change**: Log it in `docs/decisions.md` with "User decision" priority
 
@@ -141,8 +138,8 @@ After a hygiene pass, briefly report what changed:
 - **No changes needed**: [if everything is clean]
 ```
 
-## Integration with Other Skills
+## Integration with Other Protocols
 
-This skill is invoked automatically by the `dev` skill at the start of every workflow. Other skills can also invoke it directly when they need to verify or update documentation.
+This protocol is read by `skills/dev/SKILL.md` at the start of every workflow (and on demand when other phases need to verify or update documentation). It is not a Skill-tool-callable skill; invoke via the Read tool.
 
-When the `multi-agent-consensus` skill resolves an issue, the resolution should be logged in `docs/decisions.md` if it represents a meaningful project decision.
+When the `multi-agent-consensus` protocol (see `references/protocols/multi-agent-consensus.md`) resolves an issue, the resolution should be logged in `docs/decisions.md` if it represents a meaningful project decision.

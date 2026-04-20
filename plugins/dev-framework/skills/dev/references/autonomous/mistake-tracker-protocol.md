@@ -1,16 +1,16 @@
 # Mistake Tracker Protocol
 
-Cross-session learning system. Phase 9 aggregates review findings into reusable patterns that prevent the same mistakes in future runs.
+Cross-session learning system. Invoked during the `/dev` full-cycle workflow at Phase 7, which aggregates review findings into reusable patterns that prevent the same mistakes in future runs.
 
-## Phase 3 vs Phase 6/8 Issue Separation
+## Issue Source Separation (design vs code issues)
 
-Phase 3 finds **design issues** (plan gaps). Phase 6 and 8 find **code issues** (bugs, convention violations). Phase 9 aggregates only **Phase 6 and Phase 8 issues**. Phase 3 issues are logged for audit but do NOT feed the pattern tracker.
+Phase 3 finds **design issues** (plan gaps). Phase 5 (Layer 1 review) and Phase 6 (Layer 2 review) find **code issues** (bugs, convention violations). The mistake-tracker aggregates only **Phase 5 and Phase 6 code issues**. Phase 3 design issues are logged for audit but do NOT feed the pattern tracker.
 
 ## Pattern Matching Algorithm
 
-Phase 9 matches specific findings to generic patterns. Matching is LLM-driven (not string comparison):
+The mistake-tracker matches specific findings to generic patterns. Matching is LLM-driven (not string comparison):
 
-1. For each issue from Phase 6/8, compare against all Known/Chronic patterns
+1. For each code issue from Phase 5/6, compare against all Known/Chronic patterns
 2. **Match criteria:** Same category AND same root cause (strip file-specific details)
 3. If match found: increment that pattern's frequency
 4. If no match: generalize the issue (remove file/method names), create new pattern with frequency=1
@@ -99,6 +99,6 @@ If Known + Chronic count exceeds config.pipeline.maxActivePatterns:
 
 ## Idempotency
 
-Phase 9 checks the Run Log table before aggregation:
+The mistake-tracker checks the Run Log table before aggregation:
 - If current runId already appears in Run Log → skip aggregation
 - Otherwise → aggregate, then append runId to Run Log after writing

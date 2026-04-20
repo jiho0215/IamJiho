@@ -16,7 +16,9 @@ Each session: `{sessionsDir}/{repo}--{branch}/`
 | `progress-log.json` + `.md` | Phase timing, metrics, status |
 | `pipeline-issues.json` | Review findings per phase |
 | `tdd-plan.md` | Phase 4 output: test strategy |
-| `pipeline-complete.md` | Push guard marker (written by Phase 10) |
+| `pipeline-complete.md` | Push guard marker (written at Phase 7 GATE 2 approval) |
+| `bypass.json` | Ticket-scoped freeze-gate override (active until Phase 7 completion or session end) |
+| `bypass-audit.jsonl` | Durable bypass audit trail (written by sessionend hook when GATE 2 did not run) |
 | `test-failures.log` | Test failure audit trail (written by hook) |
 | `phase-{N}-decisions.jsonl` | Temp file during review iterations (deleted at phase end) |
 
@@ -88,6 +90,8 @@ This is advisory — if cleanup fails, the pipeline continues.
 
 **Resume append caveat:** Append to existing run's phases array by runId. Do not create duplicate run entry.
 
+**Phase 7 GATE 2 idempotency:** the GATE 2 archival sequence (merge bypass records into freeze doc `bypassHistory`, delete `bypass.json`, write `pipeline-complete.md`, finalize `progress-log.json`) is idempotent — dedup by `at` and filter by `runId` protect against double-writes. On `--from 7` after a mid-archival failure, re-run the full sequence; already-written records are skipped by dedup and the sequence reaches a consistent terminal state.
+
 ## JSON Schemas (Inline)
 
 ### decision-log.json
@@ -102,7 +106,7 @@ This is advisory — if cleanup fails, the pipeline continues.
       "id": "D001",
       "timestamp": "2026-04-09T10:35:00Z",
       "phase": 3,
-      "category": "plan|review-fix|pattern|skip|override|resume",
+      "category": "plan|review-fix|pattern|skip|override|resume|autonomous-inference|gate-1|gate-2|bypass",
       "decision": "Short description",
       "reason": "Why this choice",
       "alternatives": [],
@@ -118,13 +122,19 @@ This is advisory — if cleanup fails, the pipeline continues.
 ```json
 {
   "schemaVersion": 1,
+  "mode": "full-cycle",
   "ticket": "CAOS-1234",
+  "featureSlug": "auth-flow",
+  "freezeDocPath": "docs/specs/auth-flow-freeze.md",
+  "plannedFiles": ["src/auth/login.ts", "src/auth/session.ts"],
+  "approvalMode": "interactive",
   "repo": "my-api",
   "branch": "feature/auth-flow",
   "runId": "run-2026-04-09T10-30-00-a3f2",
   "startedAt": "2026-04-09T10:30:00Z",
   "completedAt": null,
-  "status": "in-progress|completed|failed",
+  "interruptedAt": null,
+  "status": "in-progress|completed|failed|interrupted",
   "currentPhase": 5,
   "chronicPatternsLoaded": 3,
   "configSnapshot": {
@@ -135,7 +145,7 @@ This is advisory — if cleanup fails, the pipeline continues.
   "phases": [
     {
       "phase": 1,
-      "name": "JIRA Fetch",
+      "name": "Requirements",
       "startedAt": "...",
       "completedAt": "...",
       "durationSeconds": 25,
@@ -158,12 +168,22 @@ This is advisory — if cleanup fails, the pipeline continues.
 }
 ```
 
-### pipeline-complete.md (Phase 10 marker)
+**Field notes:**
+- `mode` — `"full-cycle"`, `"review"`, `"test"`, `"docs"`, or `"init"`. Hooks (`freeze-gate`, `push-guard`) use this to decide when to enforce gates.
+- `featureSlug` — stable identifier used across artifacts; always set at Phase 1 (autonomous uses it alongside `ticket`).
+- `freezeDocPath` — relative path from repo root to the feature's freeze doc; set at Phase 3 completion.
+- `plannedFiles` — files the plan expects to modify; populated at Phase 3 completion.
+- `approvalMode` — `"interactive"` or `"autonomous"`; records how GATE 1 was satisfied.
+- `interruptedAt` — ISO-8601 UTC timestamp set by `sessionend.sh` when it marks a session's status as `interrupted` (session ended mid-run without completing Phase 7). Null while the session is still active.
+
+### pipeline-complete.md (Phase 7 GATE 2 marker)
 ```
 Pipeline completed for branch: {original git branch name, NOT sanitized}
-Date: {ISO date}
-Ticket: {TICKET}
+Date: {ISO UTC}
+Feature: {feature-slug}
 ```
+
+Only the first line is consumed by `push-guard.sh` (exact-match grep). Subsequent lines are for human/audit reading. For autonomous runs the `Feature:` line may additionally include `Ticket: {ticket}` as a second identifier.
 
 ### runId Format
 `run-{ISO date}T{HH-MM-SS}-{4 hex}` — timestamp + random hex suffix. Generated once at pipeline start, stored in progress-log.json, reused on resume.
@@ -193,10 +213,8 @@ If `~/.claude/autodev/config.json` is missing or a key is absent, use these fall
 | `pipeline.skills.requirements` | `superpowers:brainstorming` |
 | `pipeline.skills.exploration` | `feature-dev:code-explorer` |
 | `pipeline.skills.architect` | `feature-dev:code-architect` |
-| `pipeline.skills.consensus` | `dev-framework:multi-agent-consensus` |
 | `pipeline.skills.planning` | `superpowers:writing-plans` |
 | `pipeline.skills.tdd` | `superpowers:test-driven-development` |
-| `pipeline.skills.testPlanning` | `dev-framework:test-planning` |
 | `pipeline.skills.implementation` | `superpowers:subagent-driven-development` |
 | `pipeline.skills.implementationSequential` | `superpowers:executing-plans` |
 | `pipeline.skills.implementationParallel` | `superpowers:dispatching-parallel-agents` |
@@ -207,3 +225,7 @@ If `~/.claude/autodev/config.json` is missing or a key is absent, use these fall
 | `pipeline.skills.debugging` | `superpowers:systematic-debugging` |
 | `pipeline.agents.plan` | `["requirements-analyst", "architect", "test-strategist"]` |
 | `pipeline.agents.review` | `["code-quality-reviewer", "performance-reviewer", "observability-reviewer"]` |
+| `pipeline.freezeDoc.categories` | `["business-logic", "api-contracts", "third-party", "data", "error-model", "acceptance-criteria", "security", "performance"]` |
+| `pipeline.freezeDoc.nonFrozenAllowList` | `["observability", "railroad-composition", "pure-function-composition"]` |
+
+Note: `pipeline.skills.consensus` and `pipeline.skills.testPlanning` keys from prior versions are removed — multi-agent consensus and test planning are now internal protocols (see `protocols/`), not configurable external skills.

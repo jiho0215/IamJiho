@@ -1,15 +1,8 @@
----
-name: test-planning
-version: 1.0.0
-description: |
-  Generate structured test plans with layered architecture, event-type grouping,
-  and cross-validation patterns. Use when: planning tests for a feature or ticket,
-  user says "plan tests", "test strategy", "TDD plan", or dev-pipeline Phase 4 runs.
----
-
 # Test Planning
 
-Generate a structured, layered test plan for a feature or ticket. Produces a `tdd-plan.md` document with test IDs, dependency chains, event-type grouping, and execution order.
+> Internal reference for `skills/dev/SKILL.md`. Invoked by reading this file, not via the Skill tool.
+
+Generate a structured, layered test plan for a feature. Produces a `tdd-plan.md` document with test IDs, dependency chains, event-type grouping, and execution order.
 
 ## Inputs Required
 
@@ -18,7 +11,7 @@ Before running this skill, you need:
 - **Codebase architecture** — what components exist, how data flows
 - **Implementation plan** — what will be changed/created
 
-If invoked by dev-pipeline, these come from Phase 1-3 artifacts in the session folder.
+When invoked during a `/dev` full cycle, these come from Phase 1-3 artifacts in the session folder.
 
 ---
 

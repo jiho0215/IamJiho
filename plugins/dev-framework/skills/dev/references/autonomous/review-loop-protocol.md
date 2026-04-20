@@ -1,14 +1,14 @@
 # Review Loop Protocol
 
-Reusable iterative review protocol used by Phases 3, 6, and 8 of the dev-pipeline.
+Reusable iterative review protocol used throughout the `/dev` full-cycle workflow.
 
 ## Modes
 
 | Phase | Mode | What's Reviewed |
 |-------|------|-----------------|
-| 3c | Self-review | Implementation plan document |
-| 6 | multi-agent-consensus | Implemented code (post-implementation) |
-| 8 | multi-agent-consensus | Implemented code (final, after test coverage fill) |
+| 3 (self-review) | Self-review | Implementation plan document |
+| 5 (Layer 1) | multi-agent-consensus | Implemented code (post-implementation) |
+| 6 (Layer 2) | multi-agent-consensus | Implemented code (final, after test coverage fill) |
 
 ## Algorithm
 
@@ -20,7 +20,7 @@ iteration = 0
 consecutive_zeros = 0
 issue_log = []
 
-LOAD chronic patterns (use already-loaded CHRONIC_PATTERNS from Pre-Pipeline)
+LOAD chronic patterns (use already-loaded CHRONIC_PATTERNS from Pre-Workflow)
 ADD chronic patterns to REVIEW_FOCUS criteria
 
 WHILE iteration < MAX_ITERATIONS:
@@ -28,7 +28,7 @@ WHILE iteration < MAX_ITERATIONS:
     ANNOUNCE: "--- Review iteration {iteration}/{MAX_ITERATIONS} ---"
 
     IF REVIEW_MODE == "multi-agent-consensus":
-        Invoke dev-framework:multi-agent-consensus with:
+        READ references/protocols/multi-agent-consensus.md and run the protocol with:
           task_type: validate
           agents_list: [code-quality-reviewer, performance-reviewer, observability-reviewer]
           max_iterations: 1  (single consensus round per review iteration)
@@ -89,7 +89,7 @@ RETURN issue_log
 
 ## Anti-Patterns
 
-1. **Rubber-stamping** — Zero issues on iteration 1 is suspicious for plan reviews. In Phase 3c (self-review), if iteration 1 returns zero issues on a new plan, re-review with explicit focus on each criterion. Do not early-exit on iteration 1.
+1. **Rubber-stamping** — Zero issues on iteration 1 is suspicious for plan reviews. In the Phase 3 self-review step, if iteration 1 returns zero issues on a new plan, re-review with explicit focus on each criterion. Do not early-exit on iteration 1.
 2. **Flip-flopping** — Fix A introduces B, fix B re-introduces A. Resolve holistically.
 3. **Category gaming** — Don't downplay `logic` as `style`.
 4. **Scope creep** — Don't add features during fix iterations.
