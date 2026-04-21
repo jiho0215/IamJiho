@@ -47,6 +47,9 @@ plugins/dev-framework/
 ├── commands/
 │   └── dev.md                 only command — routes to dev skill
 ├── agents/                    six review/plan agents (shared)
+├── phases/                    (M3+) phase YAML metadata
+│   ├── README.md                     schema spec
+│   └── phase-1.yaml..phase-7.yaml    metadata per phase
 ├── hooks/
 │   ├── hooks.json
 │   └── scripts/
@@ -58,7 +61,19 @@ plugins/dev-framework/
 │       ├── load-chronic-patterns.sh  SessionStart: inject mistake patterns
 │       ├── precompact.sh             PreCompact: preserve pipeline state
 │       ├── sessionend.sh             SessionEnd: temp cleanup + interrupted marker
-│       └── test-failure-capture.sh   audit failed test runs
+│       ├── test-failure-capture.sh   audit failed test runs
+│       ├── _session-lib.sh           (M1) shared session resolution helpers
+│       ├── emit-event.sh             (M1) append event with atomic seq
+│       ├── get-events.sh             (M1) query events.jsonl
+│       ├── _reducers.sh              (M2) shared reducer helpers
+│       ├── reduce-progress-log.sh    (M2) events → views/progress-log.json
+│       ├── reduce-decision-log.sh    (M2) events → views/decision-log.json
+│       ├── reduce-pipeline-issues.sh (M2) events → views/pipeline-issues.json
+│       ├── regenerate-views.sh       (M2) orchestrate all reducers
+│       ├── wake.sh                   (M2) stateless restart summary
+│       ├── replay.sh                 (M2) seq-level rewind into alt dir
+│       ├── read-phase.sh             (M3) YAML field reader
+│       └── execute.sh                (M3) uniform tool dispatch with auto events
 └── skills/
     └── dev/                   the only skill
         ├── SKILL.md
@@ -67,7 +82,8 @@ plugins/dev-framework/
             ├── standards/            CODE_QUALITY, EARLY_EXIT, ERROR_HANDLING, OBSERVABILITY, PERFORMANCE, RESULT_PATTERN
             ├── templates/            ADR_TEMPLATE, CODE_REVIEW_CHECKLIST, FEATURE_SPEC_TEMPLATE, FREEZE_DOC_TEMPLATE, TEST_PLAN_TEMPLATE
             ├── protocols/            internal protocols (multi-agent-consensus, project-docs, test-planning)
-            └── autonomous/           session-management, review-loop-protocol, mistake-tracker-protocol
+            └── autonomous/           session-management, review-loop-protocol, mistake-tracker-protocol,
+                                      events-schema (M1), views-spec (M2), dispatcher-spec (M3)
 ```
 
 All protocol files are **internal references** read by `SKILL.md` via the Read tool. They are not discoverable as standalone skills and are not exposed to the user.
@@ -99,6 +115,7 @@ See `skills/dev/references/templates/FREEZE_DOC_TEMPLATE.md` §9 for the full "A
 All configuration lives in `~/.claude/autodev/config.json` (single source of truth). Created on first `/dev` invocation via `hooks/scripts/ensure-config.sh`. Every field has a documented fallback in `skills/dev/references/autonomous/session-management.md`.
 
 Key sections:
+- `pipeline.modelProfile` (M3+; default `balanced`) — model capability profile (see below)
 - `pipeline.maxReviewIterations` (default 10)
 - `pipeline.consecutiveZerosToExit` (default 2)
 - `pipeline.testCoverageTarget` (default 90)
@@ -106,6 +123,20 @@ Key sections:
 - `pipeline.agents.plan`, `pipeline.agents.review` — agent rosters
 - `pipeline.freezeDoc.categories` — 8 categories by default; extend to add custom categories (also drop a template into `~/.claude/autodev/freeze-categories/`)
 - `pipeline.freezeDoc.nonFrozenAllowList` — question-allowed list during execution
+
+### Model Profile (M3+)
+
+`config.pipeline.modelProfile` declares the expected model capability so the orchestrator can tune iteration counts and agent fan-out without changing per-value config:
+
+| Value | Review iterations cap | Review agents | Notes |
+|---|---|---|---|
+| `conservative` | 15 | 3 | Older / cheaper models; maximum safety |
+| `balanced` (default) | 10 | 3 | M1/M2 baseline |
+| `trust-model` | `null` (model declares convergence) | `auto` (1 for frontier) | Opus 4.7+ class |
+
+Profile is recorded on every run via `session.started.data.modelProfile`. Event-log retrospection across runs lets us compare quality metrics (post-GATE2 rework, consensus iteration counts, pattern promotion rate) across profiles — this is how we audit "which profile is better for my team?" empirically.
+
+M3 introduces the knob but keeps legacy defaults when unset, so upgrading does not change existing behavior.
 
 ## Hooks
 
