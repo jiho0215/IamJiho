@@ -1,7 +1,7 @@
 ---
 description: Rigorous multi-agent development workflow with consensus cycles for features, reviews, testing, and documentation
 argument-hint: Optional feature description or workflow keyword (review, test, docs)
-allowed-tools: ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "TodoWrite", "AskUserQuestion", "Skill", "Agent", "EnterPlanMode", "ExitPlanMode"]
+allowed-tools: Read, Write, Edit, Glob, Grep, Bash, TodoWrite, AskUserQuestion, Skill, Agent, EnterPlanMode, ExitPlanMode
 ---
 
 # Development Framework
