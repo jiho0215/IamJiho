@@ -178,6 +178,26 @@ Before Phase 1:
 
 After each consensus round or user decision, append to `SESSION_DIR/phase-{N}-decisions.jsonl` (one JSON object per line). At end of each phase, merge JSONL into `decision-log.json` and delete the JSONL. Also call `project-docs` (read the protocol reference) to append significant decisions to `docs/decisions.md`.
 
+### Dispatcher Preamble (per phase, M3+)
+
+Before running any phase body below, read `phases/phase-${N}.yaml` (M3+) and act on its metadata:
+
+1. **Lazy-load refs:** For each entry in `requiredRefs[]`, read that file with the Read tool. Do not eager-load the entire Companion References table — phase YAMLs declare what's actually needed. This replaces the upfront reference table scan.
+2. **Emit entry events:** Execute each emit in `emits.entry[]` via `emit-event.sh`.
+3. **Run begin gates:** Run each script listed in `gates.begin[]` via `execute.sh hook`.
+4. **Consult the narrative:** The phase body below (anchored by `skillMdSection`) contains the actual how-to — prompts, user dialogue, decision logic. The YAML does not duplicate this.
+5. **Invoke** per `invokes[]`:
+   - `kind: hook` — `execute.sh hook <name>` runs to completion synchronously.
+   - `kind: protocol` — `execute.sh protocol <name>` emits load event; you must Read the reference file separately.
+   - `kind: skill` — `execute.sh skill <name>` emits started event and returns a dispatch payload; invoke the actual Skill tool, then call `execute.sh --complete skill <name> --output ...`.
+   - `kind: agent` — same pattern as skill, but via the Task tool.
+6. **Verify produces:** Before running end gates, verify each `produces[]` entry's artifact/section/marker exists.
+7. **Run end gates** and **emit exit events** when the phase body concludes.
+
+Full semantics: [`references/autonomous/dispatcher-spec.md`](./references/autonomous/dispatcher-spec.md). Phase YAML schema: [`../../phases/README.md`](../../phases/README.md).
+
+If a phase YAML is missing (pre-M3 repos), fall back to this file's procedural prose as the single source of truth.
+
 ### Freeze Doc Draft
 
 Start writing `docs/specs/[feature-slug]-freeze.md` during Phase 1. Open in DRAFT status. Each phase populates its assigned categories:
