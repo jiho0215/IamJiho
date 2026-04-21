@@ -10,30 +10,33 @@
 
 set -euo pipefail
 
+# --- Shared helpers (sourced before jq check so emit-event can no-op safely) ---
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./_session-lib.sh
+. "$SCRIPT_DIR/_session-lib.sh"
+
+emit_push_blocked() {
+  local reason="$1"
+  bash "$SCRIPT_DIR/emit-event.sh" gate.blocked --actor "hook:push-guard" \
+    --data "$(jq -cn --arg reason "$reason" '{gate:"push",reason:$reason}' 2>/dev/null || echo '{}')" \
+    2>/dev/null || true
+}
+
+emit_push_passed() {
+  local reason="${1:-}"
+  bash "$SCRIPT_DIR/emit-event.sh" gate.passed --actor "hook:push-guard" \
+    --data "$(jq -cn --arg reason "$reason" '{gate:"push",reason:$reason}' 2>/dev/null || echo '{}')" \
+    2>/dev/null || true
+}
+
 # --- Dependency check (fail safe — block if jq missing) ---
 if ! command -v jq &>/dev/null; then
     echo "BLOCKED: jq required for push-guard. Install jq or use --force to bypass." >&2
+    emit_push_blocked "jq not available"
     exit 2
 fi
 
-# --- Config loading with fallback defaults ---
-CONFIG="$HOME/.claude/autodev/config.json"
-cfg() {
-  if [ -f "$CONFIG" ]; then
-    local val
-    val=$(jq -r "($1) // empty" "$CONFIG" 2>/dev/null)
-    if [ -n "$val" ]; then echo "$val"; else echo "$2"; fi
-  else
-    echo "$2"
-  fi
-}
-
-sanitize_branch() {
-  echo "$1" | sed 's|[/\\:*?"<>|@]|-|g' | sed 's|\.\.*$||' | cut -c1-64
-}
-
-SESSIONS_DIR=$(cfg '.paths.sessionsDir' "$HOME/.claude/autodev/sessions")
-SESSIONS_DIR="${SESSIONS_DIR/#\~/$HOME}"
+CONFIG="$DEVFW_CONFIG"
 
 INPUT=$(cat)
 COMMAND=$(echo "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null)
@@ -44,7 +47,7 @@ echo "$COMMAND" | grep -qE '\bgit\b.*\bpush\b' || exit 0
 
 # Allow force pushes (escape hatch — read flags from config, default --force/-f)
 if [ -f "$CONFIG" ] && jq -e '.hooks.pushGuard.escapeFlags' "$CONFIG" &>/dev/null; then
-    ESCAPE_FLAGS=$(jq -r '.hooks.pushGuard.escapeFlags[]' "$CONFIG" 2>/dev/null)
+    ESCAPE_FLAGS=$(jq -r '.hooks.pushGuard.escapeFlags[]' "$CONFIG" 2>/dev/null | tr -d '\r')
 else
     ESCAPE_FLAGS=$(printf '%s\n' '--force' '-f')
 fi
@@ -53,7 +56,10 @@ while IFS= read -r flag; do
     # Word-boundary match so --force does NOT match --force-if-includes (a safer
     # git flag that should NOT bypass push-guard). Flags are whitespace-separated
     # tokens in the command string.
-    echo " $COMMAND " | grep -qE "([[:space:]])$(printf '%s' "$flag" | sed 's/[.[\*^$()+?{|]/\\&/g')([[:space:]=])" && exit 0
+    if echo " $COMMAND " | grep -qE "([[:space:]])$(printf '%s' "$flag" | sed 's/[.[\*^$()+?{|]/\\&/g')([[:space:]=])"; then
+        emit_push_passed "escape flag present"
+        exit 0
+    fi
 done <<< "$ESCAPE_FLAGS"
 
 # Get branch (handle detached HEAD)
@@ -66,16 +72,7 @@ BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null) || {
     exit 0
 }
 
-# Robust repo name resolution (worktree-safe)
-REPO=$(basename "$(git remote get-url origin 2>/dev/null \
-    || git rev-parse --show-toplevel 2>/dev/null \
-    || pwd)" .git)
-
-SANITIZED_BRANCH=$(sanitize_branch "$BRANCH")
-SESSION_FORMAT=$(cfg '.sessionFolderFormat' '{repo}--{branch}')
-SESSION_NAME="${SESSION_FORMAT/\{repo\}/$REPO}"
-SESSION_NAME="${SESSION_NAME/\{branch\}/$SANITIZED_BRANCH}"
-SESSION_DIR="$SESSIONS_DIR/$SESSION_NAME"
+SESSION_DIR=$(resolve_session_dir)
 MARKER="$SESSION_DIR/pipeline-complete.md"
 BYPASS_FILE="$SESSION_DIR/bypass.json"
 
@@ -87,6 +84,7 @@ fi
 
 # Full-cycle completion marker present and branch matches exactly → allow.
 if [ -f "$MARKER" ] && grep -qxF "Pipeline completed for branch: $BRANCH" "$MARKER" 2>/dev/null; then
+    emit_push_passed "pipeline-complete marker"
     exit 0
 fi
 
@@ -110,20 +108,24 @@ if [ -f "$BYPASS_FILE" ]; then
         if [ -z "$ACTIVE_FEATURE" ]; then
             echo "🛑 BLOCKED: bypass.json has feature '$BYPASS_FEATURE' but session has no featureSlug/ticket recorded." >&2
             echo "   The session may not be fully initialized. Run /dev to initialize, then retry." >&2
+            emit_push_blocked "bypass feature without active session feature"
             exit 2
         fi
         if [ "$BYPASS_FEATURE" = "$ACTIVE_FEATURE" ]; then
-            TS=$(date -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || echo "-")
+            TS=$(iso_utc)
             echo "[$TS] push-guard: ⚠️  ticket-scoped bypass active for '$BYPASS_FEATURE' (reason: $BYPASS_REASON, created: $BYPASS_CREATED) — push allowed under audit trail." >&2
+            emit_push_passed "ticket-scoped bypass active"
             exit 0
         fi
         # Feature mismatch: spec §5.4 — cross-ticket bypass impossible.
         echo "🛑 BLOCKED: bypass.json feature '$BYPASS_FEATURE' does not match active session feature '$ACTIVE_FEATURE'." >&2
         echo "   Cross-ticket bypass is not permitted. Create a new bypass for this feature, or complete GATE 2." >&2
+        emit_push_blocked "cross-ticket bypass not permitted"
         exit 2
     elif [ -n "$BYPASS_FEATURE" ]; then
         echo "🛑 BLOCKED: bypass.json exists but is missing required audit fields (feature, reason, createdAt)." >&2
         echo "   Bypass must be created via 'bypass freeze' in /dev, not manually." >&2
+        emit_push_blocked "bypass missing audit fields"
         exit 2
     fi
 fi
@@ -132,6 +134,7 @@ fi
 # gate push on their completion status. A crashed/interrupted review must not
 # permanently block push on this branch.
 if [ "$MODE" != "full-cycle" ]; then
+    emit_push_passed "non-full-cycle mode ($MODE)"
     exit 0
 fi
 
@@ -140,4 +143,5 @@ echo "   Normal path: complete Phase 7 (GATE 2 approval) of /dev to authorize pu
 echo "   Emergency path: request 'bypass freeze' in /dev to create an audit-trailed bypass." >&2
 echo "   Escape hatch: use --force in your git push command (no audit trail)." >&2
 echo "   Session: $SESSION_DIR" >&2
+emit_push_blocked "full-cycle workflow not completed"
 exit 2
