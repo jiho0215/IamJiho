@@ -64,7 +64,7 @@ Read these internal references into context when the current phase needs them. T
 | `../implement/references/templates/FEATURE_SPEC_TEMPLATE.md` | Phase 1 requirements-section shape |
 | `../implement/references/autonomous/session-management.md` | Session folder resolution helpers |
 | `../implement/references/autonomous/events-schema.md` | Event type catalog and validation rules |
-| `references/autonomous/mistake-tracker-protocol.md` (design variant) | Phase 5 retro (fallback to `../implement/references/autonomous/mistake-tracker-protocol.md` until design variant lands in Phase 5 of the implementation plan) |
+| `references/autonomous/mistake-tracker-protocol.md` (design variant) | Phase 5 retro |
 
 The /implement reference tree is shared by design — these are internal protocols, not user-facing skills, and `/spike` reuses them where semantics match.
 
@@ -290,7 +290,7 @@ After Phase 4, `/spike` is done for this invocation. Tickets are now available f
 Runs after all tickets of the epic reach `merged` status. Triggered explicitly, or auto-proposed when the user invokes `/spike EPIC-ID` on an epic whose tickets are all merged.
 
 1. **Verify prerequisite** — query `ticket-statuses.json` (or fold over `events.jsonl` for `ticket.merged` events by `ticketId`). If any ticket is still `in-impl` or `planned`, exit with: `"retro not ready — N tickets unmerged: [list]"`.
-2. **Read the mistake-tracker-protocol (design variant)** from `references/autonomous/mistake-tracker-protocol.md`. Falls back to `../implement/references/autonomous/mistake-tracker-protocol.md` (code variant) while the design variant is pending. Both have the same shape; only the pattern taxonomy and store path differ.
+2. **Read the mistake-tracker-protocol (design variant)** from `references/autonomous/mistake-tracker-protocol.md` into context. The code variant at `../implement/references/autonomous/mistake-tracker-protocol.md` is structurally similar but targets a different taxonomy and store; do not conflate them.
 3. **Emit `spike.phase.5.started`**.
 4. **Aggregate signals:**
    - `ticket.discovery` events across the epic — raw signals of design mistakes (places where the spike plan was wrong, and `/implement` had to work around it).

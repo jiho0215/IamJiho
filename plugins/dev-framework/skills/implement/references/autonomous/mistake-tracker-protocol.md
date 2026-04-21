@@ -1,6 +1,13 @@
-# Mistake Tracker Protocol
+# Mistake Tracker Protocol — Code Variant
 
-Cross-session learning system. Invoked during the `/implement` full-cycle workflow at Phase 7, which aggregates review findings into reusable patterns that prevent the same mistakes in future runs. This is the **code-pattern** variant. See `skills/spike/references/autonomous/mistake-tracker-protocol.md` for the design-pattern variant invoked by `/spike` Phase 5 retro.
+Cross-session learning system. Invoked during the `/implement` full-cycle workflow at Phase 7, which aggregates review findings into reusable patterns that prevent the same mistakes in future runs. This is the **code-pattern** variant (v4.0+: see also the design variant below).
+
+| Variant | Store | Protocol | Invoked by |
+|---|---|---|---|
+| Code (this file) | `workflow_mistake_patterns.md` (markdown table) | this document | `/implement` Phase 7 |
+| Design | `~/.claude/autodev/chronic-design-patterns.json` (JSON) | [`../../../spike/references/autonomous/mistake-tracker-protocol.md`](../../../spike/references/autonomous/mistake-tracker-protocol.md) | `/spike` Phase 5 retro |
+
+The two variants share state-machine shape (known → chronic → resolved), hard-cap mechanics, and idempotency via run log — but target different stores, taxonomies, and CLAUDE.md sections. A code issue is never a design pattern and vice versa.
 
 ## Issue Source Separation (design vs code issues)
 

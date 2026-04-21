@@ -117,9 +117,11 @@ Records which files the implementation plan intends to touch. Populates `views/p
 
 | Type | Data | Emitted by |
 |---|---|---|
-| `patterns.loaded` | `{count: int, file: string, chronicPatterns: string[]}` | `load-chronic-patterns.sh` SessionStart hook |
-| `patterns.promoted` | `{id: string, pattern: string, frequency: int}` | SKILL.md Phase 7 mistake capture |
-| `patterns.demoted` | `{id: string, pattern: string, reason: string}` | SKILL.md Phase 7 mistake capture |
+| `patterns.loaded` | `{count: int, file: string, domain: "code"\|"design", chronicPatterns: string[]}` | `load-chronic-patterns.sh` SessionStart hook (emits once per domain that has chronic entries) |
+| `patterns.promoted` | `{id: string, pattern: string, frequency: int, domain?: "code"\|"design"}` | `/implement` Phase 7 (code) or `/spike` Phase 5 retro (design) |
+| `patterns.demoted` | `{id: string, pattern: string, reason: string, domain?: "code"\|"design"}` | `/implement` Phase 7 (code) or `/spike` Phase 5 retro (design) |
+
+**Domain discriminator (v4.0+):** `patterns.*` events carry a `domain` field to distinguish the code-pattern store (`~/.claude/autodev/chronic-patterns.json` — actually the markdown `workflow_mistake_patterns.md` for now) from the design-pattern store (`~/.claude/autodev/chronic-design-patterns.json`). Pre-v4.0 events without `domain` are treated as `code` for backward compatibility.
 
 ### `spike.*` — /spike phase and retro lifecycle (v4.0+)
 

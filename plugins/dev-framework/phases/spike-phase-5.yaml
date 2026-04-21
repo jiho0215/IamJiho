@@ -4,11 +4,10 @@ skillMdSection: "Phase 5 — Retro"
 skill: spike
 
 requiredRefs:
-  # Design-variant mistake tracker (forked from /implement's code variant)
-  # lands in Phase 5 of this implementation plan. Until then, the /implement
-  # mistake-tracker-protocol is an acceptable fallback.
+  # Design-variant mistake tracker, forked from /implement's code variant.
+  # Distinct store (~/.claude/autodev/chronic-design-patterns.json) and taxonomy
+  # (architecture / boundary / interface / migration / coupling / scoping / observability).
   - autonomous/mistake-tracker-protocol.md
-  - ../../implement/references/autonomous/mistake-tracker-protocol.md
 
 emits:
   entry:
@@ -49,7 +48,7 @@ userGate: none
 instructions:
   entry:
     - "Verify prerequisite: all tickets of the epic must have status=merged. Query ticket-statuses.json (or events.jsonl for ticket.merged events). If any ticket is unmerged, exit with 'retro not ready — N tickets unmerged'."
-    - "Read the mistake-tracker-protocol — design variant if present under skills/spike/references/autonomous/, else the code variant from /implement (degraded but functional)."
+    - "Read the mistake-tracker-protocol (design variant) at skills/spike/references/autonomous/mistake-tracker-protocol.md."
     - "Emit spike.phase.5.started event."
     - "Run phase-gate.sh begin 5."
   main:

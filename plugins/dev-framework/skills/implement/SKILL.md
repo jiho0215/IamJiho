@@ -103,7 +103,7 @@ bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/emit-event.sh <type> \
 | Pre-Workflow complete | `session.started` | `{mode, featureSlug?, ticket?}` |
 | Pre-Workflow (M2.5+) | `config.snapshot.recorded` | `{maxReviewIterations, consecutiveZerosToExit, testCoverageTarget, modelProfile}` |
 | Phase 3 plan set (M2.5+) | `plan.files.set` | `{phase:3, plannedFiles:[...]}` |
-| Phase 7 chronic promote/demote (M2.5+) | `patterns.promoted` / `patterns.demoted` | `{id, pattern, frequency?, reason?}` |
+| Phase 7 chronic promote/demote (M2.5+) | `patterns.promoted` / `patterns.demoted` | `{id, pattern, frequency?, reason?, domain:"code"}` |
 | Each Phase N begin (after begin gate) | `phase.started` | `{phase:N}` |
 | Each Phase N end (before end gate) | `phase.completed` | `{phase:N, metrics?}` |
 | GATE 1 approval | `gate.approved` | `{gate:1, approvalMode, approvedBy}` |
