@@ -1,0 +1,73 @@
+phase: 2
+name: "System Design (epic architecture + NFR + contracts + migrations)"
+skillMdSection: "Phase 2 — System Design"
+skill: spike
+
+requiredRefs:
+  - templates/SPIKE_PLAN_TEMPLATE.md
+  # ADR template reused from /implement.
+  - ../../implement/references/templates/ADR_TEMPLATE.md
+  - ../../implement/references/methodology/DECISION_MAKING.md
+
+emits:
+  entry:
+    - type: spike.phase.2.started
+      data: "{\"epicId\":\"${epicId}\",\"phase\":2}"
+  exit:
+    - type: spike.phase.2.completed
+      data: "{\"epicId\":\"${epicId}\",\"phase\":2}"
+
+invokes:
+  - kind: skill
+    config: pipeline.skills.architect
+    fallback: inline
+  - kind: protocol
+    name: multi-agent-consensus
+    input:
+      task_type: validate
+      agents_config: pipeline.agents.plan
+      context: "Validate epic architecture coherence: component boundaries are clean, data flow is consistent with requirements, rollout/rollback plan is actually reversible, observability coverage is complete, API contracts match the data model, migration chain is ordered and non-conflicting."
+
+produces:
+  - kind: artifact
+    path: "docs/plan/${epicId}/spike-plan.md"
+  - kind: artifact-optional
+    path: "docs/plan/${epicId}/shared/api-contracts.openapi.yaml"
+  - kind: artifact-optional
+    path: "docs/plan/${epicId}/shared/migrations.md"
+  - kind: spike-plan-sections
+    sections: [2, 3, 4, 5, 6]
+
+gates:
+  begin:
+    - script: phase-gate.sh
+      args: ["begin", "2"]
+  end:
+    - script: phase-gate.sh
+      args: ["end", "2"]
+
+budget:
+  seconds: 900
+
+userGate: none
+
+instructions:
+  entry:
+    - "Read templates/SPIKE_PLAN_TEMPLATE.md, implement/references/templates/ADR_TEMPLATE.md, implement/references/methodology/DECISION_MAKING.md."
+    - "Emit spike.phase.2.started event."
+    - "Run phase-gate.sh begin 2."
+  main:
+    - "Create docs/plan/${epicId}/ folder (mkdir -p). If folder exists with spike-plan.md, prompt user to confirm overwrite or pick a new epicId."
+    - "Instantiate spike-plan.md from templates/SPIKE_PLAN_TEMPLATE.md with frontmatter epicId, status=planning, createdAt=now."
+    - "Write §1 Requirements from Phase 1 working draft."
+    - "Invoke config.pipeline.skills.architect (default: feature-dev:code-architect) to produce §2 Architecture + NFR. Create ADRs under docs/adr/ for cross-ticket decisions."
+    - "Populate §3 Rollout / rollback plan (feature flags, canary stages, rollback procedure, cleanup plan)."
+    - "Populate §4 Observability plan (metrics, logs, traces, dashboards, alerts at epic scope)."
+    - "Populate §5 API contracts — inline for small surfaces, or create docs/plan/${epicId}/shared/api-contracts.openapi.yaml and link."
+    - "Populate §6 Data migration chain — inline for short chains, or create docs/plan/${epicId}/shared/migrations.md and link."
+    - "Run multi-agent-consensus with agents.plan, task_type=validate, focusing on design coherence across §2-§6."
+  exit:
+    - "Append phase entry to progress-log.json with planDocPath set to docs/plan/${epicId}/spike-plan.md."
+    - "Emit spike.phase.2.completed event."
+    - "Run phase-gate.sh end 2."
+    - "Print banner: --- Spike Phase 2 Complete: System Design ---"

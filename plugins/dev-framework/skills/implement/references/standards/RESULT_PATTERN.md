@@ -61,7 +61,7 @@ user = result.value  // Safe to access
 
 ## Language-Specific Implementations
 
-During `/dev init`, the Result type is generated for the project's language:
+During `/implement init`, the Result type is generated for the project's language:
 
 - **TypeScript:** Discriminated union with `type Result<T> = { ok: true; value: T } | { ok: false; error: AppError }`
 - **C#:** `public record Result<T>` with static factory methods `Result<T>.Ok(value)` and `Result<T>.Fail(error)`

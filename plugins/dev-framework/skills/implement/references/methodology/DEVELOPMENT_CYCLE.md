@@ -1,6 +1,6 @@
 # Development Cycle
 
-The development framework enforces a 7-phase cycle for new feature development and significant changes. Standalone review, test analysis, and documentation maintenance use abbreviated workflows (see `skills/dev/SKILL.md` Sections C-E).
+The development framework enforces a 7-phase cycle for new feature development and significant changes (plus Phase 0 prereq check when the ticket is sourced from a `/spike` plan). Standalone review, test analysis, and documentation maintenance use abbreviated workflows (see `skills/implement/SKILL.md` Sections C-E).
 
 This document is a refresher overview. SKILL.md is authoritative — if this document conflicts, defer to SKILL.md.
 

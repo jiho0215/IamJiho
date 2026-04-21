@@ -1,5 +1,5 @@
 #!/bin/bash
-# End-to-end dog-food test: exercise the full M1-M4 stack as if /dev were running
+# End-to-end dog-food test: exercise the full M1-M4 stack as if /implement were running
 # a complete 7-phase cycle. No real Claude calls — we simulate the orchestrator's
 # actions using our primitives and verify events + views + wake all behave.
 set -euo pipefail

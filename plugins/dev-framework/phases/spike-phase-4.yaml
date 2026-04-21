@@ -1,0 +1,68 @@
+phase: 4
+name: "Cross-Ticket Gap Review → Human Signoff"
+skillMdSection: "Phase 4 — Cross-Ticket Gap Review"
+skill: spike
+
+requiredRefs:
+  - ../../implement/references/protocols/multi-agent-consensus.md
+
+emits:
+  entry:
+    - type: spike.phase.4.started
+      data: "{\"epicId\":\"${epicId}\",\"phase\":4}"
+  exit:
+    - type: spike.gate.approved
+      data: "{\"epicId\":\"${epicId}\",\"approvedBy\":\"${approvedBy}\"}"
+    - type: spike.phase.4.completed
+      data: "{\"epicId\":\"${epicId}\",\"phase\":4}"
+
+invokes:
+  - kind: protocol
+    name: multi-agent-consensus
+    input:
+      task_type: review
+      agents_config: pipeline.agents.review
+      context: "Cross-ticket gap review on the full decomposition. Check: (1) does the ticket set fully cover epic §1 requirements? (2) is the dependency graph acyclic and minimally coupled? (3) is the deployBlockedBy order actually deployable end-to-end? (4) are there integration tests that span tickets specified in §8? (5) are blocker classifications accurate (no hidden hard-blockers recorded as soft)? Report gaps as issues with severity + suggested ticket additions or blocker reclassifications."
+
+produces:
+  - kind: spike-plan-sections
+    sections: [7, 8]
+  - kind: user-signoff
+    scope: epic
+
+gates:
+  begin:
+    - script: phase-gate.sh
+      args: ["begin", "4"]
+  end:
+    - script: phase-gate.sh
+      args: ["end", "4"]
+
+budget:
+  seconds: 600
+
+# Informal human signoff only — no formal GATE mechanism (per design spec §9 item 9).
+userGate: none
+
+instructions:
+  entry:
+    - "Read implement/references/protocols/multi-agent-consensus.md."
+    - "Emit spike.phase.4.started event."
+    - "Run phase-gate.sh begin 4."
+  main:
+    - "Run reduce-spike-plan.sh to regenerate §7 registry from ticket.decomposed events (Phase 4 of this implementation plan adds the reducer; stub acceptable until then)."
+    - "Write §8 Testing Strategy: cross-ticket integration tests, end-to-end flows, contract tests, load/stress if applicable."
+    - "Run multi-agent-consensus with agents.review, task_type=review. Gap-review context per invokes[0]."
+    - "For each issue returned: classify as (a) missing ticket (add via Phase-3-style loop), (b) misclassified blocker (update ticket ref doc and re-emit), or (c) dismissible (record rationale)."
+    - "Iterate until consensus converges (maxReviewIterations cap and consecutiveZerosToExit apply per global config)."
+  signoff:
+    - "Present to user: decomposition summary (ticket count, dependency graph, deploy order), unresolved issues (should be zero or explicitly dismissed), links to spike-plan.md and each ticket ref doc."
+    - "Ask user: 'Spike ready to proceed?' — interactive y/n confirmation. In autonomous mode, auto-sign with approvedBy='autonomous', log to decision-log."
+    - "On user 'yes' (or autonomous): emit spike.gate.approved event with {epicId, approvedBy}."
+    - "On user 'no': ask which phase to return to (1-3) and emit spike.gate.rejected with {epicId, returnToPhase, reason}."
+  exit:
+    - "Update spike-plan.md frontmatter status='in-progress' (tickets now free to implement)."
+    - "Append phase entry to progress-log.json."
+    - "Emit spike.phase.4.completed event."
+    - "Run phase-gate.sh end 4."
+    - "Print banner: --- Spike Phase 4 Complete: Gap Review — signoff: {approvedBy} | tickets ready: ${ticketCount} ---"

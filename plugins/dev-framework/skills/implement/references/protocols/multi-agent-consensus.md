@@ -1,6 +1,6 @@
 # Multi-Agent Consensus Protocol
 
-> Internal reference for `skills/dev/SKILL.md`. Invoked by reading this file, not via the Skill tool.
+> Internal reference for `skills/implement/SKILL.md`. Invoked by reading this file, not via the Skill tool.
 
 A reusable protocol for running N agents in parallel on any task, then converging to the best solution through structured discussion and iterative validation.
 
@@ -218,7 +218,7 @@ Every invocation produces a structured report:
 
 ## Integration Notes
 
-This protocol is read (via the Read tool) by `skills/dev/SKILL.md` in every phase that uses multi-agent consensus. The orchestrator provides the specific agents, context, and parameters — this file provides the protocol mechanics.
+This protocol is read (via the Read tool) by `skills/implement/SKILL.md` in every phase that uses multi-agent consensus. The orchestrator provides the specific agents, context, and parameters — this file provides the protocol mechanics.
 
 When a consensus round resolves a significant decision, the orchestrator should follow `references/protocols/project-docs.md` to log it in `docs/decisions.md`.
 

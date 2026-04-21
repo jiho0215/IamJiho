@@ -1,5 +1,5 @@
 #!/bin/bash
-# phase-gate.sh — Phase boundary validation for the unified /dev workflow.
+# phase-gate.sh — Phase boundary validation for the /implement workflow (also reused by /spike phases).
 # Called by SKILL.md at the start and end of each phase.
 # Validates progress-log.json state and blocks (exit 2) on failure.
 #
@@ -81,7 +81,7 @@ emit_passed() {
   bash "$SCRIPT_DIR/emit-event.sh" gate.passed --actor "hook:phase-gate" --data "$data" 2>/dev/null || true
 }
 
-# --- Phase name lookup (unified /dev 7-phase workflow) ---
+# --- Phase name lookup (unified /implement 7-phase workflow) ---
 phase_name() {
   case "$1" in
     1) echo "Requirements" ;;

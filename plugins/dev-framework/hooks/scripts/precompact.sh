@@ -1,5 +1,5 @@
 #!/bin/bash
-# precompact.sh — PreCompact hook: serialize /dev workflow state before context truncation
+# precompact.sh — PreCompact hook: serialize /implement (or /spike) workflow state before context truncation
 # so the LLM can resume coherently after compaction.
 #
 # Safety: ERR trap ensures unexpected errors never block compaction.
@@ -16,7 +16,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SESSION_DIR=$(resolve_session_dir)
 PROGRESS_LOG="$SESSION_DIR/progress-log.json"
 
-# Only inject state if an active /dev session exists.
+# Only inject state if an active /implement session exists.
 [ -f "$PROGRESS_LOG" ] || exit 0
 jq empty "$PROGRESS_LOG" 2>/dev/null || exit 0
 
@@ -50,13 +50,13 @@ fi
 # Build the resume command: `--autonomous TICKET` only if this was an autonomous run.
 APPROVAL_MODE=$(jq -r '.approvalMode // empty' "$PROGRESS_LOG" 2>/dev/null)
 if [ "$APPROVAL_MODE" = "autonomous" ] && [ -n "$TICKET" ]; then
-    RESUME_CMD="/dev --from $CURRENT_PHASE --autonomous $TICKET"
+    RESUME_CMD="/implement --from $CURRENT_PHASE --autonomous $TICKET"
 else
-    RESUME_CMD="/dev --from $CURRENT_PHASE"
+    RESUME_CMD="/implement --from $CURRENT_PHASE"
 fi
 
 cat <<EOF
---- /dev SESSION STATE (preserved before context compaction) ---
+--- /implement SESSION STATE (preserved before context compaction) ---
 Feature: $FEATURE | Mode: $MODE | Phase: $CURRENT_PHASE | Status: $STATUS
 RunId: $RUN_ID
 Issues found: $ISSUES | Decisions logged: $DECISIONS
@@ -66,7 +66,7 @@ EOF
 cat <<EOF
 Session: $SESSION_DIR
 Resume: $RESUME_CMD
-Full status: /dev --status
+Full status: /implement --status
 --- END SESSION STATE ---
 EOF
 

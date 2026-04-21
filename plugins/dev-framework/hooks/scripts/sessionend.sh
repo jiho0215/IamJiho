@@ -37,7 +37,7 @@ if [ -f "$BYPASS_FILE" ] && jq empty "$PROGRESS_LOG" 2>/dev/null; then
     BYPASS_AT=$(jq -r '.createdAt // empty' "$BYPASS_FILE" 2>/dev/null)
     AUDIT_FILE="$SESSION_DIR/bypass-audit.jsonl"
     if [ -z "$BYPASS_AT" ]; then
-        echo "sessionend: WARNING — bypass.json exists but has no createdAt field; bypass event is not archivable. Inspect $BYPASS_FILE manually or re-create via 'bypass freeze' in /dev." >&2
+        echo "sessionend: WARNING — bypass.json exists but has no createdAt field; bypass event is not archivable. Inspect $BYPASS_FILE manually or re-create via 'bypass freeze' in /implement." >&2
     fi
     if [ -n "$BYPASS_AT" ]; then
         # Idempotency: use jq value-only match (format-robust; not a raw string grep).

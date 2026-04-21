@@ -59,11 +59,42 @@ done <<< "$CHRONIC"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ -f "$SCRIPT_DIR/emit-event.sh" ] && [ ${#PATTERN_IDS[@]} -gt 0 ]; then
     IDS_JSON=$(printf '"%s",' "${PATTERN_IDS[@]}" | sed 's/,$//')
-    DATA=$(printf '{"count":%d,"file":"%s","chronicPatterns":[%s]}' \
+    DATA=$(printf '{"count":%d,"file":"%s","domain":"code","chronicPatterns":[%s]}' \
         "${#PATTERN_IDS[@]}" "$(basename "$PATTERNS_FILE")" "$IDS_JSON")
     bash "$SCRIPT_DIR/emit-event.sh" patterns.loaded \
         --actor "hook:load-chronic-patterns" \
         --data "$DATA" 2>/dev/null || true
+fi
+
+# --- v4.0+: Chronic design patterns (spike retro output) ---
+# Loaded in addition to code patterns. JSON store at ~/.claude/autodev/chronic-design-patterns.json
+# Protocol: plugins/dev-framework/skills/spike/references/autonomous/mistake-tracker-protocol.md
+DESIGN_STORE="$HOME/.claude/autodev/chronic-design-patterns.json"
+if [ -f "$DESIGN_STORE" ]; then
+    # Extract only chronic-status patterns; known/resolved are not surfaced to the session.
+    CHRONIC_DESIGN=$(jq -r '
+        .patterns // []
+        | map(select(.status == "chronic"))
+        | map("  - " + .id + ": " + .pattern + " — " + (.prevention // ""))
+        | .[]
+    ' "$DESIGN_STORE" 2>/dev/null || true)
+
+    if [ -n "$CHRONIC_DESIGN" ]; then
+        echo ""
+        echo "CHRONIC DESIGN PATTERNS LOADED — prevent these when designing/decomposing epics:"
+        echo "$CHRONIC_DESIGN"
+
+        # Emit patterns.loaded (design domain) so event log carries both.
+        DESIGN_IDS_JSON=$(jq -c '[.patterns[] | select(.status == "chronic") | .id]' "$DESIGN_STORE" 2>/dev/null || echo '[]')
+        DESIGN_COUNT=$(jq '[.patterns[] | select(.status == "chronic")] | length' "$DESIGN_STORE" 2>/dev/null || echo 0)
+        if [ -f "$SCRIPT_DIR/emit-event.sh" ] && [ "$DESIGN_COUNT" -gt 0 ]; then
+            DATA=$(jq -cn --argjson c "$DESIGN_COUNT" --arg f "chronic-design-patterns.json" --argjson ids "$DESIGN_IDS_JSON" \
+                '{count:$c, file:$f, domain:"design", chronicPatterns:$ids}')
+            bash "$SCRIPT_DIR/emit-event.sh" patterns.loaded \
+                --actor "hook:load-chronic-patterns" \
+                --data "$DATA" 2>/dev/null || true
+        fi
+    fi
 fi
 
 exit 0

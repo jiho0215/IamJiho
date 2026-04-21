@@ -1,15 +1,16 @@
 ---
-description: Rigorous multi-agent development workflow with consensus cycles for features, reviews, testing, and documentation
-argument-hint: Optional feature description or workflow keyword (review, test, docs)
-allowed-tools: Read, Write, Edit, Glob, Grep, Bash, TodoWrite, AskUserQuestion, Skill, Agent, EnterPlanMode, ExitPlanMode
+description: "[v4.0.0 tombstone] Renamed to /dev-framework:implement. See also /dev-framework:spike for multi-ticket research. Removed in v4.1.0."
 ---
 
-# Development Framework
+# `/dev` has been renamed (v4.0.0)
 
-You are launching the dev-framework development workflow.
+Inform the user, without invoking any skill:
 
-Initial request: $ARGUMENTS
+> The `/dev` command has been renamed as of dev-framework v4.0.0.
+>
+> - For **single-ticket implementation** (what `/dev` used to do), use `/dev-framework:implement` or the optional user-level shortcut `/implement`.
+> - For **multi-ticket research and decomposition** (new in v4.0.0), use `/dev-framework:spike` or `/spike`.
+>
+> See `plugins/dev-framework/README.md` and `docs/specs/2026-04-21-spike-implement-split.md` for the workflow split rationale.
 
-Use the Skill tool to invoke the `dev-framework:dev` skill, passing along the user's request. The skill contains the full workflow with routing logic, phase definitions, agent orchestration, and reference documentation.
-
-If no arguments were provided, the skill will detect the appropriate workflow from project context and user intent.
+Do not invoke any skill. Do not take any other action. Return after informing the user.

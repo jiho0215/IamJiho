@@ -1,7 +1,7 @@
 #!/bin/bash
 # freeze-gate.sh — PreToolUse hook: block src/** edits unless freeze doc is APPROVED.
 #
-# Active only when a /dev full-cycle session is in progress (progress-log.json exists,
+# Active only when a /implement full-cycle session is in progress (progress-log.json exists,
 # mode="full-cycle", branch matches). For other workflows (review/test/docs/init,
 # no session, different branch), passes through without blocking.
 #
@@ -60,7 +60,7 @@ if ! jq empty "$PROGRESS_LOG" 2>/dev/null; then
     echo "[$(ts)] 🛑 FREEZE GATE BLOCKED: progress-log.json is malformed at $PROGRESS_LOG" >&2
     echo "   Target: ${TARGET_PATH:-<unknown>}" >&2
     echo "   Session: $SESSION_DIR" >&2
-    echo "   Repair the session file, or delete the session folder and restart /dev." >&2
+    echo "   Repair the session file, or delete the session folder and restart /implement." >&2
     emit_freeze_blocked "progress-log malformed" "${TARGET_PATH:-}"
     exit 2
 fi
@@ -93,7 +93,7 @@ if [ -f "$BYPASS_FILE" ]; then
     BYPASS_CREATED=$(jq -r '.createdAt // empty' "$BYPASS_FILE" 2>/dev/null)
     if [ -n "$BYPASS_FEATURE" ] && [ "$BYPASS_FEATURE" = "$ACTIVE_FEATURE" ]; then
         if [ -z "$BYPASS_REASON" ] || [ -z "$BYPASS_CREATED" ]; then
-            echo "[$(ts)] freeze-gate: ⚠️  WARNING — bypass.json missing audit fields (reason/createdAt). Edit allowed, but push-guard will block this bypass at push time until it is re-created via 'bypass freeze' in /dev." >&2
+            echo "[$(ts)] freeze-gate: ⚠️  WARNING — bypass.json missing audit fields (reason/createdAt). Edit allowed, but push-guard will block this bypass at push time until it is re-created via 'bypass freeze' in /implement." >&2
         fi
         echo "[$(ts)] freeze-gate: ⚠️  bypass active for '$ACTIVE_FEATURE' — ${BYPASS_REASON:-no reason given}" >&2
         exit 0
@@ -125,11 +125,11 @@ esac
 
 # --- 11. Freeze doc path must be recorded in progress-log. ---
 if [ -z "$FREEZE_DOC_PATH" ]; then
-    echo "[$(ts)] 🛑 FREEZE GATE BLOCKED: /dev session is active but no freezeDocPath recorded." >&2
+    echo "[$(ts)] 🛑 FREEZE GATE BLOCKED: /implement session is active but no freezeDocPath recorded." >&2
     echo "   Target: $REL_PATH" >&2
     echo "   Feature: ${ACTIVE_FEATURE:-<unknown>}" >&2
     echo "   Session: $SESSION_DIR" >&2
-    echo "   Complete Phase 1-3 of /dev to assemble and approve a freeze doc before editing." >&2
+    echo "   Complete Phase 1-3 of /implement to assemble and approve a freeze doc before editing." >&2
     emit_freeze_blocked "no freezeDocPath in progress-log" "$REL_PATH"
     exit 2
 fi
@@ -145,7 +145,7 @@ if [ ! -f "$FREEZE_DOC_ABS" ]; then
     echo "   Target: $REL_PATH" >&2
     echo "   Feature: ${ACTIVE_FEATURE:-<unknown>}" >&2
     echo "   Session: $SESSION_DIR" >&2
-    echo "   Complete Phase 1-3 of /dev to create and approve the freeze doc." >&2
+    echo "   Complete Phase 1-3 of /implement to create and approve the freeze doc." >&2
     emit_freeze_blocked "freeze doc file missing" "$REL_PATH"
     exit 2
 fi
@@ -172,7 +172,7 @@ if [ "$DOC_STATUS" != "APPROVED" ]; then
     echo "   Feature: ${ACTIVE_FEATURE:-<unknown>}" >&2
     echo "   Freeze doc: $FREEZE_DOC_PATH" >&2
     echo "   Session: $SESSION_DIR" >&2
-    echo "   Complete Phase 1-3 of /dev and get user approval at GATE 1, or request 'bypass freeze'" >&2
+    echo "   Complete Phase 1-3 of /implement and get user approval at GATE 1, or request 'bypass freeze'" >&2
     echo "   to override for this ticket (ticket-scoped; audit trail recorded in freeze doc)." >&2
     emit_freeze_blocked "freeze doc not APPROVED" "$REL_PATH"
     exit 2

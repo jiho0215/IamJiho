@@ -1,0 +1,61 @@
+phase: 1
+name: "Requirements Review (multi-feature)"
+skillMdSection: "Phase 1 — Requirements Review"
+skill: spike
+
+requiredRefs:
+  # Reuse /implement's feature spec template for the requirements section shape.
+  - ../../implement/references/templates/FEATURE_SPEC_TEMPLATE.md
+
+emits:
+  entry:
+    - type: spike.phase.1.started
+      data: "{\"epicId\":\"${epicId}\",\"phase\":1}"
+  exit:
+    - type: spike.phase.1.completed
+      data: "{\"epicId\":\"${epicId}\",\"phase\":1}"
+
+invokes:
+  - kind: skill
+    config: pipeline.skills.requirements
+    when: "mode == 'interactive'"
+    fallback: inline
+  - kind: protocol
+    name: multi-agent-consensus
+    input:
+      task_type: validate
+      agents_config: pipeline.agents.plan
+      context: "Validate epic-level requirements completeness across all features, NFR coverage (SLA, security, privacy, accessibility), and rollout/rollback strategy adequacy. Focus on gaps, ambiguities, and missing cross-feature concerns."
+
+produces:
+  - kind: spike-plan-sections
+    sections: [1]
+
+gates:
+  begin:
+    - script: phase-gate.sh
+      args: ["begin", "1"]
+  end:
+    - script: phase-gate.sh
+      args: ["end", "1"]
+
+budget:
+  seconds: 300
+
+userGate: none
+
+instructions:
+  entry:
+    - "Read implement/references/templates/FEATURE_SPEC_TEMPLATE.md for requirements-section shape reference."
+    - "Emit spike.phase.1.started event."
+    - "Run phase-gate.sh begin 1 (epic-scoped session folder)."
+  main:
+    - "Dialogue-gather the epic goal, success criteria across the epic, non-functional requirements (SLA, security threat model, privacy/compliance, accessibility), and rollout/rollback strategy (feature flags, canary stages, migration reversibility)."
+    - "Invoke config.pipeline.skills.requirements (default: superpowers:brainstorming) via execute.sh skill — interactive only."
+    - "Run multi-agent-consensus with agents.plan, task_type=validate, epic-level context."
+    - "Populate spike-plan.md §1 Requirements. Spike-plan file does not yet exist — accumulate to a working draft; it is written to disk in Phase 2."
+  exit:
+    - "Append phase entry to progress-log.json with status 'completed' and any metrics."
+    - "Emit spike.phase.1.completed event."
+    - "Run phase-gate.sh end 1."
+    - "Print banner: --- Spike Phase 1 Complete: Requirements Review ---"

@@ -1,0 +1,71 @@
+phase: 3
+name: "Ticket Decomposition (one-at-a-time)"
+skillMdSection: "Phase 3 — Ticket Decomposition"
+skill: spike
+
+requiredRefs:
+  - templates/TICKET_REF_TEMPLATE.md
+
+emits:
+  entry:
+    - type: spike.phase.3.started
+      data: "{\"epicId\":\"${epicId}\",\"phase\":3}"
+  # Per-ticket events emitted during main loop:
+  #   ticket.decomposed  data: {epicId, ticketId, title, implBlockedBy, deployBlockedBy}
+  exit:
+    - type: spike.tickets.decomposed
+      data: "{\"epicId\":\"${epicId}\",\"tickets\":${tickets}}"
+    - type: spike.phase.3.completed
+      data: "{\"epicId\":\"${epicId}\",\"phase\":3}"
+
+invokes:
+  - kind: protocol
+    name: multi-agent-consensus
+    when: "mode == 'interactive'"
+    input:
+      task_type: validate
+      agents_config: pipeline.agents.plan
+      context: "After each ticket proposal, quickly validate it is (a) cohesive in scope, (b) appropriately sized, (c) has accurate blocker classification versus previously-decomposed tickets. Short-form consensus; no deep review yet — the cross-ticket gap review runs in Phase 4."
+
+produces:
+  - kind: artifacts
+    path: "docs/plan/${epicId}/<ticketId>.md"
+    cardinality: "1..N"
+
+gates:
+  begin:
+    - script: phase-gate.sh
+      args: ["begin", "3"]
+  end:
+    - script: phase-gate.sh
+      args: ["end", "3"]
+
+budget:
+  seconds: 600
+
+userGate: none
+
+instructions:
+  entry:
+    - "Read templates/TICKET_REF_TEMPLATE.md."
+    - "Emit spike.phase.3.started event."
+    - "Run phase-gate.sh begin 3."
+  main:
+    - "Loop one ticket at a time. On each iteration:"
+    - "  1. Propose a ticket with title + scope summary derived from spike-plan §2-§6. Ask user to accept / reject / modify."
+    - "  2. On accept, ask user for ticket ID (tracker ID verbatim, or slug if none). Sanitize: lowercase, dashes for spaces, strip special chars."
+    - "  3. Check collision with existing docs/plan/${epicId}/<id>.md. On collision, prompt for suffix or overwrite."
+    - "  4. Instantiate per-ticket ref doc from templates/TICKET_REF_TEMPLATE.md. Populate §2-§5 by extracting relevant slices from spike-plan.md."
+    - "  5. Ask user for implBlockedBy and deployBlockedBy entries (ticketId, kind hard|soft, reason)."
+    - "  6. Write docs/plan/${epicId}/<ticketId>.md with frontmatter status=planned."
+    - "  7. Emit ticket.decomposed event with {epicId, ticketId, title, implBlockedBy, deployBlockedBy}."
+    - "  8. Run quick multi-agent-consensus sanity check (interactive mode) per invokes[0]. Skip in autonomous."
+    - "Exit loop when user indicates decomposition is complete."
+  exit:
+    - "Verify dependency graph is acyclic (DFS over implBlockedBy across all decomposed tickets). If cycle detected, surface to user and do not complete the phase."
+    - "Emit spike.tickets.decomposed event with the full tickets[] array."
+    - "Append phase entry to progress-log.json with ticketCount."
+    - "Run reduce-spike-plan.sh to populate §7 registry in spike-plan.md (added in Phase 4 of this implementation plan; until then, a stub marker suffices)."
+    - "Emit spike.phase.3.completed event."
+    - "Run phase-gate.sh end 3."
+    - "Print banner: --- Spike Phase 3 Complete: Ticket Decomposition (${ticketCount} tickets) ---"

@@ -1,10 +1,10 @@
 ---
-name: dev
-version: 3.0.0
-description: "AI-led, end-to-end development workflow built on Managed Agents architecture (event log, stateless restart, phase YAML dispatcher, multi-brain fan-out). Multi-agent consensus reviews, freeze-doc-enforced research/execution boundary, two user approval gates. Use when the user wants to build a feature, fix a bug via research-plan-execute, initialize a project, review code, plan tests, or maintain docs. Supports interactive (default) and autonomous (--autonomous TICKET) modes under one command. Also trigger on: '/dev', 'implement this feature', 'build end-to-end', 'research and plan', 'take this ticket and run with it', 'autonomous implementation', or any request for structured multi-phase development."
+name: implement
+version: 4.0.0
+description: "Single-ticket Implementation workflow. Takes one well-defined ticket (spike-sourced or ad-hoc) and produces a rigorously-tested, reviewed, merged PR. Built on Managed Agents architecture (event log, stateless restart, phase YAML dispatcher, multi-brain fan-out). 7-phase pipeline (plus Phase 0 prereq check for spike-sourced tickets): Requirements \u2192 Research \u2192 Plan+Freeze \u2192 Test Planning \u2192 Implementation+Layer1 \u2192 Verification+Layer2 \u2192 Docs+PR. Multi-agent consensus reviews, freeze-doc-enforced research/execution boundary, two user approval gates (GATE 1 freeze, GATE 2 final). Use when the user wants to ship one ticket correctly. For multi-ticket research and decomposition, use /dev-framework:spike instead. Supports interactive (default) and autonomous (--autonomous TICKET) modes. Also trigger on: '/implement', 'ship this ticket', 'implement this feature', 'take this ticket and run with it', 'autonomous implementation', or any request for structured single-ticket development."
 ---
 
-# `/dev` — Unified Development Framework
+# `/implement` \u2014 Ticket Implementation Framework
 
 You are orchestrating one rigorous, multi-agent development cycle for this user. This is the **only** workflow this plugin offers. Move slow, do it right. Reduce revisits and refactoring.
 
@@ -103,7 +103,7 @@ bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/emit-event.sh <type> \
 | Pre-Workflow complete | `session.started` | `{mode, featureSlug?, ticket?}` |
 | Pre-Workflow (M2.5+) | `config.snapshot.recorded` | `{maxReviewIterations, consecutiveZerosToExit, testCoverageTarget, modelProfile}` |
 | Phase 3 plan set (M2.5+) | `plan.files.set` | `{phase:3, plannedFiles:[...]}` |
-| Phase 7 chronic promote/demote (M2.5+) | `patterns.promoted` / `patterns.demoted` | `{id, pattern, frequency?, reason?}` |
+| Phase 7 chronic promote/demote (M2.5+) | `patterns.promoted` / `patterns.demoted` | `{id, pattern, frequency?, reason?, domain:"code"}` |
 | Each Phase N begin (after begin gate) | `phase.started` | `{phase:N}` |
 | Each Phase N end (before end gate) | `phase.completed` | `{phase:N, metrics?}` |
 | GATE 1 approval | `gate.approved` | `{gate:1, approvalMode, approvedBy}` |
@@ -117,6 +117,9 @@ bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/emit-event.sh <type> \
 | Consensus iteration start | `consensus.iteration.started` | `{phase:N, iteration}` |
 | Consensus converges | `consensus.converged` | `{phase:N, iterations, issuesFixed}` |
 | Consensus forced stop (iteration cap) | `consensus.forced_stop` | `{phase:N, iterations, remainingIssues}` |
+| Phase 0 prereq pass (spike-sourced, v4.0+) | `ticket.started` | `{epicId, ticketId, branch}` |
+| Phase 5/6 ref-doc error found (v4.0+) | `ticket.discovery` | `{epicId, ticketId, section, correction}` |
+| Phase 7 GATE 2 approval (spike-sourced, v4.0+) | `ticket.merged` | `{epicId, ticketId, prUrl?}` |
 
 Emits are best-effort (exit 0 on no session). Never abort a phase on emit failure.
 
@@ -141,13 +144,15 @@ For new or uninitialized projects. **Apply the session collision guard from Sect
    - `task_type: validate`
    - `agents_list: [code-quality-reviewer, architect, requirements-analyst]`
    - Context: "Validate all scaffolded files against the actual codebase. Flag any aspirational documentation that contradicts the current code."
-10. Confirm initialization complete. Tell the user: "Type `/dev [feature description]` to begin the full development cycle for your first feature."
+10. Confirm initialization complete. Tell the user: "Type `/implement [feature description]` to begin the full development cycle for your first feature."
 
 ---
 
 ## Section B: Full Development Cycle
 
 **Prerequisite:** Pre-Workflow steps must have run. Read `references/protocols/project-docs.md` and verify `docs/` structure exists before Phase 1 (scaffold if missing).
+
+**Phase 0 fork.** Before entering Phase 1, run the Phase 0 prereq check (see "Phase 0 — Prereq Check" below). If a spike ref doc is found at `docs/plan/*/{ticket}.md`, Phase 0 validates blockers, pre-seeds the freeze doc, and emits `ticket.started`. If no ref doc, Phase 0 is a no-op — set `epicId = "ad-hoc-<sanitized-branch>"` and proceed to Phase 1 with the existing flow.
 
 ### Mode Difference (Interactive vs Autonomous)
 
@@ -220,6 +225,68 @@ Start writing `docs/specs/[feature-slug]-freeze.md` during Phase 1. Open in DRAF
 Use the template in `references/templates/FREEZE_DOC_TEMPLATE.md`. Category names and allow-list entries come from `config.pipeline.freezeDoc.categories` and `config.pipeline.freezeDoc.nonFrozenAllowList`.
 
 **Custom category rendering:** after rendering the 8 required sections, iterate over any entries in `config.pipeline.freezeDoc.categories` that are not in the default 8. For each custom entry `X`, read the section template from `{config.pipeline.freezeDoc.customCategoryTemplatesDir}/{X}.md` and append it as an additional `§` section (numbered 10+). Also append the entry to the freeze doc frontmatter `customCategories` array. If the template file is missing, log a warning and fall back to a stub section `## § NN. {X} (TEMPLATE MISSING)` so the omission is visible during GATE 1.
+
+### Phase 0 — Prereq Check (spike-sourced only)
+
+Phase 0 runs **before** Phase 1 for spike-sourced tickets. It is diagnostic: no artifacts are produced, but the ref-doc context becomes available to downstream phases and the event log records that this ticket's implementation has started.
+
+**Detect spike-sourced vs ad-hoc.** Resolve `TICKET` from invocation mode (autonomous: from `--autonomous TICKET`; interactive: if `$ARGUMENTS` is a bare ID rather than a free-form description). Search for a ticket ref doc:
+
+```bash
+REPO_ROOT=$(git rev-parse --show-toplevel)
+TICKET_REF=$(find "$REPO_ROOT/docs/plan" -maxdepth 2 -name "${TICKET}.md" 2>/dev/null | head -1)
+```
+
+- **Found** → spike-sourced, run Phase 0 body below.
+- **Not found** → ad-hoc; set `epicId = "ad-hoc-<sanitized-branch>"`, skip Phase 0 body, proceed to Phase 1 with the existing flow.
+
+**Phase 0 body (spike-sourced).**
+
+1. **Resolve epic context.** Derive `epicId` from the ref-doc parent folder: `epicId=$(basename "$(dirname "$TICKET_REF")")`. Resolve the plan folder: `PLAN_DIR="$REPO_ROOT/docs/plan/$epicId"`. Verify `$PLAN_DIR/spike-plan.md` exists; if missing, halt with: "Ticket ref doc found at `$TICKET_REF` but `$PLAN_DIR/spike-plan.md` is missing — the epic's spike plan must accompany ticket refs."
+2. **Read artifacts.** Read the full ticket ref doc into context. Read `$PLAN_DIR/spike-plan.md` §2 (architecture summary) and §7 (ticket registry) for cross-ticket blocker status.
+3. **Validate `implBlockedBy`.** Parse ticket ref doc frontmatter `implBlockedBy` (array of `{ticketId, kind, reason}`). For each entry, resolve the target ticket's current status by scanning `events.jsonl` (`ticket.merged` for target ticketId implies `merged`; else check spike-plan §7 row which is the reducer-maintained view):
+   - `kind: hard` AND target status ≠ `merged` → **Hard block.** Exit the workflow with a message listing every unmet hard blocker, its reason, and current target status. Emit `phase.failed --data '{"phase":0,"error":"hard blocker(s) unmet"}'`. Do **not** emit `ticket.started`.
+   - `kind: soft` AND target status ≠ `merged` → **Warn.** Print "⚠️  soft blocker [{ticketId}] not yet merged — reason: {reason}. Proceeding, but reviewer should confirm this is intentional at GATE 1." Continue.
+   - Blocker merged → silent pass.
+4. **Print three sections to the user** (always, even on proceed):
+   ```
+   ━━━ Big Picture ━━━
+   {spike-plan §2 architecture summary, verbatim or condensed}
+
+   ━━━ This Ticket's Role ━━━
+   {ticket ref doc §2 "Scope" / role-in-epic prose}
+
+   ━━━ Prereq Check ━━━
+   {either:}
+     ✅ Proceeding. All hard blockers merged. Soft warnings (if any) listed above.
+   {or (on hard block, as terminal output):}
+     🛑 Blocked. Cannot proceed until the following tickets merge:
+        - [{blockerId}] {reason}
+        ...
+     Re-run /implement after the blocking ticket(s) are merged.
+   ```
+5. **Pre-populate freeze doc §1–§5 from the ticket ref doc.** Spike-sourced tickets inherit most decisions from the parent spike. Read the ticket ref doc sections and seed the freeze doc at `docs/specs/{feature-slug}-freeze.md` with:
+   - §1 Business Logic ← ticket ref doc §2 (Scope) + §3 (Behavior)
+   - §2 API Contracts ← ticket ref doc §4 (Contracts inherited from spike)
+   - §3 3rd Party ← ticket ref doc §4 (external deps subset)
+   - §4 Data ← ticket ref doc §4 (schema/migration references)
+   - §5 Error Model ← ticket ref doc §5 (error taxonomy)
+
+   Leave §6–§9 for Phase 1–3 to populate normally. Mark each pre-populated section header with an inline `<!-- seeded from spike plan, refine during Phase 1-3 -->` comment so GATE 1 reviewers know to verify. The human review at GATE 1 still binds — pre-population only reduces typing, not accountability.
+6. **Emit `ticket.started`.**
+   ```bash
+   BRANCH=$(git rev-parse --abbrev-ref HEAD)
+   bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/emit-event.sh ticket.started \
+     --actor orchestrator \
+     --data "$(jq -cn --arg e "$epicId" --arg t "$TICKET" --arg b "$BRANCH" \
+       '{epicId:$e, ticketId:$t, branch:$b}')"
+   ```
+   The `reduce-spike-plan.sh` reducer will flip the ticket's §7 row status to `in-impl` on the next `regenerate-views.sh` pass; `reduce-ticket-doc.sh` updates the ticket doc frontmatter `.status` accordingly.
+7. **Banner:** `--- Phase 0 Complete: Prereq Check --- Epic: {epicId} | Ticket: {ticketId} | Blockers: {all clear | N soft warnings} ---`
+
+**No gate hooks for Phase 0** — it is a diagnostic phase, not gated by `phase-gate.sh` (which validates the progress-log schema for phases 1-7 only). The hard-block exit path above is the only failure mode.
+
+**Modified Phase 1-3 when spike-sourced.** Requirements → Research → Plan phases still execute their consensus loops and self-review, but the freeze doc's §1-§5 arrive pre-seeded (step 5 above). Treat the seeded content as a **strong prior**, not frozen truth: if consensus finds a gap, update the section and emit a `ticket.discovery` event (see below). If no gaps, the phases fast-forward. Ad-hoc tickets (no ref doc) run full Phase 1-3 from scratch as before.
 
 ### Phase 1 — Requirements
 
@@ -350,6 +417,14 @@ After this point, **the freeze-gate hook is active**: any attempt to edit `src/`
 - Zone 3 (Ambiguous) questions follow the 4-tier rule in freeze doc §9: existing code → follow silently (ask on deviation); reference repo → same; initial implementation → ask liberally; otherwise → self-decide via standards.
 - Zone 4 (pure technical: naming, extraction, internal boundaries) → self-decide without asking.
 - Use the "Ask with Suggestion" format (freeze doc §9) when asking.
+- **Ticket discovery.** If during Phase 5 or 6 you find an error in the **parent ticket ref doc or spike plan** (not the freeze doc) — e.g., a contract declared in `spike-plan.md` §3 is wrong, a blocker was missed, a data-migration step was omitted — emit a `ticket.discovery` event. The event is consumed by `/spike` Phase 5 (retro) to propose corrections. Do NOT edit the spike plan mid-implementation; the spike owns its plan. Emit command:
+  ```bash
+  bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/emit-event.sh ticket.discovery \
+    --actor orchestrator \
+    --data "$(jq -cn --arg e "$epicId" --arg t "$TICKET" --arg s "$SECTION" --arg c "$CORRECTION" \
+      '{epicId:$e, ticketId:$t, section:$s, correction:$c}')"
+  ```
+  where `$SECTION` is a spike-plan or ref-doc section reference (e.g., `"spike-plan §3"`) and `$CORRECTION` is a one-sentence description of what should be changed. Phase 7 GATE 2 summarizes all discoveries before final approval so the user knows the spike plan needs follow-up.
 
 **Implementation:**
 1. Invoke the default implementation skill: `config.pipeline.skills.implementation` (default `superpowers:subagent-driven-development`). Alternative skills:
@@ -359,7 +434,7 @@ After this point, **the freeze-gate hook is active**: any attempt to edit `src/`
 2. Reference `SESSION_DIR/tdd-plan.md` for test strategy. Follow TDD: write failing test → implement minimum to pass → refactor.
 3. On any bug or unexpected failure, invoke `config.pipeline.skills.debugging` (default `superpowers:systematic-debugging`) before attempting fixes. Root cause first.
 
-> **Observability note — Agent-dispatched edits:** when implementation runs via the Agent tool (subagent-driven or parallel-agent modes), `Edit`/`Write` tool calls made by sub-agents fire `freeze-gate.sh` inside the sub-agent's sandboxed context. The hook's exit-2 block messages surface back only as a generic "tool call failed" signal to the orchestrator, not as a structured gate diagnostic. If an Agent tool reports an edit failure in `src/**`, inspect `SESSION_DIR/bypass.json` and the freeze doc status directly (or run `/dev --status`) before assuming a code error — the failure may be a legitimate gate block.
+> **Observability note — Agent-dispatched edits:** when implementation runs via the Agent tool (subagent-driven or parallel-agent modes), `Edit`/`Write` tool calls made by sub-agents fire `freeze-gate.sh` inside the sub-agent's sandboxed context. The hook's exit-2 block messages surface back only as a generic "tool call failed" signal to the orchestrator, not as a structured gate diagnostic. If an Agent tool reports an edit failure in `src/**`, inspect `SESSION_DIR/bypass.json` and the freeze doc status directly (or run `/implement --status`) before assuming a code error — the failure may be a legitimate gate block.
 
 **Layer 1 Review (mandatory):**
 
@@ -433,6 +508,16 @@ Log decisions, persist issues, merge JSONL, update markdown.
 
 **GATE 2 — Final Approval** (always user-interactive, both modes):
 
+**If spike-sourced:** before presenting the approval summary, query `events.jsonl` for any `ticket.discovery` events emitted during this run and, if any exist, print:
+```
+━━━ Spike Plan Corrections Discovered ━━━
+The following ref-doc / spike-plan errors were found during implementation:
+  - [{section}] {correction}
+  ...
+These events are logged and will be addressed by /spike --retro EPIC-ID after this ticket merges.
+```
+Discovery events do NOT block GATE 2. They are informational only; the spike's retro phase is the correct channel for plan edits.
+
 Present:
 
 ```
@@ -460,6 +545,8 @@ Options:
 
 On approval (option 1 or 3), execute this sequence in order. **If any step fails, halt and report the specific error to the user — do NOT proceed to later steps. Log the failure to `decision-log.json` category `gate-2` with `failed: true` and the error details so the session is resumable via `--from 7`.** The entire archival + cleanup sequence is idempotent (dedup by `at` and filter by `runId`), so a resumed Phase 7 safely re-runs any completed portion.
 
+**Note on `ticket.merged` emission** (step 6 below, after `gate.approved`): emitted once per GATE 2 approval. Consumed by `reduce-spike-plan.sh` to flip the ticket's §7 row to `merged`, and by any `/spike --retro EPIC-ID` auto-trigger logic checking whether all tickets of an epic are merged. Emit for both options [1] (approve) and [3] (approve + push); the event is independent of whether the PR is actually pushed in this run — a human may push later.
+
 1. **Bypass archival — GATE 2 is the sole writer of freeze doc `bypassHistory`.** Collect bypass records from both sources, normalizing each to the `bypassHistory` entry schema `{ at, reason, feature, userMessage, runId, preservedAt? }`:
    - `bypass.json` (current live bypass, if any). **Field mapping:** use `bypass.json.createdAt` as the `at` value; inject `runId` from `progress-log.json` (bypass.json does not carry runId); `preservedAt` is absent (this is the direct-from-bypass path, not the crash-preservation path).
    - `bypass-audit.jsonl` (preserved by `sessionend.sh` on prior crash/interrupt within this run). These already use `at` and carry `runId` and `preservedAt` written by sessionend.
@@ -479,12 +566,22 @@ On approval (option 1 or 3), execute this sequence in order. **If any step fails
 
 5. **On option 3:** invoke `config.pipeline.skills.finishing` (default `superpowers:finishing-a-development-branch`) — stage, commit, push.
 
-6. **Emit GATE 2 approval and session completion events:**
+6. **Emit GATE 2 approval, ticket merge (spike-sourced only), and session completion events:**
    ```
    bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/emit-event.sh gate.approved \
      --actor orchestrator \
      --data "$(jq -cn --arg am "$APPROVAL_MODE" --arg by "$APPROVED_BY" \
        '{gate:2, approvalMode:$am, approvedBy:$by}')"
+
+   # ticket.merged — only when Phase 0 found a spike ref doc (epicId != "ad-hoc-*").
+   # Option [3] may include $PR_URL from the finishing skill; option [1] emits without prUrl.
+   if [[ "$epicId" != ad-hoc-* ]]; then
+     bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/emit-event.sh ticket.merged \
+       --actor orchestrator \
+       --data "$(jq -cn --arg e "$epicId" --arg t "$TICKET" --arg p "${PR_URL:-}" \
+         '{epicId:$e, ticketId:$t, prUrl:$p} | with_entries(select(.value != ""))')"
+   fi
+
    bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/emit-event.sh session.completed \
      --actor orchestrator \
      --data "$(jq -cn --argjson m "$TOTAL_MINUTES" '{totalMinutes:$m}')"
@@ -508,9 +605,9 @@ Runs without a full cycle. Use when the user says `review`.
 
 **Session collision guard (applies to Sections A, C, D, E):** Before creating or writing any session state, if `SESSION_DIR/progress-log.json` already exists, read it. If its `mode` is `full-cycle` and `status` is `in-progress`, `interrupted`, or `failed`, **halt** and present the user with:
 ```
-⚠️  A full-cycle /dev session exists on this branch ({featureSlug}, Phase {N}, status={status}).
+⚠️  A full-cycle /implement session exists on this branch ({featureSlug}, Phase {N}, status={status}).
 Running standalone '{init|review|test|docs}' here will overwrite the full-cycle session state,
-making it unresumable. If status is 'failed' or 'interrupted', resume via /dev --from {N} instead.
+making it unresumable. If status is 'failed' or 'interrupted', resume via /implement --from {N} instead.
   [1] Abort this standalone run
   [2] Overwrite and proceed (full-cycle state will be lost)
   [3] Switch branch before continuing
@@ -564,7 +661,7 @@ Use when the user says `docs` or `documentation`. Apply the session collision gu
 2. Read `progress-log.json`, `decision-log.json`. Also read the freeze doc (if `freezeDocPath` is set) and check for `bypass.json` and `pipeline-complete.md`.
 3. Output a comprehensive summary for quick diagnosis:
    - Ticket/feature, mode, status, current phase.
-   - **If status is `interrupted`:** highlight `interruptedAt` timestamp prominently and include an actionable note: "Session ended mid-run. Use `/dev --from {currentPhase}` to resume. Phase {currentPhase} may be partially complete — review `phase-{N}-decisions.jsonl` if present."
+   - **If status is `interrupted`:** highlight `interruptedAt` timestamp prominently and include an actionable note: "Session ended mid-run. Use `/implement --from {currentPhase}` to resume. Phase {currentPhase} may be partially complete — review `phase-{N}-decisions.jsonl` if present."
    - Per-phase timing, metrics, decisions count.
    - Last 5 decisions.
    - Config snapshot.
@@ -603,7 +700,7 @@ When a phase fails:
    --- Phase {N} FAILED: {phase name} ---
    Error: {description}
    Session: {SESSION_DIR}
-   Resume: /dev --from {N} [--autonomous TICKET]
+   Resume: /implement --from {N} [--autonomous TICKET]
    ```
 7. Offer: `[1] Retry this phase` `[2] Skip to next` `[3] Abort workflow`.
 

@@ -1,6 +1,6 @@
 # Freeze Doc Template
 
-Single-artifact contract for a feature's research phase. Written during Phase 1-3 of `/dev`, approved by the user at GATE 1 (end of Phase 3), and treated as the immutable truth source during Phase 4-7 execution.
+Single-artifact contract for a feature's research phase. Written during Phase 1-3 of `/implement`, approved by the user at GATE 1 (end of Phase 3), and treated as the immutable truth source during Phase 4-7 execution.
 
 ## File Location
 
