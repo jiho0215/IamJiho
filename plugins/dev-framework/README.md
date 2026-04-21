@@ -1,27 +1,86 @@
 # Dev Framework Plugin
 
-> **⚠️ Notice — README is pending update to v2.0.0 (consolidated workflow).**
->
-> As of v2.0.0, this plugin has been restructured: `/dev-pipeline` is removed and `/dev` is the single command (with `--autonomous TICKET` for the former pipeline behavior). The workflow has 7 phases (not 10) with two user gates (freeze doc approval at Phase 3, final approval at Phase 7). Review iterations default to 10 (not 5) with 2 consecutive zero-issue rounds for early exit. See **[CLAUDE.md](./CLAUDE.md)** for the current plugin structure and [skills/dev/SKILL.md](./skills/dev/SKILL.md) for the authoritative workflow definition. The content below is v1.0.0 and is being rewritten.
+**v3.0.0** — AI-led, end-to-end development framework built on **Managed Agents** architecture. One command `/dev`. One skill. One workflow. Session state in an append-only event log. Seq-level replay, stateless restart, multi-brain fan-out.
 
----
+## At a glance
 
-A language-agnostic development framework with multi-agent consensus cycles for Claude Code. Every phase dispatches 3+ specialized agents in parallel, runs consensus discussion rounds, and resolves issues until zero remain.
+```
+/dev [feature description]        Interactive full cycle (default)
+/dev --autonomous TICKET-123      Autonomous full cycle
+/dev --from N                     Resume at phase N
+/dev --status                     Show session status
+/dev init | review | test | docs  Standalone workflows
+```
 
-## Overview
+Full cycle: **7 phases, 2 user gates, multi-agent consensus at every step.**
 
-The Dev Framework Plugin provides a rigorous, structured approach to software development. Instead of jumping straight into code, it guides you through requirements gathering, architecture design, planning, testing strategy, implementation, verification, and documentation -- with multi-agent consensus at every step.
+```
+1. Requirements           (populates freeze doc §1, §5, §6)
+2. Research               (populates freeze doc §2-§4, §7, §8)
+3. Plan + Freeze Doc   →  🚪 GATE 1
+[freeze-gate hook ACTIVE — src/** edits blocked unless freeze doc APPROVED]
+4. Test Planning
+5. Implementation + Layer 1 Review  (multi-agent consensus, 10 max / 2 zero)
+6. Verification + Layer 2 Review
+7. Documentation + Mistake Capture →  🚪 GATE 2
+[push-guard hook — blocks git push until GATE 2 approved]
+```
 
-## Philosophy
+## Why this plugin
 
-Building quality software requires more than writing code. You need to:
-- **Understand requirements thoroughly** before designing
-- **Design architecture deliberately** before implementing
-- **Get user approval** before committing to a plan
-- **Enforce quality standards** with multiple independent reviewers
-- **Document decisions** as first-class artifacts
+Building quality software requires more than writing code:
 
-This plugin embeds these practices into a structured workflow with 3+ agents per phase ensuring no single perspective dominates.
+- **Understand requirements** before designing (Phase 1)
+- **Design architecture deliberately** before implementing (Phase 2)
+- **Get user approval** before committing to a plan (GATE 1)
+- **Enforce quality with multiple independent reviewers** (Phases 5-6 consensus loops)
+- **Document decisions** as first-class artifacts (freeze doc, ADRs, event log)
+- **Learn from mistakes across runs** (chronic-pattern tracker)
+
+Every phase runs 3+ specialized agents in parallel and converges through discussion rounds until zero issues remain.
+
+## Architecture — Managed Agents
+
+v3.0 adopts Anthropic's [Managed Agents](https://www.anthropic.com/engineering/managed-agents) pivot: **Brain (Claude + orchestrator) / Hands (hooks + skills) / Session (event log) are decoupled**, linked by minimal primitives.
+
+### Session as event log
+
+Every state transition dual-writes to `$SESSION_DIR/events.jsonl`:
+
+```jsonl
+{"seq":1,"at":"...","runId":"...","actor":"orchestrator","type":"phase.started","data":{"phase":1}}
+{"seq":2,"at":"...","actor":"hook:phase-gate","type":"gate.passed","data":{"gate":"phase","phase":1,"action":"begin"}}
+```
+
+17 event type families covering phases, gates, consensus iterations, bypasses, tool calls, session lifecycle, decisions, config snapshots, plan artifacts, and pattern lifecycle.
+
+### Views as projections
+
+The three existing state files (`progress-log.json`, `decision-log.json`, `pipeline-issues.json`) are now **derivable** from the event log via reducer scripts. Run `regenerate-views.sh` anytime to rebuild.
+
+### Stateless restart
+
+`wake.sh` returns compact JSON `{sessionDir, lastSeq, currentPhase, status, pendingAction, minimumContext}` — the orchestrator knows what to do next from the event log alone. `pendingAction` values like `phase.5.iteration.3.active`, `gate.1.pending`, `phase.4.ready`, `session.ready-to-resume` encode the next step from a finite-state view of the events.
+
+### Seq-level replay
+
+`replay.sh --until-seq N --target DIR` copies events up to `N` into an alt directory and regenerates views there. Enables "what was the state at seq 42?" queries and safe branch-at-point experimentation.
+
+### Phase YAML + dispatcher
+
+Each phase's metadata (requiredRefs, emits, invokes, produces, gates, budget, **instructions checklist**) lives in `phases/phase-N.yaml`. SKILL.md contains narrative prose. The dispatcher preamble reads both: YAML answers *what to do now*; SKILL.md answers *why and how to think about it*.
+
+### Uniform tool dispatch
+
+`execute.sh <kind> <name> --input JSON` wraps every invocation (hook, protocol, skill, agent) with automatic `tool.call.started` / `completed` / `failed` events. Single calling convention, unified audit trail.
+
+### modelProfile config
+
+`config.pipeline.modelProfile ∈ {conservative, balanced, trust-model}` tunes iteration caps and agent counts as model capability evolves. Event-log retrospection across runs lets you measure quality per profile.
+
+### Multi-brain fan-out
+
+`fan-out.sh --name N [--share-events]` spawns a child session (inheriting parent `runId`), optionally sharing the event log via symlink. Concurrency-safe up to 50+ parallel writers (mkdir-lock). Enables worktree-based side-workflow exploration.
 
 ## Installation
 
@@ -34,239 +93,214 @@ Add to your global Claude settings:
 }
 ```
 
-Or add to a project-specific configuration:
+Or per-project:
 
 ```json
-// .claude/settings.json (in project root)
+// .claude/settings.json
 {
   "plugins": ["path/to/dev-framework"]
 }
 ```
 
+**Runtime requirements:** `bash`, `jq`, `git`. Standard POSIX tools. No additional dependencies.
+
 ## Command: `/dev`
 
-Launches the development framework workflow. The skill auto-detects which workflow to run based on context.
+Launches the development framework workflow. Auto-detects which workflow based on context.
 
-**Usage:**
+| Context | Workflow |
+|---|---|
+| Empty project directory | `init` — scaffolds structure + CLAUDE.md + ADR-001 |
+| Feature/task description | `full cycle` — 7 phases with consensus at every step |
+| `review` keyword | Standalone review (3 agents, code quality) |
+| `test` keyword | Testing strategy analysis and gap identification |
+| `docs` keyword | Documentation maintenance and ADR updates |
+
+## Agents (6 specialized)
+
+| Agent | Perspective |
+|---|---|
+| `requirements-analyst` | Use cases, edge cases, user stories, acceptance criteria |
+| `architect` | System design, component boundaries, data flow, dependencies |
+| `test-strategist` | Coverage, test types, risk areas, edge cases |
+| `code-quality-reviewer` | Result pattern, early exit, file size, naming, single responsibility |
+| `observability-reviewer` | Structured logging, tracing, metrics, correlation IDs |
+| `performance-reviewer` | Time complexity, memory, N+1 queries, bundle size |
+
+## Standards enforced
+
+- **Result\<T\> pattern** — uniform responses for fallible operations
+- **Early exit / guard clauses** — clean control flow
+- **90%+ branch coverage** — Unit + Integration + Smoke + E2E (all 4 layers)
+- **File size limits** — files < 200 lines, functions < 30 lines
+- **Structured logging** — correlation IDs, contextual metadata
+- **Performance budgets** — measurable targets per project
+
+## Plugin structure
+
+```
+plugins/dev-framework/
+├── CLAUDE.md                     Plugin structure + config docs
+├── README.md                     This file
+├── .claude-plugin/
+│   └── plugin.json               Manifest (v3.0.0)
+├── commands/
+│   └── dev.md                    Only command — routes to dev skill
+├── agents/                       6 review/plan agents
+├── phases/                       (v3.0+) phase YAML metadata
+│   ├── README.md                         schema spec
+│   └── phase-1.yaml..phase-7.yaml        per-phase metadata + instructions
+├── hooks/
+│   ├── hooks.json
+│   └── scripts/                  v1 hooks + v3 primitives (14 total)
+└── skills/
+    └── dev/                      The one skill
+        ├── SKILL.md              Orchestrator narrative
+        └── references/           methodology / standards / templates / protocols / autonomous
+```
+
+### Hook scripts (v3.0.0)
+
+Existing hooks (v1-v2, now event-emitting):
+- `ensure-config.sh`, `freeze-gate.sh`, `push-guard.sh`, `phase-gate.sh`, `phase-progress-validator.sh`, `load-chronic-patterns.sh`, `precompact.sh`, `sessionend.sh`, `test-failure-capture.sh`
+
+New primitives (v3.0.0):
+- **M1 event log:** `_session-lib.sh`, `emit-event.sh`, `get-events.sh`
+- **M2 views + restart + replay:** `_reducers.sh`, `reduce-progress-log.sh`, `reduce-decision-log.sh`, `reduce-pipeline-issues.sh`, `regenerate-views.sh`, `wake.sh`, `replay.sh`
+- **M3 phase YAML + dispatch:** `read-phase.sh`, `execute.sh`
+- **M4 multi-brain:** `fan-out.sh`
+
+### Reference docs (v3.0.0)
+
+Under `skills/dev/references/autonomous/`:
+- `session-management.md` — folder resolution + resume protocol
+- `review-loop-protocol.md` — iterative consensus review
+- `mistake-tracker-protocol.md` — chronic pattern lifecycle
+- `events-schema.md` (v3.0+) — 17 event type families
+- `views-spec.md` (v3.0+) — reducer contracts
+- `dispatcher-spec.md` (v3.0+) — phase YAML + dispatcher semantics
+- `worktree-orchestration.md` (v3.0+) — multi-brain patterns
+
+## User Gates
+
+| Gate | Phase | Interactive | Autonomous | Physical artifact |
+|---|---|---|---|---|
+| **GATE 1** — Freeze doc approval | End of Phase 3 | User approves by category | Auto-approve with audit | Freeze doc status: APPROVED |
+| **GATE 2** — Final approval | End of Phase 7 | User confirms | Always user-interactive | `pipeline-complete.md` marker |
+
+Between gates, `freeze-gate.sh` blocks `src/**` edits. After GATE 2, `push-guard.sh` allows `git push`.
+
+## Config
+
+Single source of truth: `~/.claude/autodev/config.json`. Created on first `/dev` invocation. Override any field.
+
+Key sections:
+- `pipeline.modelProfile` (v3.0+; default `balanced`) — `conservative | balanced | trust-model`
+- `pipeline.maxReviewIterations` (default 10)
+- `pipeline.consecutiveZerosToExit` (default 2)
+- `pipeline.testCoverageTarget` (default 90)
+- `pipeline.skills.*` — per-phase skill mappings (swap in custom skills)
+- `pipeline.agents.plan`, `pipeline.agents.review` — agent rosters
+- `pipeline.freezeDoc.categories` — 8 default, extend for custom categories
+
+### Model Profile
+
+| Value | Review iterations | Review agents | Use case |
+|---|---|---|---|
+| `conservative` | 15 | 3 | Older / cheaper models |
+| `balanced` (default) | 10 | 3 | v1/v2 baseline |
+| `trust-model` | `null` (model declares) | `auto` (1 for frontier) | Opus 4.7+ class |
+
+## Session state
+
+Per-repo-branch folder at `~/.claude/autodev/sessions/{repo}--{branch}/`:
+
+| File | Purpose |
+|---|---|
+| `events.jsonl` | **v3.0+** Append-only event stream — source of truth |
+| `.seq` | Atomic counter (mkdir-lock-protected) |
+| `views/` | **v3.0+** Regenerable projections |
+| `progress-log.json` + `.md` | Phase timing, metrics, status |
+| `decision-log.json` + `.md` | Every decision with reasons |
+| `pipeline-issues.json` | Review findings per phase |
+| `tdd-plan.md` | Phase 4 output |
+| `pipeline-complete.md` | GATE 2 marker (authorizes push) |
+| `bypass.json` / `bypass-audit.jsonl` | Freeze-gate override audit trail |
+
+## Query the event log
 
 ```bash
-/dev Add user authentication with OAuth
+# All phase transitions for current session
+bash hooks/scripts/get-events.sh --type 'phase.*'
+
+# Where did freeze-gate block?
+bash hooks/scripts/get-events.sh --type gate.blocked --format summary
+
+# What's next?
+bash hooks/scripts/wake.sh | jq -r '.pendingAction'
+# → "phase.5.iteration.3.active" or "gate.1.pending" or ...
+
+# What would state look like at an earlier seq?
+bash hooks/scripts/replay.sh --until-seq 42 --target /tmp/at-42
+cat /tmp/at-42/views/progress-log.json | jq '.currentPhase, .status'
+
+# Retrospective: has maxReviewIterations=10 ever been hit?
+bash hooks/scripts/get-events.sh --across-runs --type consensus.forced_stop
 ```
 
-Or for other workflows:
+## Tests
+
+21 test suites covering all primitives:
 
 ```bash
-/dev review
-/dev test
-/dev docs
-/dev
+for t in plugins/dev-framework/tests/{m1,m2,m2_5,m3,m3b,m4,e2e}/*.test.sh; do
+  bash "$t" && echo "✓ $t"
+done
 ```
-
-When run without arguments or a feature description, the skill examines the project state and asks which workflow you need.
-
-## Workflow Overview
-
-The `/dev` command routes to one of five workflows based on context:
-
-| Context | Workflow | Description |
-|---------|----------|-------------|
-| Empty project directory | Init | Scaffolds project structure, CLAUDE.md, ADR-001 |
-| Feature/task description | Full Cycle | 7-phase development with consensus at every step |
-| "review" keyword | Review | Standalone code quality review with 3 agents |
-| "test" keyword | Test | Testing strategy analysis and gap identification |
-| "docs" keyword | Documentation | Documentation maintenance and ADR updates |
-
-## The 7-Phase Development Cycle
-
-The full development cycle is the primary workflow, triggered when you describe a feature or task.
-
-### Phase 1: Requirements (Interactive)
-
-**Goal**: Gather and validate requirements with multi-agent consensus.
-
-Asks clarifying questions one at a time, then dispatches `requirements-analyst`, `architect`, and `test-strategist` agents to independently analyze the requirements. Agents discuss and resolve issues until zero remain.
-
-**Output**: Validated requirements document written to `docs/specs/[feature]-requirements.md`.
-
-### Phase 2: Research — Codebase + Architecture (Interactive)
-
-**Goal**: Design architecture with trade-off analysis and ADRs.
-
-Runs 3 agents on codebase exploration and architecture design. Invokes `feature-dev:code-explorer` to trace execution paths, map architecture layers, and identify existing conventions, then `feature-dev:code-architect` to design the feature architecture based on exploration findings. Populates freeze doc §2 (API Contracts), §3 (3rd Party), §4 (Data), §7 (Security), §8 (Performance).
-
-**Output**: Architecture Decision Records written to `docs/adr/ADR-NNN-[title].md`.
-
-### Phase 3: Planning (Interactive, User Gate)
-
-**Goal**: Create implementation plan and get explicit user approval.
-
-3 agents review the plan. Integrates with `superpowers:writing-plans` when available.
-
-**User approval required**: Presents the complete plan (requirements, architecture, implementation steps, testing approach) and waits for explicit confirmation before proceeding.
-
-### Phase 4: Testing Strategy (Autonomous)
-
-**Goal**: Design comprehensive test approach.
-
-Dispatches `test-strategist`, `architect`, and `requirements-analyst` in parallel. Produces a test plan covering Unit, Integration, Smoke, and E2E tests with >= 90% branch coverage target.
-
-### Phase 5: Implementation (Autonomous)
-
-**Goal**: Build the feature following TDD practices.
-
-Integrates with `superpowers:test-driven-development` and `superpowers:executing-plans` when available. After implementation, runs consensus review with `code-quality-reviewer`, `observability-reviewer`, and `performance-reviewer`.
-
-### Phase 6: Verification & Code Review (Autonomous)
-
-**Goal**: Run all tests, verify standards compliance, and conduct code review.
-
-Runs all test types, verifies coverage, and dispatches 3 agents to verify against requirements, architecture decisions, and all coding standards (Result pattern, early exit, observability, performance, file size limits).
-
-### Phase 7: Documentation (Autonomous)
-
-**Goal**: Update all project documentation.
-
-Updates ADRs, feature specs, and test documentation. Only documents what was built -- does not introduce new features or refactor code.
-
-## Agents
-
-The plugin includes 6 specialized agents, each bringing a distinct perspective to the consensus protocol:
-
-### `requirements-analyst`
-
-Analyzes features from the user and business perspective: use cases, edge cases, user stories, and acceptance criteria. Ensures requirements are complete and testable.
-
-### `architect`
-
-Evaluates system design, component boundaries, data flow, dependencies, and architectural patterns. Reviews whether changes fit existing architecture.
-
-### `test-strategist`
-
-Designs and evaluates testing strategies: coverage targets, test type distribution, risk areas, and edge cases. Plans comprehensive test suites across all 4 test types.
-
-### `code-quality-reviewer`
-
-Reviews code for compliance with project coding standards: Result pattern, early exit, file size limits, naming conventions, and single responsibility.
-
-### `observability-reviewer`
-
-Reviews code for production readiness: structured logging, tracing, metrics, error reporting, and correlation IDs.
-
-### `performance-reviewer`
-
-Reviews code for performance characteristics: time complexity, memory usage, network call efficiency, and bundle size.
-
-## What It Enforces
-
-The framework enforces these standards through its reference documentation and agent reviews:
-
-- **Result\<T\> pattern**: Uniform responses for all fallible operations
-- **Early exit / guard clauses**: Clean control flow patterns
-- **90%+ branch coverage**: Unit, integration, smoke, and E2E tests mandatory
-- **File size limits**: Files < 200 lines, functions < 30 lines
-- **Structured logging**: Correlation IDs, contextual metadata
-- **Performance budgets**: Measurable performance targets
-
-## Usage Examples
-
-### Initialize a new project:
-
-```
-/dev
-```
-
-When run in an empty directory, scaffolds the project with directory structure, CLAUDE.md, ADR-001, test configuration, and language-specific Result types.
-
-### Build a new feature:
-
-```
-/dev Add rate limiting to API endpoints
-```
-
-Walks through all 7 phases with multi-agent consensus at each step.
-
-### Review existing code:
-
-```
-/dev review
-```
-
-Dispatches 3 review agents (code quality, observability, performance) for a standalone quality review.
-
-### Analyze test coverage:
-
-```
-/dev test
-```
-
-Analyzes the codebase for test coverage gaps and designs or updates the test plan.
-
-### Update documentation:
-
-```
-/dev docs
-```
-
-Scans for undocumented decisions, updates ADRs, specs, and test plans.
 
 ## Prerequisites
 
-The full development cycle integrates with a set of external skills that the pipeline invokes through config keys. All are optional — if any is unavailable, the corresponding phase operates with inline alternatives (graceful degradation).
+External skills the default config references (all optional — phase operates inline if missing):
 
-The authoritative list with config keys and defaults is in **[CLAUDE.md — Prerequisites](./CLAUDE.md)** (the `Prerequisites` section maps each `pipeline.skills.*` key to its default skill). Summary of phases that integrate external skills:
+| Config key | Default |
+|---|---|
+| `pipeline.skills.requirements` | `superpowers:brainstorming` |
+| `pipeline.skills.exploration` | `feature-dev:code-explorer` |
+| `pipeline.skills.architect` | `feature-dev:code-architect` |
+| `pipeline.skills.planning` | `superpowers:writing-plans` |
+| `pipeline.skills.tdd` | `superpowers:test-driven-development` |
+| `pipeline.skills.implementation` | `superpowers:subagent-driven-development` |
+| `pipeline.skills.requestReview` | `superpowers:requesting-code-review` |
+| `pipeline.skills.receiveReview` | `superpowers:receiving-code-review` |
+| `pipeline.skills.verification` | `superpowers:verification-before-completion` |
+| `pipeline.skills.finishing` | `superpowers:finishing-a-development-branch` |
+| `pipeline.skills.debugging` | `superpowers:systematic-debugging` |
 
-- Phase 1 (Requirements): `pipeline.skills.requirements`
-- Phase 2 (Research): `pipeline.skills.exploration`, `pipeline.skills.architect`
-- Phase 3 (Plan + Freeze Doc): `pipeline.skills.planning`
-- Phase 4 (Test Planning): `pipeline.skills.tdd`
-- Phase 5 (Implementation + Layer 1 Review): `pipeline.skills.implementation` (or `implementationSequential`/`implementationParallel`), `pipeline.skills.requestReview`, `pipeline.skills.receiveReview`
-- Phase 6 (Verification + Layer 2 Review): `pipeline.skills.verification`, same review skills as Phase 5
-- Phase 7 (Documentation + Mistake Capture → GATE 2): `pipeline.skills.finishing`
-- Any phase failure: `pipeline.skills.debugging`
+## Evolution notes
 
-Override any mapping in `~/.claude/autodev/config.json`.
+- **v1.0** — initial 10-phase pipeline
+- **v2.0** — consolidated to 7-phase cycle with freeze-doc enforcement + 2 user gates
+- **v3.0** — **Managed Agents architecture**: event log, views, wake, replay, phase YAML + instructions, uniform tool dispatch, modelProfile, multi-brain fan-out. Non-breaking for existing `/dev` behavior.
+
+See `docs/specs/2026-04-20-managed-agents-evolution.md` and the four milestone plans in `docs/plans/` for the evolution rationale and scorecard (68/80 — all 8 principles ≥8).
 
 ## Troubleshooting
 
 ### Agents take too long
-
-**Issue**: Consensus rounds with multiple agents are slow on large codebases.
-
-**Solution**: This is expected behavior. Agents run in parallel when possible, and the thoroughness of multi-agent consensus prevents costly rework later. For simpler tasks that do not need the full framework, skip `/dev` and work directly.
+Consensus rounds with 3+ agents are slow on large codebases. Expected. For simple tasks, skip `/dev` and work directly.
 
 ### Too many clarifying questions in Phase 1
+Provide more detail upfront — constraints, scope boundaries, known requirements.
 
-**Issue**: The requirements phase asks too many questions.
+### Standards too strict
+The `references/standards/*` files are defaults. During Init, customize budgets and coverage for your project.
 
-**Solution**: Provide more detail in your initial feature description. Include constraints, scope boundaries, and known requirements upfront. The more context you give, the fewer questions the agents need to ask.
+### Consensus loop won't converge
+Default 10 iterations with 2 consecutive zero-issue rounds. If it hits the cap, unresolved issues escalate to you automatically. Some decisions need human judgment.
 
-### User gate in Phase 3 feels excessive
+## License
 
-**Issue**: The plan approval step slows things down.
-
-**Solution**: The user gate exists to prevent wasted implementation effort. Review the plan carefully -- it is much cheaper to change direction at Phase 3 than at Phase 6. If you trust the plan, approve it and Phases 4-7 run autonomously.
-
-### Consensus loop does not converge
-
-**Issue**: Agents cannot reach agreement within the review iteration cap (v2.0.0 default: 10 iterations with early exit on 2 consecutive zero-issue rounds).
-
-**Solution**: Unresolved issues are escalated to you automatically. Review the competing perspectives, make a decision, and the workflow continues. This is by design -- some decisions require human judgment.
-
-### Standards feel too strict
-
-**Issue**: The 90% coverage target or file size limits are too aggressive for your project.
-
-**Solution**: The standards in `references/` are defaults. During the Init workflow, you can customize performance budgets, coverage targets, and other thresholds for your project. These get encoded in your project's CLAUDE.md.
-
-## Requirements
-
-- Claude Code installed
-- Git repository (for version control and code review workflows)
-- Project with existing codebase (for full cycle, review, test, and docs workflows) or empty directory (for init workflow)
-
-## Version
-
-2.0.0
+MIT — see [LICENSE](./LICENSE).
 
 ## Author
 

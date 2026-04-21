@@ -1,7 +1,7 @@
 ---
 name: dev
-version: 2.0.0
-description: "AI-led, end-to-end development workflow with multi-agent consensus reviews, freeze-doc-enforced research/execution boundary, and two user approval gates. Use when the user wants to build a feature, fix a bug via research-plan-execute, initialize a project, review code, plan tests, or maintain docs. Supports interactive (default) and autonomous (--autonomous TICKET) modes under one command. Also trigger on: '/dev', 'implement this feature', 'build end-to-end', 'research and plan', 'take this ticket and run with it', 'autonomous implementation', or any request for structured multi-phase development."
+version: 3.0.0
+description: "AI-led, end-to-end development workflow built on Managed Agents architecture (event log, stateless restart, phase YAML dispatcher, multi-brain fan-out). Multi-agent consensus reviews, freeze-doc-enforced research/execution boundary, two user approval gates. Use when the user wants to build a feature, fix a bug via research-plan-execute, initialize a project, review code, plan tests, or maintain docs. Supports interactive (default) and autonomous (--autonomous TICKET) modes under one command. Also trigger on: '/dev', 'implement this feature', 'build end-to-end', 'research and plan', 'take this ticket and run with it', 'autonomous implementation', or any request for structured multi-phase development."
 ---
 
 # `/dev` — Unified Development Framework
