@@ -121,6 +121,38 @@ Records which files the implementation plan intends to touch. Populates `views/p
 | `patterns.promoted` | `{id: string, pattern: string, frequency: int}` | SKILL.md Phase 7 mistake capture |
 | `patterns.demoted` | `{id: string, pattern: string, reason: string}` | SKILL.md Phase 7 mistake capture |
 
+### `spike.*` — /spike phase and retro lifecycle (v4.0+)
+
+Session folder for `/spike` is epic-scoped: `{repo}--epic-{epicId}/`. `session.started` from `/spike` carries `epicId` instead of (or in addition to) `featureSlug`/`ticket`.
+
+| Type | Data | Emitted by |
+|---|---|---|
+| `spike.started` | `{epicId: string, goal: string}` | `/spike` SKILL.md Pre-Workflow |
+| `spike.phase.N.started` | `{epicId: string, phase: 1\|2\|3\|4\|5}` | `/spike` SKILL.md at Begin gate pass |
+| `spike.phase.N.completed` | `{epicId: string, phase: int, metrics?: object}` | `/spike` SKILL.md at End gate pass |
+| `spike.tickets.decomposed` | `{epicId: string, tickets: [{ticketId, title}]}` | `/spike` Phase 3 end |
+| `spike.gate.approved` | `{epicId: string, approvedBy: string}` | `/spike` Phase 4 human signoff |
+| `spike.gate.rejected` | `{epicId: string, returnToPhase: int, reason: string}` | `/spike` Phase 4 rejection |
+| `spike.integration.verified` | `{epicId: string, ticketCount: int}` | cross-ticket integration verifier (after all tickets merged) |
+| `spike.retro.completed` | `{epicId: string, patternsPromoted: int, patternsDemoted: int}` | `/spike` Phase 5 retro end |
+
+### `ticket.*` — ticket decomposition and lifecycle (v4.0+)
+
+Emitted by both `/spike` (decomposition) and `/implement` (impl progress). All carry `epicId` + `ticketId` so reducers can key state by either dimension.
+
+| Type | Data | Emitted by |
+|---|---|---|
+| `ticket.decomposed` | `{epicId, ticketId, title, implBlockedBy: [{ticketId, kind, reason}], deployBlockedBy: [{ticketId, kind, reason}]}` | `/spike` Phase 3 per-iteration |
+| `ticket.started` | `{epicId, ticketId, branch: string}` | `/implement` Phase 0 success |
+| `ticket.discovery` | `{epicId, ticketId, section: string, correction: string}` | `/implement` on spike-plan / ref-doc error discovery |
+| `ticket.merged` | `{epicId, ticketId, prUrl?: string}` | `/implement` Phase 7 GATE 2 approval option [1] or [3] |
+
+**Re-emit semantics for `ticket.decomposed`:** if the same `ticketId` is decomposed a second time (e.g., Phase 4 gap-review correction reclassifies a blocker), the later event supersedes the earlier one in the reducer's view. Events themselves are still append-only; the reducer picks the latest.
+
+**Cross-skill reducer consumers:**
+- `reduce-spike-plan.sh` — reads `ticket.decomposed`, `ticket.started`, `ticket.merged` to regenerate `docs/plan/{epicId}/spike-plan.md` §7 registry.
+- `reduce-ticket-doc.sh` — reads per-ticket phase/consensus/gate events to regenerate `docs/plan/{epicId}/{ticketId}.md` §6 impl log + frontmatter `.status`.
+
 ## Invariants
 
 1. **Monotonic seq.** Within a session, `seq` strictly increases. Concurrent writes serialized by mkdir lock on `.seq.lock`.
