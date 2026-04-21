@@ -148,6 +148,8 @@ Per-repo-branch session folders at `~/.claude/autodev/sessions/{repo}--{branch}/
 
 | File | Purpose |
 |---|---|
+| `events.jsonl` | Append-only event stream (M1+); every orchestrator state transition + every hook gate decision emits one line. Source of truth for retrospective queries. |
+| `.seq` | Atomic counter for the last emitted event's `seq` value. Managed by `emit-event.sh` under mkdir-based lock. |
 | `progress-log.json` + `.md` | Phase timing, metrics, status; includes `mode` (full-cycle, review, test, docs, init), `freezeDocPath`, `plannedFiles`, `featureSlug` |
 | `decision-log.json` + `.md` | Every decision with reasoning |
 | `pipeline-issues.json` | Review findings per phase |
@@ -156,3 +158,14 @@ Per-repo-branch session folders at `~/.claude/autodev/sessions/{repo}--{branch}/
 | `bypass.json` | Ticket-scoped freeze-gate override (live during session; deleted at GATE 2) |
 | `bypass-audit.jsonl` | Durable bypass audit trail (written by `sessionend.sh` on crash/interrupt; merged into freeze doc `bypassHistory` at GATE 2, filtered by `runId`) |
 | `test-failures.log` | Test failure audit trail (hook-written) |
+
+### Events (M1+)
+
+Every state transition dual-writes to `events.jsonl` alongside existing state files. Schema, type catalog, and query examples: [`skills/dev/references/autonomous/events-schema.md`](./skills/dev/references/autonomous/events-schema.md).
+
+Primitives (all in `hooks/scripts/`):
+- `emit-event.sh <type> [--data JSON] [--actor ACTOR]` — append one event with atomic seq
+- `get-events.sh [--type T] [--phase N] [--since-seq N] [--format json|summary|count]` — query
+- `_session-lib.sh` — shared helpers sourced by all hooks (cfg, sanitize_branch, resolve_session_dir, iso_utc)
+
+Events are append-only; existing state files remain authoritative during M1. M2 will introduce `views/` as regenerated-from-events projections, and `wake.sh` for stateless restart. See [`docs/specs/2026-04-20-managed-agents-evolution.md`](../../docs/specs/2026-04-20-managed-agents-evolution.md) for the full evolution plan.
