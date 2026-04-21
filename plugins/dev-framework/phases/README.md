@@ -1,18 +1,25 @@
 # Phase YAMLs
 
-Each `phase-N.yaml` captures Phase N's **metadata** — what it needs, emits, invokes, and produces. Narrative prose lives in [`../skills/implement/SKILL.md`](../skills/implement/SKILL.md).
+Two skills, two phase-file prefixes:
 
-Read by the dispatcher preamble at phase entry (see [`../skills/implement/references/autonomous/dispatcher-spec.md`](../skills/implement/references/autonomous/dispatcher-spec.md)).
+- `phase-N.yaml` — `/implement` phases 1-7. Narrative prose: [`../skills/implement/SKILL.md`](../skills/implement/SKILL.md).
+- `spike-phase-N.yaml` — `/spike` phases 1-5. Narrative prose: [`../skills/spike/SKILL.md`](../skills/spike/SKILL.md).
+
+Each YAML captures a phase's **metadata** — what it needs, emits, invokes, and produces.
+
+Read by the dispatcher preamble at phase entry (see [`../skills/implement/references/autonomous/dispatcher-spec.md`](../skills/implement/references/autonomous/dispatcher-spec.md)). `read-phase.sh` takes a file path, so both naming conventions work without any dispatcher change.
 
 ## Schema
 
 ```yaml
-phase: <int 1-7>
+phase: <int>                  # 1-7 for /implement; 1-5 for /spike
 name: <human-readable phase name>
 skillMdSection: <anchor into SKILL.md, e.g. "Phase 1 — Requirements">
+skill: implement | spike      # optional; defaults to "implement" for unprefixed files
 
 requiredRefs:
-  - <path under skills/implement/references/, e.g. "methodology/DECISION_MAKING.md">
+  - <path under the owning skill's references/, e.g. "methodology/DECISION_MAKING.md">
+  # Cross-skill refs use relative paths, e.g. "../../implement/references/protocols/multi-agent-consensus.md"
   # Dispatcher lazy-loads these at phase entry. Empty list means phase relies
   # only on the global companion-references table.
 

@@ -1,0 +1,68 @@
+phase: 5
+name: "Retro (async — runs after all tickets merged)"
+skillMdSection: "Phase 5 — Retro"
+skill: spike
+
+requiredRefs:
+  # Design-variant mistake tracker (forked from /implement's code variant)
+  # lands in Phase 5 of this implementation plan. Until then, the /implement
+  # mistake-tracker-protocol is an acceptable fallback.
+  - autonomous/mistake-tracker-protocol.md
+  - ../../implement/references/autonomous/mistake-tracker-protocol.md
+
+emits:
+  entry:
+    - type: spike.phase.5.started
+      data: "{\"epicId\":\"${epicId}\",\"phase\":5}"
+  exit:
+    - type: spike.retro.completed
+      data: "{\"epicId\":\"${epicId}\",\"patternsPromoted\":${promoted},\"patternsDemoted\":${demoted}}"
+    - type: spike.phase.5.completed
+      data: "{\"epicId\":\"${epicId}\",\"phase\":5}"
+
+invokes:
+  - kind: protocol
+    name: mistake-tracker-protocol
+    input:
+      variant: design
+      store: "~/.claude/autodev/chronic-design-patterns.json"
+
+produces:
+  - kind: store-update
+    path: "~/.claude/autodev/chronic-design-patterns.json"
+  - kind: claude-md-section
+    scope: "between chronic-design-patterns sentinels"
+
+gates:
+  begin:
+    - script: phase-gate.sh
+      args: ["begin", "5"]
+  end:
+    - script: phase-gate.sh
+      args: ["end", "5"]
+
+budget:
+  seconds: 300
+
+userGate: none
+
+instructions:
+  entry:
+    - "Verify prerequisite: all tickets of the epic must have status=merged. Query ticket-statuses.json (or events.jsonl for ticket.merged events). If any ticket is unmerged, exit with 'retro not ready — N tickets unmerged'."
+    - "Read the mistake-tracker-protocol — design variant if present under skills/spike/references/autonomous/, else the code variant from /implement (degraded but functional)."
+    - "Emit spike.phase.5.started event."
+    - "Run phase-gate.sh begin 5."
+  main:
+    - "Aggregate ticket.discovery events across the epic. These are the raw signals of design mistakes: places where the spike plan was wrong, and /implement had to work around it."
+    - "Also aggregate spike.phase.*.completed metrics: consensus iteration counts, rejection/return-to-phase counts, ticket count, total duration."
+    - "Match discoveries against existing patterns in chronic-design-patterns.json: increment frequency on match, create new pattern on novel signal."
+    - "Promote pattern to the chronic CLAUDE.md section at frequency ≥ config.pipeline.chronicPromotionThreshold (default 3)."
+    - "Enforce hard cap config.pipeline.maxActivePatterns (default 20) with LRU eviction."
+    - "Demote patterns that have been clean for ≥ config.pipeline.cleanRunsForDemotion (default 5) runs."
+    - "Sync CLAUDE.md chronic-design-patterns section between sentinel markers (atomic write with backup, per existing /implement pattern)."
+  exit:
+    - "Update progress-log.json with patternsPromoted, patternsDemoted."
+    - "Emit spike.retro.completed with metrics."
+    - "Emit spike.phase.5.completed."
+    - "Run phase-gate.sh end 5."
+    - "Print banner: --- Spike Phase 5 Complete: Retro — promoted: ${promoted} | demoted: ${demoted} ---"
