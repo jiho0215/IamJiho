@@ -111,7 +111,7 @@ case "$KIND" in
     rm -f "$TMP_OUT"
     ;;
   protocol)
-    REF_PATH="$SCRIPT_DIR/../../skills/dev/references/protocols/$NAME.md"
+    REF_PATH="$SCRIPT_DIR/../../skills/implement/references/protocols/$NAME.md"
     if [ -f "$REF_PATH" ]; then
       OUTPUT=$(jq -cn --arg path "$REF_PATH" '{referenceLoaded:$path}')
       END_MS=$(date +%s%3N 2>/dev/null || echo 0)

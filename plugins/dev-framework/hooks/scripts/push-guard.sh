@@ -1,8 +1,8 @@
 #!/bin/bash
-# push-guard.sh — PreToolUse hook: block git push until the /dev full-cycle
+# push-guard.sh — PreToolUse hook: block git push until the /implement full-cycle
 # workflow is marked complete (or user has explicitly bypassed for this ticket).
 #
-# A branch that never used /dev is not guarded (no session folder). A branch
+# A branch that never used /implement is not guarded (no session folder). A branch
 # that has an active session must either show a pipeline-complete.md marker
 # (GATE 2 approval) or a ticket-scoped bypass.json to proceed.
 #
@@ -76,8 +76,8 @@ SESSION_DIR=$(resolve_session_dir)
 MARKER="$SESSION_DIR/pipeline-complete.md"
 BYPASS_FILE="$SESSION_DIR/bypass.json"
 
-# Only guard branches that have a session folder (i.e., /dev was started for this branch).
-# Branches that never used /dev are not blocked — regular development proceeds normally.
+# Only guard branches that have a session folder (i.e., /implement was started for this branch or epic).
+# Branches that never used /implement are not blocked — regular development proceeds normally.
 if [ ! -d "$SESSION_DIR" ]; then
     exit 0
 fi
@@ -107,7 +107,7 @@ if [ -f "$BYPASS_FILE" ]; then
     if [ -n "$BYPASS_FEATURE" ] && [ -n "$BYPASS_REASON" ] && [ -n "$BYPASS_CREATED" ]; then
         if [ -z "$ACTIVE_FEATURE" ]; then
             echo "🛑 BLOCKED: bypass.json has feature '$BYPASS_FEATURE' but session has no featureSlug/ticket recorded." >&2
-            echo "   The session may not be fully initialized. Run /dev to initialize, then retry." >&2
+            echo "   The session may not be fully initialized. Run /implement to initialize, then retry." >&2
             emit_push_blocked "bypass feature without active session feature"
             exit 2
         fi
@@ -124,7 +124,7 @@ if [ -f "$BYPASS_FILE" ]; then
         exit 2
     elif [ -n "$BYPASS_FEATURE" ]; then
         echo "🛑 BLOCKED: bypass.json exists but is missing required audit fields (feature, reason, createdAt)." >&2
-        echo "   Bypass must be created via 'bypass freeze' in /dev, not manually." >&2
+        echo "   Bypass must be created via 'bypass freeze' in /implement, not manually." >&2
         emit_push_blocked "bypass missing audit fields"
         exit 2
     fi
@@ -138,9 +138,9 @@ if [ "$MODE" != "full-cycle" ]; then
     exit 0
 fi
 
-echo "🛑 BLOCKED: /dev full-cycle workflow not completed for branch '$BRANCH'." >&2
-echo "   Normal path: complete Phase 7 (GATE 2 approval) of /dev to authorize push." >&2
-echo "   Emergency path: request 'bypass freeze' in /dev to create an audit-trailed bypass." >&2
+echo "🛑 BLOCKED: /implement full-cycle workflow not completed for branch '$BRANCH'." >&2
+echo "   Normal path: complete Phase 7 (GATE 2 approval) of /implement to authorize push." >&2
+echo "   Emergency path: request 'bypass freeze' in /implement to create an audit-trailed bypass." >&2
 echo "   Escape hatch: use --force in your git push command (no audit trail)." >&2
 echo "   Session: $SESSION_DIR" >&2
 emit_push_blocked "full-cycle workflow not completed"

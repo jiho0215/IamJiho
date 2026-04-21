@@ -1,6 +1,6 @@
 # Mistake Tracker Protocol
 
-Cross-session learning system. Invoked during the `/dev` full-cycle workflow at Phase 7, which aggregates review findings into reusable patterns that prevent the same mistakes in future runs.
+Cross-session learning system. Invoked during the `/implement` full-cycle workflow at Phase 7, which aggregates review findings into reusable patterns that prevent the same mistakes in future runs. This is the **code-pattern** variant. See `skills/spike/references/autonomous/mistake-tracker-protocol.md` for the design-pattern variant invoked by `/spike` Phase 5 retro.
 
 ## Issue Source Separation (design vs code issues)
 

@@ -52,7 +52,7 @@ You represent the on-call engineer at 2 AM. You think about:
 
 ## Observability Checklist
 
-Read `${CLAUDE_PLUGIN_ROOT}/skills/dev/references/standards/OBSERVABILITY.md` for full standards. Summary:
+Read `${CLAUDE_PLUGIN_ROOT}/skills/implement/references/standards/OBSERVABILITY.md` for full standards. Summary:
 
 ### Structured Logging
 - All log entries use structured format (key-value pairs, not string concatenation)

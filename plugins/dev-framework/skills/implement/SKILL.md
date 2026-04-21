@@ -1,10 +1,10 @@
 ---
-name: dev
-version: 3.0.0
-description: "AI-led, end-to-end development workflow built on Managed Agents architecture (event log, stateless restart, phase YAML dispatcher, multi-brain fan-out). Multi-agent consensus reviews, freeze-doc-enforced research/execution boundary, two user approval gates. Use when the user wants to build a feature, fix a bug via research-plan-execute, initialize a project, review code, plan tests, or maintain docs. Supports interactive (default) and autonomous (--autonomous TICKET) modes under one command. Also trigger on: '/dev', 'implement this feature', 'build end-to-end', 'research and plan', 'take this ticket and run with it', 'autonomous implementation', or any request for structured multi-phase development."
+name: implement
+version: 4.0.0
+description: "Single-ticket Implementation workflow. Takes one well-defined ticket (spike-sourced or ad-hoc) and produces a rigorously-tested, reviewed, merged PR. Built on Managed Agents architecture (event log, stateless restart, phase YAML dispatcher, multi-brain fan-out). 7-phase pipeline (plus Phase 0 prereq check for spike-sourced tickets): Requirements \u2192 Research \u2192 Plan+Freeze \u2192 Test Planning \u2192 Implementation+Layer1 \u2192 Verification+Layer2 \u2192 Docs+PR. Multi-agent consensus reviews, freeze-doc-enforced research/execution boundary, two user approval gates (GATE 1 freeze, GATE 2 final). Use when the user wants to ship one ticket correctly. For multi-ticket research and decomposition, use /dev-framework:spike instead. Supports interactive (default) and autonomous (--autonomous TICKET) modes. Also trigger on: '/implement', 'ship this ticket', 'implement this feature', 'take this ticket and run with it', 'autonomous implementation', or any request for structured single-ticket development."
 ---
 
-# `/dev` — Unified Development Framework
+# `/implement` \u2014 Ticket Implementation Framework
 
 You are orchestrating one rigorous, multi-agent development cycle for this user. This is the **only** workflow this plugin offers. Move slow, do it right. Reduce revisits and refactoring.
 
@@ -141,7 +141,7 @@ For new or uninitialized projects. **Apply the session collision guard from Sect
    - `task_type: validate`
    - `agents_list: [code-quality-reviewer, architect, requirements-analyst]`
    - Context: "Validate all scaffolded files against the actual codebase. Flag any aspirational documentation that contradicts the current code."
-10. Confirm initialization complete. Tell the user: "Type `/dev [feature description]` to begin the full development cycle for your first feature."
+10. Confirm initialization complete. Tell the user: "Type `/implement [feature description]` to begin the full development cycle for your first feature."
 
 ---
 
@@ -359,7 +359,7 @@ After this point, **the freeze-gate hook is active**: any attempt to edit `src/`
 2. Reference `SESSION_DIR/tdd-plan.md` for test strategy. Follow TDD: write failing test → implement minimum to pass → refactor.
 3. On any bug or unexpected failure, invoke `config.pipeline.skills.debugging` (default `superpowers:systematic-debugging`) before attempting fixes. Root cause first.
 
-> **Observability note — Agent-dispatched edits:** when implementation runs via the Agent tool (subagent-driven or parallel-agent modes), `Edit`/`Write` tool calls made by sub-agents fire `freeze-gate.sh` inside the sub-agent's sandboxed context. The hook's exit-2 block messages surface back only as a generic "tool call failed" signal to the orchestrator, not as a structured gate diagnostic. If an Agent tool reports an edit failure in `src/**`, inspect `SESSION_DIR/bypass.json` and the freeze doc status directly (or run `/dev --status`) before assuming a code error — the failure may be a legitimate gate block.
+> **Observability note — Agent-dispatched edits:** when implementation runs via the Agent tool (subagent-driven or parallel-agent modes), `Edit`/`Write` tool calls made by sub-agents fire `freeze-gate.sh` inside the sub-agent's sandboxed context. The hook's exit-2 block messages surface back only as a generic "tool call failed" signal to the orchestrator, not as a structured gate diagnostic. If an Agent tool reports an edit failure in `src/**`, inspect `SESSION_DIR/bypass.json` and the freeze doc status directly (or run `/implement --status`) before assuming a code error — the failure may be a legitimate gate block.
 
 **Layer 1 Review (mandatory):**
 
@@ -508,9 +508,9 @@ Runs without a full cycle. Use when the user says `review`.
 
 **Session collision guard (applies to Sections A, C, D, E):** Before creating or writing any session state, if `SESSION_DIR/progress-log.json` already exists, read it. If its `mode` is `full-cycle` and `status` is `in-progress`, `interrupted`, or `failed`, **halt** and present the user with:
 ```
-⚠️  A full-cycle /dev session exists on this branch ({featureSlug}, Phase {N}, status={status}).
+⚠️  A full-cycle /implement session exists on this branch ({featureSlug}, Phase {N}, status={status}).
 Running standalone '{init|review|test|docs}' here will overwrite the full-cycle session state,
-making it unresumable. If status is 'failed' or 'interrupted', resume via /dev --from {N} instead.
+making it unresumable. If status is 'failed' or 'interrupted', resume via /implement --from {N} instead.
   [1] Abort this standalone run
   [2] Overwrite and proceed (full-cycle state will be lost)
   [3] Switch branch before continuing
@@ -564,7 +564,7 @@ Use when the user says `docs` or `documentation`. Apply the session collision gu
 2. Read `progress-log.json`, `decision-log.json`. Also read the freeze doc (if `freezeDocPath` is set) and check for `bypass.json` and `pipeline-complete.md`.
 3. Output a comprehensive summary for quick diagnosis:
    - Ticket/feature, mode, status, current phase.
-   - **If status is `interrupted`:** highlight `interruptedAt` timestamp prominently and include an actionable note: "Session ended mid-run. Use `/dev --from {currentPhase}` to resume. Phase {currentPhase} may be partially complete — review `phase-{N}-decisions.jsonl` if present."
+   - **If status is `interrupted`:** highlight `interruptedAt` timestamp prominently and include an actionable note: "Session ended mid-run. Use `/implement --from {currentPhase}` to resume. Phase {currentPhase} may be partially complete — review `phase-{N}-decisions.jsonl` if present."
    - Per-phase timing, metrics, decisions count.
    - Last 5 decisions.
    - Config snapshot.
@@ -603,7 +603,7 @@ When a phase fails:
    --- Phase {N} FAILED: {phase name} ---
    Error: {description}
    Session: {SESSION_DIR}
-   Resume: /dev --from {N} [--autonomous TICKET]
+   Resume: /implement --from {N} [--autonomous TICKET]
    ```
 7. Offer: `[1] Retry this phase` `[2] Skip to next` `[3] Abort workflow`.
 

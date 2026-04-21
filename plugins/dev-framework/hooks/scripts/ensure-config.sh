@@ -2,7 +2,7 @@
 # ensure-config.sh — Idempotent config bootstrap for dev-framework plugin.
 #
 # Creates ~/.claude/autodev/config.json with default schema if absent.
-# Safe to call at the start of any /dev invocation (both interactive and autonomous).
+# Safe to call at the start of any /spike or /implement invocation (both interactive and autonomous).
 # Single source of truth for the default config schema — no inline duplication
 # in SKILL.md or other hooks.
 #

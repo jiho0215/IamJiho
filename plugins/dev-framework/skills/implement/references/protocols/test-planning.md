@@ -1,6 +1,6 @@
 # Test Planning
 
-> Internal reference for `skills/dev/SKILL.md`. Invoked by reading this file, not via the Skill tool.
+> Internal reference for `skills/implement/SKILL.md`. Invoked by reading this file, not via the Skill tool.
 
 Generate a structured, layered test plan for a feature. Produces a `tdd-plan.md` document with test IDs, dependency chains, event-type grouping, and execution order.
 
@@ -11,7 +11,7 @@ Before running this skill, you need:
 - **Codebase architecture** — what components exist, how data flows
 - **Implementation plan** — what will be changed/created
 
-When invoked during a `/dev` full cycle, these come from Phase 1-3 artifacts in the session folder.
+When invoked during a `/implement` full cycle, these come from Phase 1-3 artifacts in the session folder.
 
 ---
 

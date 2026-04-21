@@ -1,29 +1,43 @@
 # Dev Framework Plugin
 
-Single-purpose plugin for AI-led, end-to-end software development. One command. One skill. One workflow.
+AI-led, end-to-end software development built on the Managed Agents architecture. Two skills covering the two shapes of engineering work: **research spike** (multi-ticket decomposition) and **ticket implementation** (single-ticket rigorous execution). Both skills share one epic-scoped event log.
 
 ## Core Philosophy
 
-1. **One purpose.** AI leads development from requirement to completion. The user answers questions, discusses, confirms at two gates, and completes. Every file in this plugin exists to serve that single workflow.
-2. **Move slow, do it right.** Reduce revisits and refactoring. Multi-agent consensus reviews with 10-iteration / 2-consecutive-zero convergence.
-3. **Research-execution boundary is physical.** Phase 1-3 decisions are frozen in a single freeze doc artifact; src/** edits are blocked by a hook until the user approves at GATE 1; git push is blocked until GATE 2 approval.
-4. **Language-agnostic.** Works with any tech stack. (Exception noted: `test-failure-capture.sh` default is `dotnet test` — override via `config.hooks.testCapture.testCommand`; tracked for correction.)
-5. **Documentation as a first-class artifact.** `project-docs` protocol enforces `docs/` structure before any implementation begins.
+1. **Two shapes, two skills.** `/spike` handles multi-ticket research and decomposition; `/implement` handles single-ticket rigorous execution. Both run on the same Managed Agents primitives (event log, wake, views, execute).
+2. **Shared epic session.** `/spike` and `/implement` write to one `events.jsonl` keyed by epic. `wake()` returns cross-ticket state in a single call (MA invariant: many brains share many hands).
+3. **Move slow, do it right.** Reduce revisits and refactoring. Multi-agent consensus reviews with 10-iteration / 2-consecutive-zero convergence.
+4. **Research-execution boundary is physical.** In `/implement`, Phase 1-3 decisions are frozen in a single freeze doc artifact; src/** edits are blocked by a hook until the user approves at GATE 1; git push is blocked until GATE 2 approval.
+5. **Language-agnostic.** Works with any tech stack. (Exception noted: `test-failure-capture.sh` default is `dotnet test` — override via `config.hooks.testCapture.testCommand`; tracked for correction.)
+6. **Documentation as a first-class artifact.** `project-docs` protocol enforces `docs/` structure; `/spike` plan docs live in-repo under `docs/plan/{epic}/` and are PR-reviewable.
 
-## The Workflow
+## The Workflows
 
 ```
-/dev [feature description]        Interactive full cycle (default)
-/dev --autonomous TICKET-123       Autonomous full cycle
-/dev --from N                      Resume at phase N
-/dev --status                      Show current session status
-/dev init                          Initialize a new project
-/dev review                        Standalone review
-/dev test                          Standalone test planning
-/dev docs                          Standalone docs maintenance
+/spike [epic description]                   Research spike (new, multi-ticket decomposition)
+/spike --retro EPIC-ID                      Post-merge retro (design pattern capture)
+
+/implement [ticket-or-feature]              Single-ticket implementation (interactive)
+/implement --autonomous TICKET-123          Single-ticket implementation (autonomous)
+/implement --from N                         Resume at phase N
+/implement --status                         Show current session status
+/implement init                             Initialize a new project
+/implement review                           Standalone review
+/implement test                             Standalone test planning
+/implement docs                             Standalone docs maintenance
 ```
 
-Full cycle phases (both modes):
+`/spike` 5 phases (phase 5 runs async after all tickets merge):
+
+```
+1. Requirements (multi-feature; NFR + rollout/rollback)
+2. System design (epic architecture + observability + API contracts + migration chain)
+3. Ticket decomposition (one-at-a-time; ref docs with hard/soft blockers)
+4. Cross-ticket gap review (multi-agent consensus) \u2192 human signoff
+5. Retro (async; fires when all spike tickets reach merged)
+```
+
+`/implement` full cycle phases (both modes):
 
 ```
 1. Requirements          (populates freeze doc §1, §5, §6)
@@ -45,7 +59,9 @@ plugins/dev-framework/
 ├── README.md
 ├── .claude-plugin/
 ├── commands/
-│   └── dev.md                 only command — routes to dev skill
+│   ├── implement.md           routes to implement skill (single-ticket)
+│   ├── spike.md               routes to spike skill (multi-ticket research)
+│   └── dev.md                 v4.0.0 tombstone \u2014 redirects users to /implement (removed in v4.1.0)
 ├── agents/                    six review/plan agents (shared)
 ├── phases/                    (M3+) phase YAML metadata
 │   ├── README.md                     schema spec
@@ -75,15 +91,20 @@ plugins/dev-framework/
 │       ├── read-phase.sh             (M3) YAML field reader
 │       └── execute.sh                (M3) uniform tool dispatch with auto events
 └── skills/
-    └── dev/                   the only skill
+    ├── implement/             ticket implementation skill (renamed from /dev in v4.0.0)
+    │   ├── SKILL.md
+    │   └── references/
+    │       ├── methodology/          DECISION_MAKING, DEVELOPMENT_CYCLE, DOCUMENTATION_STANDARDS, TESTING_STRATEGY
+    │       ├── standards/            CODE_QUALITY, EARLY_EXIT, ERROR_HANDLING, OBSERVABILITY, PERFORMANCE, RESULT_PATTERN
+    │       ├── templates/            ADR_TEMPLATE, CODE_REVIEW_CHECKLIST, FEATURE_SPEC_TEMPLATE, FREEZE_DOC_TEMPLATE, TEST_PLAN_TEMPLATE
+    │       ├── protocols/            internal protocols (multi-agent-consensus, project-docs, test-planning)
+    │       └── autonomous/           session-management, review-loop-protocol, mistake-tracker-protocol (code),
+    │                                 events-schema (M1), views-spec (M2), dispatcher-spec (M3)
+    └── spike/                 research spike skill (new in v4.0.0)
         ├── SKILL.md
         └── references/
-            ├── methodology/          DECISION_MAKING, DEVELOPMENT_CYCLE, DOCUMENTATION_STANDARDS, TESTING_STRATEGY
-            ├── standards/            CODE_QUALITY, EARLY_EXIT, ERROR_HANDLING, OBSERVABILITY, PERFORMANCE, RESULT_PATTERN
-            ├── templates/            ADR_TEMPLATE, CODE_REVIEW_CHECKLIST, FEATURE_SPEC_TEMPLATE, FREEZE_DOC_TEMPLATE, TEST_PLAN_TEMPLATE
-            ├── protocols/            internal protocols (multi-agent-consensus, project-docs, test-planning)
-            └── autonomous/           session-management, review-loop-protocol, mistake-tracker-protocol,
-                                      events-schema (M1), views-spec (M2), dispatcher-spec (M3)
+            ├── templates/            SPIKE_PLAN_TEMPLATE, TICKET_REF_TEMPLATE
+            └── autonomous/           mistake-tracker-protocol (design) \u2014 variant for architectural patterns
 ```
 
 All protocol files are **internal references** read by `SKILL.md` via the Read tool. They are not discoverable as standalone skills and are not exposed to the user.
@@ -108,11 +129,11 @@ Four zones govern how the LLM handles questions during execution:
 | 🤔 Ambiguous | Technical, not covered above | 4-tier rule: existing code → follow; reference repo → follow; initial impl → ask; else → self-decide |
 | ⚙️ Self-decide | Pure technical (naming, extraction, internal boundaries) | Decide without asking |
 
-See `skills/dev/references/templates/FREEZE_DOC_TEMPLATE.md` §9 for the full "Ask with Suggestion" format.
+See `skills/implement/references/templates/FREEZE_DOC_TEMPLATE.md` §9 for the full "Ask with Suggestion" format.
 
 ## Config
 
-All configuration lives in `~/.claude/autodev/config.json` (single source of truth). Created on first `/dev` invocation via `hooks/scripts/ensure-config.sh`. Every field has a documented fallback in `skills/dev/references/autonomous/session-management.md`.
+All configuration lives in `~/.claude/autodev/config.json` (single source of truth). Created on first `/spike` or `/implement` invocation via `hooks/scripts/ensure-config.sh`. Every field has a documented fallback in `skills/implement/references/autonomous/session-management.md`.
 
 Key sections:
 - `pipeline.modelProfile` (M3+; default `balanced`) — model capability profile (see below)
@@ -175,7 +196,7 @@ Override any mapping in `~/.claude/autodev/config.json` to swap in custom skills
 
 ## Session State
 
-Per-repo-branch session folders at `~/.claude/autodev/sessions/{repo}--{branch}/`:
+Per-epic session folders at `~/.claude/autodev/sessions/{repo}--epic-{epicId}/` (v4.0.0+; ad-hoc `/implement` runs without a spike synthesize `epicId = ad-hoc-{sanitized-branch}`):
 
 | File | Purpose |
 |---|---|
@@ -193,7 +214,7 @@ Per-repo-branch session folders at `~/.claude/autodev/sessions/{repo}--{branch}/
 
 ### Events (M1+)
 
-Every state transition dual-writes to `events.jsonl` alongside existing state files. Schema, type catalog, and query examples: [`skills/dev/references/autonomous/events-schema.md`](./skills/dev/references/autonomous/events-schema.md).
+Every state transition dual-writes to `events.jsonl` alongside existing state files. Schema, type catalog, and query examples: [`skills/implement/references/autonomous/events-schema.md`](./skills/implement/references/autonomous/events-schema.md).
 
 Primitives (all in `hooks/scripts/`):
 
@@ -217,7 +238,7 @@ Primitives (all in `hooks/scripts/`):
 - `fan-out.sh --name N [--target-dir DIR] [--share-events]` — spawn a child session folder (inherits parent runId); with `--share-events`, shares `events.jsonl` via symlink/hardlink (fallback to copy on platforms without link support). Emits `fan-out.spawned` in parent.
 
 See [`docs/specs/2026-04-20-managed-agents-evolution.md`](../../docs/specs/2026-04-20-managed-agents-evolution.md) for the full evolution plan. Protocol references:
-- [`skills/dev/references/autonomous/events-schema.md`](./skills/dev/references/autonomous/events-schema.md) — event type catalog (M1)
-- [`skills/dev/references/autonomous/views-spec.md`](./skills/dev/references/autonomous/views-spec.md) — view reducer contracts (M2)
-- [`skills/dev/references/autonomous/dispatcher-spec.md`](./skills/dev/references/autonomous/dispatcher-spec.md) — dispatcher pseudocode + invocation semantics (M3)
-- [`skills/dev/references/autonomous/worktree-orchestration.md`](./skills/dev/references/autonomous/worktree-orchestration.md) — multi-brain patterns (M4)
+- [`skills/implement/references/autonomous/events-schema.md`](./skills/implement/references/autonomous/events-schema.md) \u2014 event type catalog (M1, extended in v4.0 with `spike.*` and `ticket.*`)
+- [`skills/implement/references/autonomous/views-spec.md`](./skills/implement/references/autonomous/views-spec.md) \u2014 view reducer contracts (M2)
+- [`skills/implement/references/autonomous/dispatcher-spec.md`](./skills/implement/references/autonomous/dispatcher-spec.md) \u2014 dispatcher pseudocode + invocation semantics (M3)
+- [`skills/implement/references/autonomous/worktree-orchestration.md`](./skills/implement/references/autonomous/worktree-orchestration.md) \u2014 multi-brain patterns (M4)

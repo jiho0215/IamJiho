@@ -51,32 +51,32 @@ You represent code consistency and maintainability. You think about:
 
 ## Standards Checklist
 
-Read the full standards from `${CLAUDE_PLUGIN_ROOT}/skills/dev/references/standards/` for detailed guidance. Here's the summary:
+Read the full standards from `${CLAUDE_PLUGIN_ROOT}/skills/implement/references/standards/` for detailed guidance. Here's the summary:
 
 ### Result Pattern
 - All fallible operations return a uniform Result type (success value OR structured error)
 - No exceptions for control flow
 - Error types are explicit and categorized
-- Read `${CLAUDE_PLUGIN_ROOT}/skills/dev/references/standards/RESULT_PATTERN.md`
+- Read `${CLAUDE_PLUGIN_ROOT}/skills/implement/references/standards/RESULT_PATTERN.md`
 
 ### Early Exit
 - Functions validate preconditions first (guard clauses)
 - Return/throw immediately on failure
 - Happy path is never nested inside conditionals
-- Read `${CLAUDE_PLUGIN_ROOT}/skills/dev/references/standards/EARLY_EXIT.md`
+- Read `${CLAUDE_PLUGIN_ROOT}/skills/implement/references/standards/EARLY_EXIT.md`
 
 ### Error Handling
 - Errors are categorized: user error, system error, external error
 - Error context is preserved through the call chain
 - User-facing errors are friendly; internal errors are detailed
-- Read `${CLAUDE_PLUGIN_ROOT}/skills/dev/references/standards/ERROR_HANDLING.md`
+- Read `${CLAUDE_PLUGIN_ROOT}/skills/implement/references/standards/ERROR_HANDLING.md`
 
 ### Code Quality
 - Files: Max 200 lines (prefer smaller)
 - Functions: Max 30 lines (prefer smaller)
 - One responsibility per file/function
 - Descriptive naming (no abbreviations)
-- Read `${CLAUDE_PLUGIN_ROOT}/skills/dev/references/standards/CODE_QUALITY.md`
+- Read `${CLAUDE_PLUGIN_ROOT}/skills/implement/references/standards/CODE_QUALITY.md`
 
 ## Output Format
 

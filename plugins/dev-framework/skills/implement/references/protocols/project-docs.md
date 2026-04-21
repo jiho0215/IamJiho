@@ -1,6 +1,6 @@
 # Project Documentation Structure
 
-> Internal reference for `skills/dev/SKILL.md`. Invoked by reading this file, not via the Skill tool.
+> Internal reference for `skills/implement/SKILL.md`. Invoked by reading this file, not via the Skill tool.
 
 Every repository the dev-framework touches requires a documentation home. This protocol ensures that home exists, is well-organized, and stays current. Documentation is a first-class artifact — not an afterthought.
 
@@ -140,6 +140,6 @@ After a hygiene pass, briefly report what changed:
 
 ## Integration with Other Protocols
 
-This protocol is read by `skills/dev/SKILL.md` at the start of every workflow (and on demand when other phases need to verify or update documentation). It is not a Skill-tool-callable skill; invoke via the Read tool.
+This protocol is read by `skills/implement/SKILL.md` at the start of every workflow (and on demand when other phases need to verify or update documentation). It is not a Skill-tool-callable skill; invoke via the Read tool.
 
 When the `multi-agent-consensus` protocol (see `references/protocols/multi-agent-consensus.md`) resolves an issue, the resolution should be logged in `docs/decisions.md` if it represents a meaningful project decision.

@@ -21,7 +21,7 @@ on phase entry:
 
   # Lazy refs
   for ref in yaml.requiredRefs:
-    Read(skills/dev/references/${ref})
+    Read(skills/implement/references/${ref})
 
   # Entry events
   for ev in yaml.emits.entry:

@@ -52,7 +52,7 @@ You represent the user waiting for a response and the infrastructure budget. You
 
 ## Performance Checklist
 
-Read `${CLAUDE_PLUGIN_ROOT}/skills/dev/references/standards/PERFORMANCE.md` for full standards. Summary:
+Read `${CLAUDE_PLUGIN_ROOT}/skills/implement/references/standards/PERFORMANCE.md` for full standards. Summary:
 
 ### Time Complexity
 - Algorithms use appropriate data structures (no O(n^2) when O(n log n) is available)

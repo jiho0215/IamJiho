@@ -1,6 +1,6 @@
 # Review Loop Protocol
 
-Reusable iterative review protocol used throughout the `/dev` full-cycle workflow.
+Reusable iterative review protocol used throughout the `/implement` full-cycle workflow and the `/spike` Phase 4 cross-ticket gap review.
 
 ## Modes
 

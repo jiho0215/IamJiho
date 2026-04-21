@@ -1,7 +1,7 @@
 {
   "name": "dev-framework",
-  "description": "AI-led development framework built on Managed Agents architecture. One command /dev with 7-phase full cycle, freeze-doc-enforced research/execution boundary, two user approval gates, and multi-agent consensus reviews. Session state lives in an append-only event log (events.jsonl) with derivable views, stateless restart (wake.sh), seq-level replay, and multi-brain fan-out. Phase metadata declared in YAML; narrative stays in SKILL.md. modelProfile config knob tunes iteration counts as model capabilities evolve.",
-  "version": "3.0.1",
+  "description": "AI-led development framework built on Managed Agents architecture. Two skills for the two shapes of engineering work: /spike (multi-ticket research and decomposition) and /implement (single-ticket rigorous execution, renamed from /dev in v4.0). Both skills share one epic-scoped event log (events.jsonl) with derivable views, stateless restart (wake.sh), seq-level replay, and multi-brain fan-out. Plan docs live in-repo under docs/plan/{epic}/ with bi-directional plan-ticket reference updates. /implement retains freeze-doc-enforced research/execution boundary and two user approval gates. Retro-per-skill: code patterns in /implement, design patterns in /spike. modelProfile config knob tunes iteration counts as model capabilities evolve.",
+  "version": "4.0.0",
   "author": {
     "name": "Jiho Lee",
     "email": "ianjiholee@gmail.com"
@@ -27,6 +27,10 @@
     "replay",
     "multi-brain",
     "phase-yaml",
-    "dispatcher"
+    "dispatcher",
+    "spike",
+    "implement",
+    "ticket-decomposition",
+    "epic-scoped"
   ]
 }

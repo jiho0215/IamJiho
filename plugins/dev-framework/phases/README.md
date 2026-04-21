@@ -1,8 +1,8 @@
 # Phase YAMLs
 
-Each `phase-N.yaml` captures Phase N's **metadata** — what it needs, emits, invokes, and produces. Narrative prose lives in [`../skills/dev/SKILL.md`](../skills/dev/SKILL.md).
+Each `phase-N.yaml` captures Phase N's **metadata** — what it needs, emits, invokes, and produces. Narrative prose lives in [`../skills/implement/SKILL.md`](../skills/implement/SKILL.md).
 
-Read by the dispatcher preamble at phase entry (see [`../skills/dev/references/autonomous/dispatcher-spec.md`](../skills/dev/references/autonomous/dispatcher-spec.md)).
+Read by the dispatcher preamble at phase entry (see [`../skills/implement/references/autonomous/dispatcher-spec.md`](../skills/implement/references/autonomous/dispatcher-spec.md)).
 
 ## Schema
 
@@ -12,7 +12,7 @@ name: <human-readable phase name>
 skillMdSection: <anchor into SKILL.md, e.g. "Phase 1 — Requirements">
 
 requiredRefs:
-  - <path under skills/dev/references/, e.g. "methodology/DECISION_MAKING.md">
+  - <path under skills/implement/references/, e.g. "methodology/DECISION_MAKING.md">
   # Dispatcher lazy-loads these at phase entry. Empty list means phase relies
   # only on the global companion-references table.
 
