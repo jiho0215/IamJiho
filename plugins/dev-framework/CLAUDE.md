@@ -209,4 +209,15 @@ Primitives (all in `hooks/scripts/`):
 - `wake.sh` — stateless restart primitive. Returns compact JSON `{sessionDir, lastSeq, currentPhase, status, pendingAction, minimumContext}`. `pendingAction` values: `session.complete`, `session.ready-to-resume`, `phase.N.iteration.M.active`, `phase.N.completion`, `gate.1.pending`, `gate.2.pending`, `phase.N+1.ready`, `session.not-started`.
 - `replay.sh --until-seq N --target DIR` — copy events up to seq N into alt dir and regenerate views there (rewind/branch primitive)
 
-See [`docs/specs/2026-04-20-managed-agents-evolution.md`](../../docs/specs/2026-04-20-managed-agents-evolution.md) for the full evolution plan and [`skills/dev/references/autonomous/views-spec.md`](./skills/dev/references/autonomous/views-spec.md) for reducer contracts.
+**M3 (phase YAML + dispatcher):**
+- `read-phase.sh <file> <key>` — read a field from a phase YAML (scalar via dot-path, list via line-per-item)
+- `execute.sh <kind> <name> [--input JSON]` — uniform tool dispatch (kind: hook|protocol|skill|agent); auto-emits `tool.call.started/completed/failed`
+
+**M4 (multi-brain):**
+- `fan-out.sh --name N [--target-dir DIR] [--share-events]` — spawn a child session folder (inherits parent runId); with `--share-events`, shares `events.jsonl` via symlink/hardlink (fallback to copy on platforms without link support). Emits `fan-out.spawned` in parent.
+
+See [`docs/specs/2026-04-20-managed-agents-evolution.md`](../../docs/specs/2026-04-20-managed-agents-evolution.md) for the full evolution plan. Protocol references:
+- [`skills/dev/references/autonomous/events-schema.md`](./skills/dev/references/autonomous/events-schema.md) — event type catalog (M1)
+- [`skills/dev/references/autonomous/views-spec.md`](./skills/dev/references/autonomous/views-spec.md) — view reducer contracts (M2)
+- [`skills/dev/references/autonomous/dispatcher-spec.md`](./skills/dev/references/autonomous/dispatcher-spec.md) — dispatcher pseudocode + invocation semantics (M3)
+- [`skills/dev/references/autonomous/worktree-orchestration.md`](./skills/dev/references/autonomous/worktree-orchestration.md) — multi-brain patterns (M4)
