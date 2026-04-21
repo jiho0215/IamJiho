@@ -97,6 +97,30 @@ Alongside the existing decision-log.json (dual-write in M1).
 |---|---|
 | `decision.recorded` | `{id: string, phase: int, category: string, decision: string, reason: string, confidence: string}` |
 
+### `config.*` — configuration snapshot (M2.5+)
+
+| Type | Data | Emitted by |
+|---|---|---|
+| `config.snapshot.recorded` | `{maxReviewIterations, consecutiveZerosToExit, testCoverageTarget, modelProfile, skills?: object, agents?: object}` | SKILL.md Pre-Workflow (after ensure-config) |
+
+Captures the effective config at session start so event-log retrospection can compare quality across config profiles without needing to fetch config.json separately.
+
+### `plan.*` — plan artifacts (M2.5+)
+
+| Type | Data | Emitted by |
+|---|---|---|
+| `plan.files.set` | `{phase: int, plannedFiles: string[]}` | SKILL.md Phase 3 completion |
+
+Records which files the implementation plan intends to touch. Populates `views/progress-log.json.plannedFiles` for full parity with the procedural write.
+
+### `patterns.*` — chronic pattern lifecycle (M2.5+)
+
+| Type | Data | Emitted by |
+|---|---|---|
+| `patterns.loaded` | `{count: int, file: string, chronicPatterns: string[]}` | `load-chronic-patterns.sh` SessionStart hook |
+| `patterns.promoted` | `{id: string, pattern: string, frequency: int}` | SKILL.md Phase 7 mistake capture |
+| `patterns.demoted` | `{id: string, pattern: string, reason: string}` | SKILL.md Phase 7 mistake capture |
+
 ## Invariants
 
 1. **Monotonic seq.** Within a session, `seq` strictly increases. Concurrent writes serialized by mkdir lock on `.seq.lock`.

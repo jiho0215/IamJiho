@@ -73,6 +73,15 @@ jq -s --arg regen "$(iso_utc)" '
       ( [ .[] | select(.type == "session.interrupted") | .data.interruptedAt ] | last // null ),
     completedAt:
       ( [ .[] | select(.type == "session.completed") | .at ] | last // null ),
+    # M2.5: configSnapshot from config.snapshot.recorded (latest wins)
+    configSnapshot:
+      ( [ .[] | select(.type == "config.snapshot.recorded") | .data ] | last // null ),
+    # M2.5: plannedFiles from plan.files.set (latest wins)
+    plannedFiles:
+      ( [ .[] | select(.type == "plan.files.set") | .data.plannedFiles ] | last // [] ),
+    # M2.5: chronicPatternsLoaded count from patterns.loaded
+    chronicPatternsLoaded:
+      ( [ .[] | select(.type == "patterns.loaded") | .data.count ] | last // 0 ),
     phases: build_phases,
     summary: {
       gateApprovals: {
@@ -85,7 +94,10 @@ jq -s --arg regen "$(iso_utc)" '
         | group_by(.)
         | map({ key: "phase\(.[0])", value: length })
         | from_entries
-      )
+      ),
+      # M2.5: chronic-pattern lifecycle counts
+      patternsPromoted: ( [ .[] | select(.type == "patterns.promoted") ] | length ),
+      patternsDemoted:  ( [ .[] | select(.type == "patterns.demoted") ] | length )
     }
   }
 ' "$EVENTS" | atomic_write "$VIEW"

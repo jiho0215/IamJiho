@@ -45,12 +45,25 @@ CHRONIC=$(sed -n '/^## Chronic Patterns$/,/^## /{/^## Chronic Patterns$/d;/^## /
 [ -z "$CHRONIC" ] && exit 0
 
 echo "CHRONIC PATTERNS LOADED for this session — prevent these when writing code:"
-echo "$CHRONIC" | while IFS='|' read -r _ id pattern _ _ _ prevention _; do
+PATTERN_IDS=()
+while IFS='|' read -r _ id pattern _ _ _ prevention _; do
     id=$(echo "$id" | xargs 2>/dev/null || echo "$id")
     pattern=$(echo "$pattern" | xargs 2>/dev/null || echo "$pattern")
     prevention=$(echo "$prevention" | xargs 2>/dev/null || echo "$prevention")
     [ -z "$id" ] || [ -z "$pattern" ] && continue
     echo "  - $id: $pattern — $prevention"
-done
+    PATTERN_IDS+=("$id")
+done <<< "$CHRONIC"
+
+# M2.5: emit patterns.loaded event (best-effort; no-op if no active session)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "$SCRIPT_DIR/emit-event.sh" ] && [ ${#PATTERN_IDS[@]} -gt 0 ]; then
+    IDS_JSON=$(printf '"%s",' "${PATTERN_IDS[@]}" | sed 's/,$//')
+    DATA=$(printf '{"count":%d,"file":"%s","chronicPatterns":[%s]}' \
+        "${#PATTERN_IDS[@]}" "$(basename "$PATTERNS_FILE")" "$IDS_JSON")
+    bash "$SCRIPT_DIR/emit-event.sh" patterns.loaded \
+        --actor "hook:load-chronic-patterns" \
+        --data "$DATA" 2>/dev/null || true
+fi
 
 exit 0

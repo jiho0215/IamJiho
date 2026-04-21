@@ -42,6 +42,12 @@ Before entering any section, execute these steps in order:
        '{mode:$mode, featureSlug:$fs, ticket:$t} | with_entries(select(.value != ""))')"
    ```
    Use the empty-value filter so unset fields do not pollute the payload.
+6. **Emit `config.snapshot.recorded` (M2.5+)** — capture effective config so view reducers can populate `progress-log.json.configSnapshot`:
+   ```
+   bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/emit-event.sh config.snapshot.recorded \
+     --actor orchestrator \
+     --data "$(jq -c '.pipeline | {maxReviewIterations, consecutiveZerosToExit, testCoverageTarget, modelProfile}' ~/.claude/autodev/config.json)"
+   ```
 
 The resolved `SESSION_DIR` path stays the same across invocations on the same repo+branch, so interactive and autonomous runs share state naturally.
 
@@ -95,6 +101,9 @@ bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/emit-event.sh <type> \
 | Point | Type | Data shape |
 |---|---|---|
 | Pre-Workflow complete | `session.started` | `{mode, featureSlug?, ticket?}` |
+| Pre-Workflow (M2.5+) | `config.snapshot.recorded` | `{maxReviewIterations, consecutiveZerosToExit, testCoverageTarget, modelProfile}` |
+| Phase 3 plan set (M2.5+) | `plan.files.set` | `{phase:3, plannedFiles:[...]}` |
+| Phase 7 chronic promote/demote (M2.5+) | `patterns.promoted` / `patterns.demoted` | `{id, pattern, frequency?, reason?}` |
 | Each Phase N begin (after begin gate) | `phase.started` | `{phase:N}` |
 | Each Phase N end (before end gate) | `phase.completed` | `{phase:N, metrics?}` |
 | GATE 1 approval | `gate.approved` | `{gate:1, approvalMode, approvedBy}` |
@@ -271,7 +280,14 @@ Produce/update `docs/specs/[feature-slug]-requirements.md`. Populate freeze doc 
    - `freezeDocPath: "docs/specs/[feature-slug]-freeze.md"`
    - `plannedFiles: [...]` (from the plan)
    - `featureSlug: "[feature-slug]"`
-7. Bump freeze doc `status: PENDING_APPROVAL`, record `createdAt` in frontmatter.
+7. **Emit `plan.files.set` (M2.5+)** — records the planned files into the event log so view reducers can populate `progress-log.json.plannedFiles`:
+   ```
+   bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/emit-event.sh plan.files.set \
+     --actor orchestrator \
+     --data "$(jq -cn --argjson files "$PLANNED_FILES_JSON" '{phase:3, plannedFiles:$files}')"
+   ```
+   where `$PLANNED_FILES_JSON` is the JSON array of planned file paths from the implementation plan.
+8. Bump freeze doc `status: PENDING_APPROVAL`, record `createdAt` in frontmatter.
 
 **GATE 1 — Freeze Doc Approval** (mode-sensitive):
 
