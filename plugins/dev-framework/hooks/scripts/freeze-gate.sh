@@ -16,8 +16,6 @@
 trap 'exit 0' ERR
 set -uo pipefail
 
-ts() { date -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || echo "-"; }
-
 # --- Dependency check ---
 command -v jq &>/dev/null || exit 0
 
@@ -25,38 +23,33 @@ command -v jq &>/dev/null || exit 0
 INPUT=$(cat 2>/dev/null || echo "{}")
 TARGET_PATH=$(echo "$INPUT" | jq -r '.tool_input.file_path // .tool_input.path // empty' 2>/dev/null)
 
-# --- Config loading with fallback defaults ---
-CONFIG="$HOME/.claude/autodev/config.json"
-cfg() {
-  if [ -f "$CONFIG" ]; then
-    local val
-    val=$(jq -r "($1) // empty" "$CONFIG" 2>/dev/null)
-    if [ -n "$val" ]; then echo "$val"; else echo "$2"; fi
-  else
-    echo "$2"
-  fi
-}
+# --- Shared helpers ---
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./_session-lib.sh
+. "$SCRIPT_DIR/_session-lib.sh"
 
-sanitize_branch() {
-  echo "$1" | sed 's|[/\\:*?"<>|@]|-|g' | sed 's|\.\.*$||' | cut -c1-64
-}
+ts() { iso_utc; }
 
-# --- Resolve session directory (same algorithm as other hooks) ---
-SESSIONS_DIR=$(cfg '.paths.sessionsDir' "$HOME/.claude/autodev/sessions")
-SESSIONS_DIR="${SESSIONS_DIR/#\~/$HOME}"
-
+SESSION_DIR=$(resolve_session_dir)
 BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null || echo "unknown")
-REPO=$(basename "$(git remote get-url origin 2>/dev/null \
-    || git rev-parse --show-toplevel 2>/dev/null \
-    || pwd)" .git)
-
-SANITIZED_BRANCH=$(sanitize_branch "$BRANCH")
-SESSION_FORMAT=$(cfg '.sessionFolderFormat' '{repo}--{branch}')
-SESSION_NAME="${SESSION_FORMAT/\{repo\}/$REPO}"
-SESSION_NAME="${SESSION_NAME/\{branch\}/$SANITIZED_BRANCH}"
-SESSION_DIR="$SESSIONS_DIR/$SESSION_NAME"
 PROGRESS_LOG="$SESSION_DIR/progress-log.json"
 BYPASS_FILE="$SESSION_DIR/bypass.json"
+
+# --- Event emit helpers ---
+emit_freeze_blocked() {
+  local reason="$1" path="${2:-}"
+  local data
+  data=$(jq -cn --arg reason "$reason" --arg path "$path" \
+    '{gate:"freeze",reason:$reason,path:$path}')
+  bash "$SCRIPT_DIR/emit-event.sh" gate.blocked --actor "hook:freeze-gate" --data "$data" 2>/dev/null || true
+}
+
+emit_freeze_passed() {
+  local path="${1:-}"
+  local data
+  data=$(jq -cn --arg path "$path" '{gate:"freeze",path:$path}')
+  bash "$SCRIPT_DIR/emit-event.sh" gate.passed --actor "hook:freeze-gate" --data "$data" 2>/dev/null || true
+}
 
 # --- 1. No active session → pass through (normal development is unaffected). ---
 [ -f "$PROGRESS_LOG" ] || exit 0
@@ -68,6 +61,7 @@ if ! jq empty "$PROGRESS_LOG" 2>/dev/null; then
     echo "   Target: ${TARGET_PATH:-<unknown>}" >&2
     echo "   Session: $SESSION_DIR" >&2
     echo "   Repair the session file, or delete the session folder and restart /dev." >&2
+    emit_freeze_blocked "progress-log malformed" "${TARGET_PATH:-}"
     exit 2
 fi
 
@@ -136,6 +130,7 @@ if [ -z "$FREEZE_DOC_PATH" ]; then
     echo "   Feature: ${ACTIVE_FEATURE:-<unknown>}" >&2
     echo "   Session: $SESSION_DIR" >&2
     echo "   Complete Phase 1-3 of /dev to assemble and approve a freeze doc before editing." >&2
+    emit_freeze_blocked "no freezeDocPath in progress-log" "$REL_PATH"
     exit 2
 fi
 
@@ -151,6 +146,7 @@ if [ ! -f "$FREEZE_DOC_ABS" ]; then
     echo "   Feature: ${ACTIVE_FEATURE:-<unknown>}" >&2
     echo "   Session: $SESSION_DIR" >&2
     echo "   Complete Phase 1-3 of /dev to create and approve the freeze doc." >&2
+    emit_freeze_blocked "freeze doc file missing" "$REL_PATH"
     exit 2
 fi
 
@@ -178,8 +174,10 @@ if [ "$DOC_STATUS" != "APPROVED" ]; then
     echo "   Session: $SESSION_DIR" >&2
     echo "   Complete Phase 1-3 of /dev and get user approval at GATE 1, or request 'bypass freeze'" >&2
     echo "   to override for this ticket (ticket-scoped; audit trail recorded in freeze doc)." >&2
+    emit_freeze_blocked "freeze doc not APPROVED" "$REL_PATH"
     exit 2
 fi
 
 # All checks passed — allow the edit.
+emit_freeze_passed "$REL_PATH"
 exit 0
