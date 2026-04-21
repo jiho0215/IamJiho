@@ -44,13 +44,14 @@ if [ -z "$RUN_ID" ] && [ -f "$SESSION_DIR/progress-log.json" ] && command -v jq 
 fi
 
 LOCK_TRIES=0
+LOCK_MAX_TRIES="${DEVFW_EMIT_LOCK_MAX_TRIES:-600}"  # ~30s at 50ms; tunable for stress
 while ! mkdir "$LOCK_DIR" 2>/dev/null; do
   LOCK_TRIES=$((LOCK_TRIES + 1))
-  if [ "$LOCK_TRIES" -gt 50 ]; then
-    echo "emit-event: ERROR — could not acquire lock at $LOCK_DIR after 50 tries" >&2
+  if [ "$LOCK_TRIES" -gt "$LOCK_MAX_TRIES" ]; then
+    echo "emit-event: ERROR — could not acquire lock at $LOCK_DIR after $LOCK_MAX_TRIES tries" >&2
     exit 1
   fi
-  sleep 0.1
+  sleep 0.05
 done
 trap 'rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT
 
