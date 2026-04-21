@@ -1,7 +1,7 @@
 {
   "name": "dev-framework",
   "description": "AI-led development framework built on Managed Agents architecture. One command /dev with 7-phase full cycle, freeze-doc-enforced research/execution boundary, two user approval gates, and multi-agent consensus reviews. Session state lives in an append-only event log (events.jsonl) with derivable views, stateless restart (wake.sh), seq-level replay, and multi-brain fan-out. Phase metadata declared in YAML; narrative stays in SKILL.md. modelProfile config knob tunes iteration counts as model capabilities evolve.",
-  "version": "3.0.0",
+  "version": "3.0.1",
   "author": {
     "name": "Jiho Lee",
     "email": "ianjiholee@gmail.com"
@@ -9,7 +9,6 @@
   "homepage": "https://github.com/jiho0215/IamJiho",
   "repository": "https://github.com/jiho0215/IamJiho",
   "license": "MIT",
-  "hooks": "./hooks/hooks.json",
   "keywords": [
     "development",
     "tdd",
