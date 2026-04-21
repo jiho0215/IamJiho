@@ -12,8 +12,8 @@
 
 set -euo pipefail
 
-CONFIG_DIR="$HOME/.claude/autodev"
-CONFIG_FILE="$CONFIG_DIR/config.json"
+CONFIG_FILE="${DEVFW_CONFIG:-$HOME/.claude/autodev/config.json}"
+CONFIG_DIR="$(dirname "$CONFIG_FILE")"
 FREEZE_CATEGORIES_DIR="$CONFIG_DIR/freeze-categories"
 
 # --- Ensure directory exists ---
@@ -51,6 +51,7 @@ TMP_FILE="$CONFIG_FILE.tmp.$$"
 cat > "$TMP_FILE" <<'JSON'
 {
   "pipeline": {
+    "modelProfile": "balanced",
     "maxReviewIterations": 10,
     "consecutiveZerosToExit": 2,
     "testCoverageTarget": 90,

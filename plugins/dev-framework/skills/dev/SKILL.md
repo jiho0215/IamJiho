@@ -34,6 +34,20 @@ Before entering any section, execute these steps in order:
 2. **Load session reference** — read `references/autonomous/session-management.md` into working context; you will need the session-folder algorithm and schemas.
 3. **Resolve session folder** — follow the algorithm in `references/autonomous/session-management.md`. Result: `SESSION_DIR`.
 4. **Chronic patterns** — already loaded by the SessionStart hook (`load-chronic-patterns.sh`). No action needed here unless resuming (see Resume handling).
+5. **Emit `session.started`** — once mode/featureSlug/ticket are known (Section A/B/C/D/E entry), run:
+   ```
+   bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/emit-event.sh session.started \
+     --actor orchestrator \
+     --data "$(jq -cn --arg mode "$MODE" --arg fs "$FEATURE_SLUG" --arg t "$TICKET" \
+       '{mode:$mode, featureSlug:$fs, ticket:$t} | with_entries(select(.value != ""))')"
+   ```
+   Use the empty-value filter so unset fields do not pollute the payload.
+6. **Emit `config.snapshot.recorded` (M2.5+)** — capture effective config so view reducers can populate `progress-log.json.configSnapshot`:
+   ```
+   bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/emit-event.sh config.snapshot.recorded \
+     --actor orchestrator \
+     --data "$(jq -c '.pipeline | {maxReviewIterations, consecutiveZerosToExit, testCoverageTarget, modelProfile}' ~/.claude/autodev/config.json)"
+   ```
 
 The resolved `SESSION_DIR` path stays the same across invocations on the same repo+branch, so interactive and autonomous runs share state naturally.
 
@@ -69,6 +83,42 @@ Every phase that runs parallel agents uses the protocol in `references/protocols
 - `zero_threshold: 2` (from `config.pipeline.consecutiveZerosToExit`)
 
 Never short-circuit the loop. Fixing issues without re-dispatching agents is NOT a zero-issue round (see the Critical Rule in the consensus protocol).
+
+## Event Emissions (M1+)
+
+Starting with M1 (Managed Agents Evolution), every orchestrator-level state transition dual-writes to `$SESSION_DIR/events.jsonl` via `emit-event.sh`. Hooks emit their own events independently. Full catalog and invariants: [`references/autonomous/events-schema.md`](./references/autonomous/events-schema.md).
+
+**Emit command template:**
+
+```
+bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/emit-event.sh <type> \
+  --actor orchestrator \
+  --data '<JSON object>'
+```
+
+**Orchestrator emit points** (each phase body below contains the exact command at the right location — this table is the summary):
+
+| Point | Type | Data shape |
+|---|---|---|
+| Pre-Workflow complete | `session.started` | `{mode, featureSlug?, ticket?}` |
+| Pre-Workflow (M2.5+) | `config.snapshot.recorded` | `{maxReviewIterations, consecutiveZerosToExit, testCoverageTarget, modelProfile}` |
+| Phase 3 plan set (M2.5+) | `plan.files.set` | `{phase:3, plannedFiles:[...]}` |
+| Phase 7 chronic promote/demote (M2.5+) | `patterns.promoted` / `patterns.demoted` | `{id, pattern, frequency?, reason?}` |
+| Each Phase N begin (after begin gate) | `phase.started` | `{phase:N}` |
+| Each Phase N end (before end gate) | `phase.completed` | `{phase:N, metrics?}` |
+| GATE 1 approval | `gate.approved` | `{gate:1, approvalMode, approvedBy}` |
+| GATE 1 rejection | `gate.rejected` | `{gate:1, reason, returnToPhase}` |
+| GATE 2 approval | `gate.approved` | `{gate:2, approvalMode, approvedBy}` |
+| GATE 2 rejection | `gate.rejected` | `{gate:2, reason, returnToPhase}` |
+| Bypass requested | `bypass.created` | `{feature, reason, userMessage}` |
+| Session completes (GATE 2 approved) | `session.completed` | `{totalMinutes}` |
+| Phase fails | `phase.failed` | `{phase:N, error}` |
+| `--from N` resume entry | `session.resumed` | `{fromPhase:N}` |
+| Consensus iteration start | `consensus.iteration.started` | `{phase:N, iteration}` |
+| Consensus converges | `consensus.converged` | `{phase:N, iterations, issuesFixed}` |
+| Consensus forced stop (iteration cap) | `consensus.forced_stop` | `{phase:N, iterations, remainingIssues}` |
+
+Emits are best-effort (exit 0 on no session). Never abort a phase on emit failure.
 
 ---
 
@@ -137,6 +187,29 @@ Before Phase 1:
 
 After each consensus round or user decision, append to `SESSION_DIR/phase-{N}-decisions.jsonl` (one JSON object per line). At end of each phase, merge JSONL into `decision-log.json` and delete the JSONL. Also call `project-docs` (read the protocol reference) to append significant decisions to `docs/decisions.md`.
 
+### Dispatcher Preamble (per phase, M3+)
+
+Before running any phase body below, read `phases/phase-${N}.yaml` (M3+) and act on its metadata:
+
+1. **Lazy-load refs:** For each entry in `requiredRefs[]`, read that file with the Read tool. Do not eager-load the entire Companion References table — phase YAMLs declare what's actually needed. This replaces the upfront reference table scan.
+2. **Emit entry events:** Execute each emit in `emits.entry[]` via `emit-event.sh`.
+3. **Run begin gates:** Run each script listed in `gates.begin[]` via `execute.sh hook`.
+4. **Consult the narrative + checklist (M3b+):** Two sources, read together:
+   - Phase YAML `instructions.*` — a machine-actionable checklist of steps (entry/main/exit + phase-specific keys). Use this as the step order.
+   - Phase body below (anchored by `skillMdSection`) — the prose narrative explaining **why** each step matters, dialogue templates, and examples.
+   YAML answers "what to do now"; SKILL.md answers "why and how to think about it."
+5. **Invoke** per `invokes[]`:
+   - `kind: hook` — `execute.sh hook <name>` runs to completion synchronously.
+   - `kind: protocol` — `execute.sh protocol <name>` emits load event; you must Read the reference file separately.
+   - `kind: skill` — `execute.sh skill <name>` emits started event and returns a dispatch payload; invoke the actual Skill tool, then call `execute.sh --complete skill <name> --output ...`.
+   - `kind: agent` — same pattern as skill, but via the Task tool.
+6. **Verify produces:** Before running end gates, verify each `produces[]` entry's artifact/section/marker exists.
+7. **Run end gates** and **emit exit events** when the phase body concludes.
+
+Full semantics: [`references/autonomous/dispatcher-spec.md`](./references/autonomous/dispatcher-spec.md). Phase YAML schema: [`../../phases/README.md`](../../phases/README.md).
+
+If a phase YAML is missing (pre-M3 repos), fall back to this file's procedural prose as the single source of truth.
+
 ### Freeze Doc Draft
 
 Start writing `docs/specs/[feature-slug]-freeze.md` during Phase 1. Open in DRAFT status. Each phase populates its assigned categories:
@@ -151,6 +224,7 @@ Use the template in `references/templates/FREEZE_DOC_TEMPLATE.md`. Category name
 ### Phase 1 — Requirements
 
 **Gate:** `bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/phase-gate.sh begin 1`
+**Emit:** `bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/emit-event.sh phase.started --actor orchestrator --data '{"phase":1}'`
 
 Mode-sensitive:
 - **Interactive:** gather requirements via one-at-a-time questions. Use clarifying dialogue until scope is understood. Invoke the skill named by `config.pipeline.skills.requirements` (default `superpowers:brainstorming`) via the Skill tool.
@@ -164,12 +238,14 @@ After gathering (both modes), run the consensus protocol (`references/protocols/
 Produce/update `docs/specs/[feature-slug]-requirements.md`. Populate freeze doc §1, §5, §6.
 
 **Update:** `progress-log.json` (append phase entry with status `completed`, `completedAt`, metrics).
+**Emit:** `bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/emit-event.sh phase.completed --actor orchestrator --data '{"phase":1}'`
 **Gate:** `bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/phase-gate.sh end 1`
 **Banner:** `--- Phase 1 Complete: Requirements ---`
 
 ### Phase 2 — Research (Codebase + Architecture)
 
 **Gate:** `bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/phase-gate.sh begin 2`
+**Emit:** `bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/emit-event.sh phase.started --actor orchestrator --data '{"phase":2}'`
 
 1. Invoke the skill named by `config.pipeline.skills.exploration` (default `feature-dev:code-explorer`). Trace execution paths related to the feature area, map architecture layers, document dependencies and integration points, identify conventions the new code must follow.
 2. Invoke the skill named by `config.pipeline.skills.architect` (default `feature-dev:code-architect`). Design the feature architecture based on exploration findings.
@@ -186,12 +262,14 @@ Produce/update `docs/specs/[feature-slug]-requirements.md`. Populate freeze doc 
    - **§8 Performance:** measurable budgets (p95/p99 latency, throughput, query count, memory).
 
 **Update:** progress-log.json.
+**Emit:** `bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/emit-event.sh phase.completed --actor orchestrator --data '{"phase":2}'`
 **Gate:** `bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/phase-gate.sh end 2`
 **Banner:** `--- Phase 2 Complete: Research ---`
 
 ### Phase 3 — Plan + Freeze Doc Assembly → GATE 1
 
 **Gate:** `bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/phase-gate.sh begin 3`
+**Emit:** `bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/emit-event.sh phase.started --actor orchestrator --data '{"phase":3}'`
 
 1. Read `references/autonomous/review-loop-protocol.md` into context.
 2. Invoke the skill named by `config.pipeline.skills.planning` (default `superpowers:writing-plans`). Generate a structured implementation plan with bite-sized tasks.
@@ -205,7 +283,14 @@ Produce/update `docs/specs/[feature-slug]-requirements.md`. Populate freeze doc 
    - `freezeDocPath: "docs/specs/[feature-slug]-freeze.md"`
    - `plannedFiles: [...]` (from the plan)
    - `featureSlug: "[feature-slug]"`
-7. Bump freeze doc `status: PENDING_APPROVAL`, record `createdAt` in frontmatter.
+7. **Emit `plan.files.set` (M2.5+)** — records the planned files into the event log so view reducers can populate `progress-log.json.plannedFiles`:
+   ```
+   bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/emit-event.sh plan.files.set \
+     --actor orchestrator \
+     --data "$(jq -cn --argjson files "$PLANNED_FILES_JSON" '{phase:3, plannedFiles:$files}')"
+   ```
+   where `$PLANNED_FILES_JSON` is the JSON array of planned file paths from the implementation plan.
+8. Bump freeze doc `status: PENDING_APPROVAL`, record `createdAt` in frontmatter.
 
 **GATE 1 — Freeze Doc Approval** (mode-sensitive):
 
@@ -218,13 +303,19 @@ Present the complete freeze doc to the user with a category-by-category summary.
 On approval:
 - Set freeze doc frontmatter: `status: APPROVED`, `approvedAt: <ISO UTC>`, `approvedBy: <user email or identifier>`, `approvalMode: interactive`.
 - Append decision to `decision-log.json` category `gate-1`.
+- **Emit:** `bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/emit-event.sh gate.approved --actor orchestrator --data "$(jq -cn --arg am interactive --arg by "$APPROVED_BY" '{gate:1, approvalMode:$am, approvedBy:$by}')"`
+
+On rejection (category X reopened):
+- **Emit:** `bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/emit-event.sh gate.rejected --actor orchestrator --data "$(jq -cn --arg reason "$REASON" --argjson rp "$RETURN_PHASE" '{gate:1, reason:$reason, returnToPhase:$rp}')"`
 
 **Autonomous mode:**
 - Set freeze doc frontmatter: `status: APPROVED`, `approvedAt: <ISO UTC>`, `approvedBy: "autonomous"`, `approvalMode: autonomous`.
 - Append audit decision to `decision-log.json` explaining the autonomous approval and listing any uncertainty flagged during Phase 1-3.
+- **Emit:** `bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/emit-event.sh gate.approved --actor orchestrator --data '{"gate":1,"approvalMode":"autonomous","approvedBy":"autonomous"}'`
 - Continue to Phase 4.
 
 **Update:** progress-log.json (phase 3 complete with review metrics — iterations, issues fixed, final issue count).
+**Emit:** `bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/emit-event.sh phase.completed --actor orchestrator --data '{"phase":3}'`
 **Gate:** `bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/phase-gate.sh end 3`
 **Banner:** `--- Phase 3 Complete: Plan + Freeze Doc --- GATE 1: {mode}-approved | Iterations: {N} | Issues fixed: {M} ---`
 
@@ -233,6 +324,7 @@ After this point, **the freeze-gate hook is active**: any attempt to edit `src/`
 ### Phase 4 — Test Planning
 
 **Gate:** `bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/phase-gate.sh begin 4`
+**Emit:** `bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/emit-event.sh phase.started --actor orchestrator --data '{"phase":4}'`
 
 1. Invoke the skill named by `config.pipeline.skills.tdd` (default `superpowers:test-driven-development`) to establish TDD methodology.
 2. Read `references/protocols/test-planning.md` into context. Apply it using inputs from Phase 1-3 artifacts in `SESSION_DIR`.
@@ -243,12 +335,14 @@ After this point, **the freeze-gate hook is active**: any attempt to edit `src/`
 7. Write to `SESSION_DIR/tdd-plan.md` and `docs/test-plans/[feature-slug]-test-plan.md`.
 
 **Update:** progress-log.json.
+**Emit:** `bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/emit-event.sh phase.completed --actor orchestrator --data '{"phase":4}'`
 **Gate:** `bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/phase-gate.sh end 4`
 **Banner:** `--- Phase 4 Complete: Test Planning ---`
 
 ### Phase 5 — Implementation + Layer 1 Review
 
 **Gate:** `bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/phase-gate.sh begin 5`
+**Emit:** `bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/emit-event.sh phase.started --actor orchestrator --data '{"phase":5}'`
 
 **Execution rules (ALL of Phase 4-7):**
 - Freeze doc §1-§8 are immutable truth source. Any question that would change them triggers **workflow halt** and a "freeze doc update needed" message to the user.
@@ -284,12 +378,14 @@ Read `references/autonomous/review-loop-protocol.md`. Run the protocol over the 
 Log decisions, persist issues to `pipeline-issues.json`, merge `phase-5-decisions.jsonl`, update markdown.
 
 **Update:** progress-log.json with review metrics.
+**Emit:** `bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/emit-event.sh phase.completed --actor orchestrator --data "$(jq -cn --argjson r "$ROUNDS" --argjson f "$FIXED" '{phase:5, metrics:{rounds:$r, issuesFixed:$f}}')"`
 **Gate:** `bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/phase-gate.sh end 5`
 **Banner:** `--- Phase 5 Complete: Implementation --- Rounds: {N} | Issues fixed: {M} ---`
 
 ### Phase 6 — Verification + Coverage Fill + Layer 2 Review
 
 **Gate:** `bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/phase-gate.sh begin 6`
+**Emit:** `bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/emit-event.sh phase.started --actor orchestrator --data '{"phase":6}'`
 
 1. Run all tests (unit, integration, smoke, E2E). All must pass.
 2. Measure branch coverage. Compare against `config.pipeline.testCoverageTarget`.
@@ -306,12 +402,14 @@ Log decisions, persist issues to `pipeline-issues.json`, merge `phase-5-decision
 Log decisions, persist issues, merge JSONL, update markdown.
 
 **Update:** progress-log.json with review metrics.
+**Emit:** `bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/emit-event.sh phase.completed --actor orchestrator --data "$(jq -cn --argjson c "$COVERAGE" --argjson r "$ROUNDS" --argjson f "$FIXED" '{phase:6, metrics:{coverage:$c, rounds:$r, issuesFixed:$f}}')"`
 **Gate:** `bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/phase-gate.sh end 6`
 **Banner:** `--- Phase 6 Complete: Verification --- Coverage: {N}% | Rounds: {M} | Issues fixed: {K} ---`
 
 ### Phase 7 — Documentation + Mistake Capture → GATE 2
 
 **Gate:** `bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/phase-gate.sh begin 7`
+**Emit:** `bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/emit-event.sh phase.started --actor orchestrator --data '{"phase":7}'`
 
 **Documentation:**
 1. Read `references/protocols/project-docs.md`.
@@ -381,11 +479,24 @@ On approval (option 1 or 3), execute this sequence in order. **If any step fails
 
 5. **On option 3:** invoke `config.pipeline.skills.finishing` (default `superpowers:finishing-a-development-branch`) — stage, commit, push.
 
+6. **Emit GATE 2 approval and session completion events:**
+   ```
+   bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/emit-event.sh gate.approved \
+     --actor orchestrator \
+     --data "$(jq -cn --arg am "$APPROVAL_MODE" --arg by "$APPROVED_BY" \
+       '{gate:2, approvalMode:$am, approvedBy:$by}')"
+   bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/emit-event.sh session.completed \
+     --actor orchestrator \
+     --data "$(jq -cn --argjson m "$TOTAL_MINUTES" '{totalMinutes:$m}')"
+   ```
+
 On rejection (option 2):
 - User indicates which phase to return to; set `progress-log.json` `status: "in-progress"`, reset `currentPhase` accordingly.
+- **Emit:** `bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/emit-event.sh gate.rejected --actor orchestrator --data "$(jq -cn --arg reason "$REASON" --argjson rp "$RETURN_PHASE" '{gate:2, reason:$reason, returnToPhase:$rp}')"`
 - Re-enter that phase.
 
 **Update:** progress-log.json.
+**Emit:** `bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/emit-event.sh phase.completed --actor orchestrator --data '{"phase":7}'`
 **Gate:** `bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/phase-gate.sh end 7`
 **Banner:** `--- Phase 7 Complete: Documentation + Capture --- GATE 2: approved | Total: {minutes}min | Decisions: {N} ---`
 
@@ -473,7 +584,8 @@ Use when the user says `docs` or `documentation`. Apply the session collision gu
    - Merge any stale `phase-{N}-decisions.jsonl`.
    - Announce caveat: "Resuming from Phase {N}. Phases 1-{N-1} artifacts assumed valid."
 4. If the session was interactive and the user is re-entering at Phase 4+ without the freeze doc in APPROVED state → halt and advise completing Phase 3.
-5. Run the phase begin gate, then continue at Phase N.
+5. **Emit:** `bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/emit-event.sh session.resumed --actor orchestrator --data "$(jq -cn --argjson p "$PHASE" '{fromPhase:$p}')"`
+6. Run the phase begin gate, then continue at Phase N.
 
 ---
 
@@ -485,14 +597,15 @@ When a phase fails:
 2. Update `progress-log.json`: phase status `failed`.
 3. Persist accumulated issues to `pipeline-issues.json`.
 4. Log failure as decision (category: `skip`).
-5. Announce:
+5. **Emit:** `bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/emit-event.sh phase.failed --actor orchestrator --data "$(jq -cn --argjson p "$PHASE" --arg err "$ERROR" '{phase:$p, error:$err}')"`
+6. Announce:
    ```
    --- Phase {N} FAILED: {phase name} ---
    Error: {description}
    Session: {SESSION_DIR}
    Resume: /dev --from {N} [--autonomous TICKET]
    ```
-6. Offer: `[1] Retry this phase` `[2] Skip to next` `[3] Abort workflow`.
+7. Offer: `[1] Retry this phase` `[2] Skip to next` `[3] Abort workflow`.
 
 **Graceful degradation:** missing config → `ensure-config.sh` creates it (Pre-Workflow step 1). Missing chronic patterns file → empty list. Unavailable configured skill → phase operates without it. The workflow must never fail to start.
 
@@ -529,7 +642,8 @@ If the user explicitly asks to bypass the freeze gate (trigger phrases: "bypass 
    The 4-hex-char suffix makes `createdAt` a unique event identifier even when multiple bypasses occur within the same second (e.g., `2026-04-19T14:30:00Z-a3f2`). All downstream consumers (`sessionend.sh` dedup, GATE 2 dedup, freeze doc `bypassHistory.at`) use this as the join key; collisions would silently drop audit events.
 2. Announce the bypass clearly, including the reason.
 3. Log a decision to `decision-log.json` category `bypass` with full fields (reason, feature, at, userMessage, runId) — so the bypass event can be correlated to its run from the decision log alone.
-4. Continue work. The bypass remains active for this ticket; Phase 7 GATE 2 is the **sole** writer of freeze doc `bypassHistory` — it merges `bypass.json` + any `bypass-audit.jsonl` entries into `bypassHistory` with dedup. Do not write to `bypassHistory` here (double-write would corrupt the audit trail).
+4. **Emit:** `bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/emit-event.sh bypass.created --actor orchestrator --data "$(jq -cn --arg f "$FEATURE" --arg r "$REASON" --arg m "$USER_MESSAGE" '{feature:$f, reason:$r, userMessage:$m}')"`
+5. Continue work. The bypass remains active for this ticket; Phase 7 GATE 2 is the **sole** writer of freeze doc `bypassHistory` — it merges `bypass.json` + any `bypass-audit.jsonl` entries into `bypassHistory` with dedup. Do not write to `bypassHistory` here (double-write would corrupt the audit trail).
 
 The `freeze-gate.sh` hook reads `bypass.json` and respects it. Do not attempt to silence the hook by any other means.
 

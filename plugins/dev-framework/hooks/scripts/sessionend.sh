@@ -10,32 +10,11 @@ set -uo pipefail
 
 command -v jq &>/dev/null || exit 0
 
-CONFIG="$HOME/.claude/autodev/config.json"
-cfg() {
-  if [ -f "$CONFIG" ]; then
-    local val
-    val=$(jq -r "($1) // empty" "$CONFIG" 2>/dev/null)
-    if [ -n "$val" ]; then echo "$val"; else echo "$2"; fi
-  else
-    echo "$2"
-  fi
-}
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./_session-lib.sh
+. "$SCRIPT_DIR/_session-lib.sh"
 
-sanitize_branch() {
-  echo "$1" | sed 's|[/\\:*?"<>|@]|-|g' | sed 's|\.\.*$||' | cut -c1-64
-}
-
-SESSIONS_DIR=$(cfg '.paths.sessionsDir' "$HOME/.claude/autodev/sessions")
-SESSIONS_DIR="${SESSIONS_DIR/#\~/$HOME}"
-BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null || echo "unknown")
-REPO=$(basename "$(git remote get-url origin 2>/dev/null \
-    || git rev-parse --show-toplevel 2>/dev/null \
-    || pwd)" .git)
-SANITIZED_BRANCH=$(sanitize_branch "$BRANCH")
-SESSION_FORMAT=$(cfg '.sessionFolderFormat' '{repo}--{branch}')
-SESSION_NAME="${SESSION_FORMAT/\{repo\}/$REPO}"
-SESSION_NAME="${SESSION_NAME/\{branch\}/$SANITIZED_BRANCH}"
-SESSION_DIR="$SESSIONS_DIR/$SESSION_NAME"
+SESSION_DIR=$(resolve_session_dir)
 PROGRESS_LOG="$SESSION_DIR/progress-log.json"
 BYPASS_FILE="$SESSION_DIR/bypass.json"
 
@@ -71,14 +50,20 @@ if [ -f "$BYPASS_FILE" ] && jq empty "$PROGRESS_LOG" 2>/dev/null; then
         fi
         if [ "$ALREADY_RECORDED" -eq 0 ]; then
             RUN_ID=$(jq -r '.runId // empty' "$PROGRESS_LOG" 2>/dev/null)
-            PRESERVED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-            jq -c \
+            PRESERVED_AT=$(iso_utc)
+            if jq -c \
                 --arg runid "$RUN_ID" \
                 --arg pa "$PRESERVED_AT" \
                 '{at: .createdAt, reason, feature, userMessage,
                   runId: $runid, preservedBy: "sessionend", preservedAt: $pa}' \
-                "$BYPASS_FILE" >> "$AUDIT_FILE" 2>/dev/null \
-                && echo "sessionend: preserved bypass audit entry to $AUDIT_FILE (runId=$RUN_ID)" >&2
+                "$BYPASS_FILE" >> "$AUDIT_FILE" 2>/dev/null; then
+                echo "sessionend: preserved bypass audit entry to $AUDIT_FILE (runId=$RUN_ID)" >&2
+                bash "$SCRIPT_DIR/emit-event.sh" bypass.preserved \
+                    --actor "hook:sessionend" \
+                    --data "$(jq -cn --arg at "$BYPASS_AT" --arg runId "$RUN_ID" --arg preservedAt "$PRESERVED_AT" \
+                        '{at:$at, runId:$runId, preservedAt:$preservedAt}')" \
+                    2>/dev/null || true
+            fi
         fi
 
         # If freezeDocPath is not yet recorded in progress-log (early-phase bypass,
@@ -99,10 +84,16 @@ done
 # --- Mark in-progress pipelines as interrupted (any mode). ---
 CURRENT_STATUS=$(jq -r '.status // "unknown"' "$PROGRESS_LOG" 2>/dev/null)
 if [ "$CURRENT_STATUS" = "in-progress" ]; then
-    TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    TIMESTAMP=$(iso_utc)
     jq --arg ts "$TIMESTAMP" '.status = "interrupted" | .interruptedAt = $ts' \
         "$PROGRESS_LOG" > "$PROGRESS_LOG.tmp" && \
         mv "$PROGRESS_LOG.tmp" "$PROGRESS_LOG"
+    CURRENT_PHASE=$(jq -r '.currentPhase // 0' "$PROGRESS_LOG" 2>/dev/null)
+    bash "$SCRIPT_DIR/emit-event.sh" session.interrupted \
+        --actor "hook:sessionend" \
+        --data "$(jq -cn --arg at "$TIMESTAMP" --argjson phase "$CURRENT_PHASE" \
+            '{interruptedAt:$at, currentPhase:$phase}')" \
+        2>/dev/null || true
 fi
 
 # --- Clear bypass on completed sessions (normal or final). ---

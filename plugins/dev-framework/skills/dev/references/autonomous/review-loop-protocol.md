@@ -26,6 +26,9 @@ ADD chronic patterns to REVIEW_FOCUS criteria
 WHILE iteration < MAX_ITERATIONS:
     iteration++
     ANNOUNCE: "--- Review iteration {iteration}/{MAX_ITERATIONS} ---"
+    EMIT: bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/emit-event.sh consensus.iteration.started \
+          --actor orchestrator \
+          --data "$(jq -cn --argjson p $PHASE --argjson i $iteration '{phase:$p, iteration:$i}')"
 
     IF REVIEW_MODE == "multi-agent-consensus":
         READ references/protocols/multi-agent-consensus.md and run the protocol with:
@@ -50,6 +53,10 @@ WHILE iteration < MAX_ITERATIONS:
         ANNOUNCE: "Clean round ({consecutive_zeros}/{EARLY_EXIT})"
         IF consecutive_zeros >= EARLY_EXIT:
             ANNOUNCE: "Exit: clean after {EARLY_EXIT} consecutive zeros"
+            EMIT: bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/emit-event.sh consensus.converged \
+                  --actor orchestrator \
+                  --data "$(jq -cn --argjson p $PHASE --argjson it $iteration --argjson f $TOTAL_FIXED \
+                           '{phase:$p, iterations:$it, issuesFixed:$f}')"
             BREAK
     ELSE:
         consecutive_zeros = 0
@@ -58,6 +65,10 @@ WHILE iteration < MAX_ITERATIONS:
 
 IF iteration >= MAX_ITERATIONS:
     ANNOUNCE: "Exit: max iterations reached"
+    EMIT: bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/emit-event.sh consensus.forced_stop \
+          --actor orchestrator \
+          --data "$(jq -cn --argjson p $PHASE --argjson it $iteration --argjson r $REMAINING \
+                   '{phase:$p, iterations:$it, remainingIssues:$r}')"
 
 # --- Batch merge at phase end ---
 MERGE {SESSION_DIR}/phase-{N}-decisions.jsonl into decision-log.json

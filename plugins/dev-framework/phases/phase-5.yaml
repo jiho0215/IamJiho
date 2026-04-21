@@ -1,0 +1,85 @@
+phase: 5
+name: "Implementation + Layer 1 Review"
+skillMdSection: "Phase 5 — Implementation + Layer 1 Review"
+
+requiredRefs:
+  - standards/RESULT_PATTERN.md
+  - standards/EARLY_EXIT.md
+  - standards/ERROR_HANDLING.md
+  - standards/CODE_QUALITY.md
+  - standards/OBSERVABILITY.md
+  - standards/PERFORMANCE.md
+  - autonomous/review-loop-protocol.md
+
+emits:
+  entry:
+    - type: phase.started
+      data: "{\"phase\":5}"
+  exit:
+    - type: phase.completed
+      data: "{\"phase\":5, \"metrics\":${phaseMetrics}}"
+
+invokes:
+  - kind: skill
+    config: pipeline.skills.implementation
+    fallback: inline
+  - kind: skill
+    config: pipeline.skills.requestReview
+    fallback: inline
+  - kind: protocol
+    name: review-loop-protocol
+    input:
+      mode: multi-agent-consensus
+      agents_config: pipeline.agents.review
+  - kind: skill
+    config: pipeline.skills.receiveReview
+    fallback: inline
+  - kind: skill
+    config: pipeline.skills.debugging
+    when: "onBugOrFailure"
+    fallback: inline
+
+produces:
+  - kind: artifact
+    path: "src/** (feature implementation)"
+
+gates:
+  begin:
+    - script: phase-gate.sh
+      args: ["begin", "5"]
+  end:
+    - script: phase-gate.sh
+      args: ["end", "5"]
+
+budget:
+  seconds: 900
+
+userGate: none
+
+instructions:
+  entry:
+    - "Read standards/* (RESULT_PATTERN, EARLY_EXIT, ERROR_HANDLING, CODE_QUALITY, OBSERVABILITY, PERFORMANCE) and autonomous/review-loop-protocol.md."
+    - "Emit phase.started event."
+    - "Run phase-gate.sh begin 5."
+  execution_rules:
+    - "Frozen decisions (§1-§8 of freeze doc) are immutable — halting required if change needed."
+    - "Non-frozen (§9 allow-list) questions may be asked."
+    - "Ambiguous technical: follow 4-tier rule (existing code → follow; reference repo → follow; initial → ask; else → self-decide)."
+    - "Pure technical (naming, extraction, internal boundaries) → self-decide."
+  main:
+    - "Invoke config.pipeline.skills.implementation (default: superpowers:subagent-driven-development)."
+    - "Reference ${sessionDir}/tdd-plan.md for test strategy."
+    - "Follow TDD: write failing test → implement minimum → refactor."
+    - "On any bug/unexpected failure, invoke config.pipeline.skills.debugging before fixes."
+  layer1_review:
+    - "Invoke config.pipeline.skills.requestReview to prepare review."
+    - "Run multi-agent-consensus with agents.review, max_iterations=config.pipeline.maxReviewIterations, zero_threshold=config.pipeline.consecutiveZerosToExit."
+    - "Invoke config.pipeline.skills.receiveReview — evaluate rigorously, push back on invalid findings."
+    - "Fix valid issues, re-dispatch for verification. Never short-circuit the loop."
+    - "On non-convergence: escalate remaining issues to user."
+  exit:
+    - "Log decisions, persist pipeline-issues.json, merge phase-5-decisions.jsonl."
+    - "Update progress-log.json with review metrics."
+    - "Emit phase.completed event with {phase:5, metrics:{rounds, issuesFixed}}."
+    - "Run phase-gate.sh end 5."
+    - "Print banner: --- Phase 5 Complete: Implementation --- Rounds: {N} | Issues fixed: {M} ---"

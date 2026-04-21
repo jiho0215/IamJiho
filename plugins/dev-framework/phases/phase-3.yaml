@@ -1,0 +1,77 @@
+phase: 3
+name: "Plan + Freeze Doc Assembly (GATE 1)"
+skillMdSection: "Phase 3 — Plan + Freeze Doc Assembly → GATE 1"
+
+requiredRefs:
+  - autonomous/review-loop-protocol.md
+  - templates/FREEZE_DOC_TEMPLATE.md
+
+emits:
+  entry:
+    - type: phase.started
+      data: "{\"phase\":3}"
+  exit:
+    - type: phase.completed
+      data: "{\"phase\":3}"
+
+invokes:
+  - kind: skill
+    config: pipeline.skills.planning
+    fallback: inline
+  - kind: protocol
+    name: multi-agent-consensus
+    input:
+      task_type: plan
+      agents_config: pipeline.agents.plan
+      context: "Verify plan covers all acceptance criteria, aligns with frozen architecture, and is testable."
+  - kind: protocol
+    name: review-loop-protocol
+    input:
+      mode: self
+      target: plan-and-freeze-doc
+
+produces:
+  - kind: artifact
+    path: "docs/specs/${featureSlug}-freeze.md"
+  - kind: freeze-doc-sections
+    sections: [9]
+  - kind: freeze-doc-status
+    value: APPROVED
+
+gates:
+  begin:
+    - script: phase-gate.sh
+      args: ["begin", "3"]
+  end:
+    - script: phase-gate.sh
+      args: ["end", "3"]
+
+budget:
+  seconds: 600
+
+userGate: 1
+
+instructions:
+  entry:
+    - "Read autonomous/review-loop-protocol.md and templates/FREEZE_DOC_TEMPLATE.md."
+    - "Emit phase.started event."
+    - "Run phase-gate.sh begin 3."
+  main:
+    - "Invoke config.pipeline.skills.planning (default: superpowers:writing-plans)."
+    - "Populate freeze doc §9 from config.pipeline.freezeDoc.nonFrozenAllowList."
+    - "Run multi-agent-consensus with agents.plan, task_type=plan."
+    - "Run review-loop-protocol in self-review mode; fix any issues found."
+    - "Populate progress-log.json: freezeDocPath, featureSlug, plannedFiles."
+    - "Emit plan.files.set event (M2.5) with the plannedFiles array."
+    - "Set freeze doc frontmatter status: PENDING_APPROVAL, createdAt timestamp."
+  gate:
+    - "GATE 1 — freeze doc approval."
+    - "Interactive mode: present doc category-by-category; accept Approve all / Reject category X / Inline edit."
+    - "Autonomous mode: auto-approve with approvalMode: autonomous, log audit decision."
+    - "On approval: emit gate.approved; update freeze doc status: APPROVED, approvedAt, approvedBy."
+    - "On rejection: emit gate.rejected with reason + returnToPhase; loop back."
+  exit:
+    - "Update progress-log.json with review metrics."
+    - "Emit phase.completed event."
+    - "Run phase-gate.sh end 3."
+    - "freeze-gate.sh hook becomes active for src/** edits after this phase."

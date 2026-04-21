@@ -1,0 +1,81 @@
+phase: 6
+name: "Verification + Coverage Fill + Layer 2 Review"
+skillMdSection: "Phase 6 — Verification + Coverage Fill + Layer 2 Review"
+
+requiredRefs:
+  - standards/RESULT_PATTERN.md
+  - standards/CODE_QUALITY.md
+  - standards/PERFORMANCE.md
+  - autonomous/review-loop-protocol.md
+
+emits:
+  entry:
+    - type: phase.started
+      data: "{\"phase\":6}"
+  exit:
+    - type: phase.completed
+      data: "{\"phase\":6, \"metrics\":${phaseMetrics}}"
+
+invokes:
+  - kind: skill
+    config: pipeline.skills.verification
+    fallback: inline
+  - kind: skill
+    config: pipeline.skills.tdd
+    when: "coverageBelowTarget"
+    fallback: inline
+  - kind: protocol
+    name: review-loop-protocol
+    input:
+      mode: multi-agent-consensus
+      agents_config: pipeline.agents.review
+      context: "Final validation: integration consistency, test-to-requirement traceability, performance budget adherence, standards compliance."
+  - kind: skill
+    config: pipeline.skills.receiveReview
+    fallback: inline
+
+produces:
+  - kind: verification
+    check: all-tests-green
+  - kind: verification
+    check: coverage-at-target
+  - kind: verification
+    check: frozen-categories-honored
+
+gates:
+  begin:
+    - script: phase-gate.sh
+      args: ["begin", "6"]
+  end:
+    - script: phase-gate.sh
+      args: ["end", "6"]
+
+budget:
+  seconds: 600
+
+userGate: none
+
+instructions:
+  entry:
+    - "Read standards/RESULT_PATTERN.md, CODE_QUALITY.md, PERFORMANCE.md, autonomous/review-loop-protocol.md."
+    - "Emit phase.started event."
+    - "Run phase-gate.sh begin 6."
+  main:
+    - "Run all tests (unit, integration, smoke, E2E). All must pass."
+    - "Measure branch coverage. Compare against config.pipeline.testCoverageTarget."
+    - "If below target: invoke config.pipeline.skills.tdd to write tests targeting uncovered branches. Re-run tests until green."
+    - "Invoke config.pipeline.skills.verification to confirm each acceptance criterion with evidence."
+  layer2_review:
+    - "Run multi-agent-consensus with agents.review."
+    - "Context: final validation — integration-level consistency, test-to-requirement traceability, performance budget adherence, standards compliance."
+    - "Invoke config.pipeline.skills.receiveReview."
+    - "Fix valid issues, re-validate. Escalate on non-convergence."
+  frozen_integrity:
+    - "Scan code + tests for drift from freeze doc §1-§8."
+    - "On drift: halt and offer [1] update freeze doc via supersede, [2] revert to freeze doc, [3] bypass."
+  exit:
+    - "Log decisions, persist issues, merge phase-6-decisions.jsonl."
+    - "Update progress-log.json with review metrics + coverage."
+    - "Emit phase.completed with {phase:6, metrics:{coverage, rounds, issuesFixed}}."
+    - "Run phase-gate.sh end 6."
+    - "Print banner: --- Phase 6 Complete: Verification --- Coverage: {N}% | Rounds: {M} | Issues fixed: {K} ---"

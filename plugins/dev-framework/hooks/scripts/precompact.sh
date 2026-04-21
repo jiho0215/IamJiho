@@ -9,37 +9,23 @@ set -uo pipefail
 
 command -v jq &>/dev/null || exit 0
 
-CONFIG="$HOME/.claude/autodev/config.json"
-cfg() {
-  if [ -f "$CONFIG" ]; then
-    local val
-    val=$(jq -r "($1) // empty" "$CONFIG" 2>/dev/null)
-    if [ -n "$val" ]; then echo "$val"; else echo "$2"; fi
-  else
-    echo "$2"
-  fi
-}
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./_session-lib.sh
+. "$SCRIPT_DIR/_session-lib.sh"
 
-sanitize_branch() {
-  echo "$1" | sed 's|[/\\:*?"<>|@]|-|g' | sed 's|\.\.*$||' | cut -c1-64
-}
-
-SESSIONS_DIR=$(cfg '.paths.sessionsDir' "$HOME/.claude/autodev/sessions")
-SESSIONS_DIR="${SESSIONS_DIR/#\~/$HOME}"
-BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null || echo "unknown")
-REPO=$(basename "$(git remote get-url origin 2>/dev/null \
-    || git rev-parse --show-toplevel 2>/dev/null \
-    || pwd)" .git)
-SANITIZED_BRANCH=$(sanitize_branch "$BRANCH")
-SESSION_FORMAT=$(cfg '.sessionFolderFormat' '{repo}--{branch}')
-SESSION_NAME="${SESSION_FORMAT/\{repo\}/$REPO}"
-SESSION_NAME="${SESSION_NAME/\{branch\}/$SANITIZED_BRANCH}"
-SESSION_DIR="$SESSIONS_DIR/$SESSION_NAME"
+SESSION_DIR=$(resolve_session_dir)
 PROGRESS_LOG="$SESSION_DIR/progress-log.json"
 
 # Only inject state if an active /dev session exists.
 [ -f "$PROGRESS_LOG" ] || exit 0
 jq empty "$PROGRESS_LOG" 2>/dev/null || exit 0
+
+# Emit event marking the compaction point (ordered before the state dump so
+# consumers can pair the event with the preserved state text).
+bash "$SCRIPT_DIR/emit-event.sh" session.precompact \
+    --actor "hook:precompact" \
+    --data '{"reason":"context truncation imminent"}' \
+    2>/dev/null || true
 
 CURRENT_PHASE=$(jq -r '.currentPhase // "unknown"' "$PROGRESS_LOG" 2>/dev/null)
 STATUS=$(jq -r '.status // "unknown"' "$PROGRESS_LOG" 2>/dev/null)

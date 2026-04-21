@@ -1,0 +1,63 @@
+phase: 1
+name: "Requirements"
+skillMdSection: "Phase 1 — Requirements"
+
+requiredRefs:
+  - templates/FEATURE_SPEC_TEMPLATE.md
+
+emits:
+  entry:
+    - type: phase.started
+      data: "{\"phase\":1}"
+  exit:
+    - type: phase.completed
+      data: "{\"phase\":1}"
+
+invokes:
+  - kind: skill
+    config: pipeline.skills.requirements
+    when: "mode == 'interactive'"
+    fallback: inline
+  - kind: protocol
+    name: multi-agent-consensus
+    input:
+      task_type: validate
+      agents_config: pipeline.agents.plan
+      context: "Validate requirements completeness, unambiguity, and testability."
+
+produces:
+  - kind: artifact
+    path: "docs/specs/${featureSlug}-requirements.md"
+  - kind: freeze-doc-sections
+    sections: [1, 5, 6]
+
+gates:
+  begin:
+    - script: phase-gate.sh
+      args: ["begin", "1"]
+  end:
+    - script: phase-gate.sh
+      args: ["end", "1"]
+
+budget:
+  seconds: 30
+
+userGate: none
+
+instructions:
+  entry:
+    - "Read templates/FEATURE_SPEC_TEMPLATE.md into working context."
+    - "Emit phase.started event."
+    - "Run phase-gate.sh begin 1."
+  main:
+    - "Interactive mode: gather requirements via one-at-a-time dialogue until scope is clear."
+    - "Autonomous mode: read ticket content; log any assumptions to decision-log category 'autonomous-inference'."
+    - "Invoke config.pipeline.skills.requirements (default: superpowers:brainstorming) via execute.sh skill — interactive only."
+    - "Run multi-agent-consensus with agents.plan, task_type=validate, context='Validate requirements completeness, unambiguity, and testability'."
+    - "Write or update docs/specs/${featureSlug}-requirements.md."
+    - "Populate freeze doc §1 (Business Logic), §5 (Error Model), §6 (Acceptance Criteria)."
+  exit:
+    - "Append phase entry to progress-log.json with status 'completed', completedAt timestamp, and any metrics."
+    - "Emit phase.completed event."
+    - "Run phase-gate.sh end 1."
+    - "Print banner: --- Phase 1 Complete: Requirements ---"

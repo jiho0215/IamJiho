@@ -1,0 +1,85 @@
+phase: 7
+name: "Documentation + Mistake Capture (GATE 2)"
+skillMdSection: "Phase 7 — Documentation + Mistake Capture → GATE 2"
+
+requiredRefs:
+  - protocols/project-docs.md
+  - methodology/DOCUMENTATION_STANDARDS.md
+  - autonomous/mistake-tracker-protocol.md
+
+emits:
+  entry:
+    - type: phase.started
+      data: "{\"phase\":7}"
+  exit:
+    - type: phase.completed
+      data: "{\"phase\":7}"
+    - type: session.completed
+      data: "{\"totalMinutes\":${totalMinutes}}"
+
+invokes:
+  - kind: protocol
+    name: project-docs
+  - kind: protocol
+    name: mistake-tracker-protocol
+  - kind: skill
+    config: pipeline.skills.finishing
+    when: "approvalOption == 3"
+    fallback: inline
+
+produces:
+  - kind: artifact-update
+    path: "docs/adr/**"
+  - kind: artifact-update
+    path: "docs/specs/${featureSlug}-requirements.md"
+  - kind: artifact-update
+    path: "docs/test-plans/${featureSlug}-test-plan.md"
+  - kind: freeze-doc-archival
+    target: "bypassHistory in freeze doc"
+  - kind: marker
+    path: "${sessionDir}/pipeline-complete.md"
+
+gates:
+  begin:
+    - script: phase-gate.sh
+      args: ["begin", "7"]
+  end:
+    - script: phase-gate.sh
+      args: ["end", "7"]
+
+budget:
+  seconds: 300
+
+userGate: 2
+
+instructions:
+  entry:
+    - "Read protocols/project-docs.md, methodology/DOCUMENTATION_STANDARDS.md, autonomous/mistake-tracker-protocol.md."
+    - "Emit phase.started event."
+    - "Run phase-gate.sh begin 7."
+  documentation:
+    - "Update/create ADRs for Phase 5-6 decisions that deviated from Phase 2 (supersede prior ADR per DECISION_MAKING lifecycle)."
+    - "Update docs/specs/${featureSlug}-requirements.md to reflect final implementation."
+    - "Update docs/test-plans/${featureSlug}-test-plan.md with actual coverage + test inventory."
+    - "Append freeze doc as permanent record; do NOT delete."
+    - "Scope boundary: Phase 7 only DOCUMENTS what was built — no new features, no refactoring."
+  mistake_capture:
+    - "Check idempotency via Run Log; skip if runId already aggregated."
+    - "Aggregate Phase 5 + Phase 6 code issues (not Phase 3 design issues)."
+    - "Match against existing patterns; increment frequency or create new."
+    - "Promote at frequency ≥ config.pipeline.chronicPromotionThreshold (default 3). Emit patterns.promoted."
+    - "Enforce hard cap config.pipeline.maxActivePatterns (default 20)."
+    - "Demote low-frequency patterns after config.pipeline.cleanRunsForDemotion clean runs. Emit patterns.demoted."
+    - "Sync CLAUDE.md chronic patterns between sentinel markers (atomic write with backup)."
+  gate:
+    - "GATE 2 — always interactive (both modes)."
+    - "Present feature summary: tests, coverage, review metrics, standards, docs, files changed, frozen-honored, bypasses, patterns, duration."
+    - "Options: [1] Approve → archive session, allow push / [2] Reject → return to Phase 5 or 6 / [3] Approve + commit + push."
+    - "On approval: emit gate.approved {gate:2}; archive bypass records to freeze doc bypassHistory (dedup by at, filter by runId); delete bypass.json; write pipeline-complete.md; finalize progress-log.json status:completed."
+    - "On option 3: invoke config.pipeline.skills.finishing — stage, commit, push."
+    - "On rejection: emit gate.rejected {gate:2, reason, returnToPhase}; re-enter that phase."
+  exit:
+    - "Update progress-log.json."
+    - "Emit phase.completed + session.completed events."
+    - "Run phase-gate.sh end 7."
+    - "Print banner: --- Phase 7 Complete: Documentation + Capture --- GATE 2: approved | Total: {minutes}min | Decisions: {N} ---"

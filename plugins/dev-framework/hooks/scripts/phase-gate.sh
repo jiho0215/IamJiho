@@ -46,37 +46,40 @@ if [ "$ACTION" != "verify" ]; then
     fi
 fi
 
-# --- Config loading with fallback defaults ---
-CONFIG="$HOME/.claude/autodev/config.json"
-cfg() {
-  if [ -f "$CONFIG" ]; then
-    local val
-    val=$(jq -r "($1) // empty" "$CONFIG" 2>/dev/null)
-    if [ -n "$val" ]; then echo "$val"; else echo "$2"; fi
-  else
-    echo "$2"
-  fi
-}
+# --- Shared helpers ---
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./_session-lib.sh
+. "$SCRIPT_DIR/_session-lib.sh"
 
-sanitize_branch() {
-  echo "$1" | sed 's|[/\\:*?"<>|@]|-|g' | sed 's|\.\.*$||' | cut -c1-64
-}
-
-# --- Resolve session directory ---
-SESSIONS_DIR=$(cfg '.paths.sessionsDir' "$HOME/.claude/autodev/sessions")
-SESSIONS_DIR="${SESSIONS_DIR/#\~/$HOME}"
-
-BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null || echo "unknown")
-REPO=$(basename "$(git remote get-url origin 2>/dev/null \
-    || git rev-parse --show-toplevel 2>/dev/null \
-    || pwd)" .git)
-
-SANITIZED_BRANCH=$(sanitize_branch "$BRANCH")
-SESSION_FORMAT=$(cfg '.sessionFolderFormat' '{repo}--{branch}')
-SESSION_NAME="${SESSION_FORMAT/\{repo\}/$REPO}"
-SESSION_NAME="${SESSION_NAME/\{branch\}/$SANITIZED_BRANCH}"
-SESSION_DIR="$SESSIONS_DIR/$SESSION_NAME"
+SESSION_DIR=$(resolve_session_dir)
 PROGRESS_LOG="$SESSION_DIR/progress-log.json"
+
+# --- Event emit helpers ---
+emit_blocked() {
+  local reason="$1" action="$2" phase="${3:-}"
+  local data
+  if [ -n "$phase" ]; then
+    data=$(jq -cn --arg reason "$reason" --arg action "$action" --argjson phase "$phase" \
+      '{gate:"phase",phase:$phase,action:$action,reason:$reason}')
+  else
+    data=$(jq -cn --arg reason "$reason" --arg action "$action" \
+      '{gate:"phase",action:$action,reason:$reason}')
+  fi
+  bash "$SCRIPT_DIR/emit-event.sh" gate.blocked --actor "hook:phase-gate" --data "$data" 2>/dev/null || true
+}
+
+emit_passed() {
+  local action="$1" phase="${2:-}"
+  local data
+  if [ -n "$phase" ]; then
+    data=$(jq -cn --arg action "$action" --argjson phase "$phase" \
+      '{gate:"phase",phase:$phase,action:$action}')
+  else
+    data=$(jq -cn --arg action "$action" \
+      '{gate:"phase",action:$action}')
+  fi
+  bash "$SCRIPT_DIR/emit-event.sh" gate.passed --actor "hook:phase-gate" --data "$data" 2>/dev/null || true
+}
 
 # --- Phase name lookup (unified /dev 7-phase workflow) ---
 phase_name() {
@@ -100,22 +103,26 @@ if [ "$ACTION" = "verify" ]; then
         echo "PHASE GATE FAILED [verify]"
         echo "  progress-log.json does not exist at: $PROGRESS_LOG"
         echo "  Pre-Workflow must initialize session files first."
+        emit_blocked "progress-log missing" "verify"
         exit 2
     fi
     if ! jq empty "$PROGRESS_LOG" 2>/dev/null; then
         echo "PHASE GATE FAILED [verify]"
         echo "  progress-log.json is not valid JSON."
         echo "  File: $PROGRESS_LOG"
+        emit_blocked "progress-log invalid JSON" "verify"
         exit 2
     fi
     SCHEMA=$(jq -r '.schemaVersion // "missing"' "$PROGRESS_LOG" 2>/dev/null)
     if [ "$SCHEMA" = "missing" ]; then
         echo "PHASE GATE FAILED [verify]"
         echo "  progress-log.json missing schemaVersion field."
+        emit_blocked "progress-log missing schemaVersion" "verify"
         exit 2
     fi
     echo "PHASE GATE PASSED [verify]"
     echo "  progress-log.json exists and is valid at: $PROGRESS_LOG"
+    emit_passed "verify"
     exit 0
 fi
 
@@ -138,6 +145,7 @@ if [ "$ACTION" = "begin" ]; then
             echo "  progress-log.json not found. Session may be corrupted."
             echo "  Session dir: $SESSION_DIR"
         fi
+        emit_blocked "progress-log missing" "begin" "$PHASE"
         exit 2
     fi
 
@@ -146,6 +154,7 @@ if [ "$ACTION" = "begin" ]; then
         echo "PHASE GATE FAILED [Phase $PHASE: $NAME]"
         echo "  progress-log.json is not valid JSON."
         echo "  File: $PROGRESS_LOG"
+        emit_blocked "progress-log invalid JSON" "begin" "$PHASE"
         exit 2
     fi
 
@@ -154,6 +163,7 @@ if [ "$ACTION" = "begin" ]; then
     if [ "$PIPELINE_STATUS" = "completed" ]; then
         echo "PHASE GATE FAILED [Phase $PHASE: $NAME]"
         echo "  Pipeline already completed. Start a new run or use --from $PHASE to resume."
+        emit_blocked "pipeline already completed" "begin" "$PHASE"
         exit 2
     fi
     if [ "$PIPELINE_STATUS" = "failed" ] && [ "$PHASE" -gt 1 ]; then
@@ -180,6 +190,7 @@ if [ "$ACTION" = "begin" ]; then
             echo "PHASE GATE FAILED [Phase $PHASE: $NAME]"
             echo "  Phase $PREV ($(phase_name "$PREV")) has no entry in progress-log.json."
             echo "  Cannot start Phase $PHASE without Phase $PREV being tracked."
+            emit_blocked "previous phase missing from progress-log" "begin" "$PHASE"
             exit 2
         fi
 
@@ -189,6 +200,7 @@ if [ "$ACTION" = "begin" ]; then
             echo "  Phase $PREV ($(phase_name "$PREV")) status is '$PREV_STATUS', expected one of: $VALID_PREV."
             echo "  Complete or resolve Phase $PREV before starting Phase $PHASE."
             echo "  If resuming after a crash, ensure the resume protocol (references/autonomous/session-management.md § Resume Protocol) resolved the state."
+            emit_blocked "previous phase status invalid" "begin" "$PHASE"
             exit 2
         fi
 
@@ -208,6 +220,7 @@ if [ "$ACTION" = "begin" ]; then
 
     echo "PHASE GATE PASSED [begin Phase $PHASE: $NAME]"
     echo "  Session: $SESSION_DIR"
+    emit_passed "begin" "$PHASE"
     exit 0
 fi
 
@@ -220,6 +233,7 @@ if [ "$ACTION" = "end" ]; then
     if [ ! -f "$PROGRESS_LOG" ]; then
         echo "PHASE GATE FAILED [end Phase $PHASE: $NAME]"
         echo "  progress-log.json disappeared during phase execution."
+        emit_blocked "progress-log disappeared" "end" "$PHASE"
         exit 2
     fi
 
@@ -229,6 +243,7 @@ if [ "$ACTION" = "end" ]; then
         echo "PHASE GATE FAILED [end Phase $PHASE: $NAME]"
         echo "  Phase $PHASE has no entry in progress-log.json."
         echo "  The phase must update the progress map before the end gate."
+        emit_blocked "phase entry missing from progress-log" "end" "$PHASE"
         exit 2
     fi
 
@@ -238,6 +253,7 @@ if [ "$ACTION" = "end" ]; then
         echo "PHASE GATE FAILED [end Phase $PHASE: $NAME]"
         echo "  Phase $PHASE status is '$CURRENT_STATUS', expected 'completed' or 'skipped'."
         echo "  Update progress-log.json before closing the phase gate."
+        emit_blocked "phase status not completed" "end" "$PHASE"
         exit 2
     fi
 
@@ -247,6 +263,7 @@ if [ "$ACTION" = "end" ]; then
         echo "PHASE GATE FAILED [end Phase $PHASE: $NAME]"
         echo "  Phase $PHASE completedAt is not set."
         echo "  Timestamp the phase completion in progress-log.json."
+        emit_blocked "completedAt not set" "end" "$PHASE"
         exit 2
     fi
 
@@ -260,5 +277,6 @@ if [ "$ACTION" = "end" ]; then
 
     echo "PHASE GATE PASSED [end Phase $PHASE: $NAME]"
     echo "  Status: $CURRENT_STATUS | CompletedAt: $COMPLETED_AT"
+    emit_passed "end" "$PHASE"
     exit 0
 fi
