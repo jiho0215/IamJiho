@@ -150,6 +150,7 @@ Per-repo-branch session folders at `~/.claude/autodev/sessions/{repo}--{branch}/
 |---|---|
 | `events.jsonl` | Append-only event stream (M1+); every orchestrator state transition + every hook gate decision emits one line. Source of truth for retrospective queries. |
 | `.seq` | Atomic counter for the last emitted event's `seq` value. Managed by `emit-event.sh` under mkdir-based lock. |
+| `views/` | Regenerated views (M2+); pure functions over `events.jsonl`. Contains `progress-log.json`, `decision-log.json`, `pipeline-issues.json`. Disposable — regenerate via `hooks/scripts/regenerate-views.sh`. |
 | `progress-log.json` + `.md` | Phase timing, metrics, status; includes `mode` (full-cycle, review, test, docs, init), `freezeDocPath`, `plannedFiles`, `featureSlug` |
 | `decision-log.json` + `.md` | Every decision with reasoning |
 | `pipeline-issues.json` | Review findings per phase |
@@ -164,8 +165,17 @@ Per-repo-branch session folders at `~/.claude/autodev/sessions/{repo}--{branch}/
 Every state transition dual-writes to `events.jsonl` alongside existing state files. Schema, type catalog, and query examples: [`skills/dev/references/autonomous/events-schema.md`](./skills/dev/references/autonomous/events-schema.md).
 
 Primitives (all in `hooks/scripts/`):
+
+**M1 (event log):**
 - `emit-event.sh <type> [--data JSON] [--actor ACTOR]` — append one event with atomic seq
 - `get-events.sh [--type T] [--phase N] [--since-seq N] [--format json|summary|count]` — query
-- `_session-lib.sh` — shared helpers sourced by all hooks (cfg, sanitize_branch, resolve_session_dir, iso_utc)
+- `_session-lib.sh` — shared helpers (cfg, sanitize_branch, resolve_session_dir, iso_utc)
 
-Events are append-only; existing state files remain authoritative during M1. M2 will introduce `views/` as regenerated-from-events projections, and `wake.sh` for stateless restart. See [`docs/specs/2026-04-20-managed-agents-evolution.md`](../../docs/specs/2026-04-20-managed-agents-evolution.md) for the full evolution plan.
+**M2 (views, wake, replay):**
+- `_reducers.sh` — shared helpers for reducer scripts (events_file, views_dir, atomic_write)
+- `reduce-progress-log.sh` / `reduce-decision-log.sh` / `reduce-pipeline-issues.sh` — individual reducers
+- `regenerate-views.sh` — master orchestrator calling all reducers
+- `wake.sh` — stateless restart primitive. Returns compact JSON `{sessionDir, lastSeq, currentPhase, status, pendingAction, minimumContext}`. `pendingAction` values: `session.complete`, `session.ready-to-resume`, `phase.N.iteration.M.active`, `phase.N.completion`, `gate.1.pending`, `gate.2.pending`, `phase.N+1.ready`, `session.not-started`.
+- `replay.sh --until-seq N --target DIR` — copy events up to seq N into alt dir and regenerate views there (rewind/branch primitive)
+
+See [`docs/specs/2026-04-20-managed-agents-evolution.md`](../../docs/specs/2026-04-20-managed-agents-evolution.md) for the full evolution plan and [`skills/dev/references/autonomous/views-spec.md`](./skills/dev/references/autonomous/views-spec.md) for reducer contracts.
