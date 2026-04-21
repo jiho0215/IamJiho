@@ -50,3 +50,28 @@ budget:
   seconds: 600
 
 userGate: 1
+
+instructions:
+  entry:
+    - "Read autonomous/review-loop-protocol.md and templates/FREEZE_DOC_TEMPLATE.md."
+    - "Emit phase.started event."
+    - "Run phase-gate.sh begin 3."
+  main:
+    - "Invoke config.pipeline.skills.planning (default: superpowers:writing-plans)."
+    - "Populate freeze doc §9 from config.pipeline.freezeDoc.nonFrozenAllowList."
+    - "Run multi-agent-consensus with agents.plan, task_type=plan."
+    - "Run review-loop-protocol in self-review mode; fix any issues found."
+    - "Populate progress-log.json: freezeDocPath, featureSlug, plannedFiles."
+    - "Emit plan.files.set event (M2.5) with the plannedFiles array."
+    - "Set freeze doc frontmatter status: PENDING_APPROVAL, createdAt timestamp."
+  gate:
+    - "GATE 1 — freeze doc approval."
+    - "Interactive mode: present doc category-by-category; accept Approve all / Reject category X / Inline edit."
+    - "Autonomous mode: auto-approve with approvalMode: autonomous, log audit decision."
+    - "On approval: emit gate.approved; update freeze doc status: APPROVED, approvedAt, approvedBy."
+    - "On rejection: emit gate.rejected with reason + returnToPhase; loop back."
+  exit:
+    - "Update progress-log.json with review metrics."
+    - "Emit phase.completed event."
+    - "Run phase-gate.sh end 3."
+    - "freeze-gate.sh hook becomes active for src/** edits after this phase."

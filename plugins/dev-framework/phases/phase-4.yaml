@@ -44,3 +44,22 @@ budget:
   seconds: 120
 
 userGate: none
+
+instructions:
+  entry:
+    - "Read protocols/test-planning.md, methodology/TESTING_STRATEGY.md, templates/TEST_PLAN_TEMPLATE.md."
+    - "Emit phase.started event."
+    - "Run phase-gate.sh begin 4."
+  main:
+    - "Invoke config.pipeline.skills.tdd (default: superpowers:test-driven-development) to establish TDD discipline."
+    - "Apply test-planning protocol using Phase 1-3 artifacts as inputs."
+    - "Produce layered test plan: Layer 0 (data pipeline), Layer 1 (cross-validation), Layer 2 (per-feature by event type)."
+    - "Coverage target: config.pipeline.testCoverageTarget (default 90% branch)."
+    - "Map tests to acceptance criteria (traceability matrix)."
+    - "Run multi-agent-consensus with agents.plan to validate the test plan."
+    - "Write ${sessionDir}/tdd-plan.md AND docs/test-plans/${featureSlug}-test-plan.md."
+  exit:
+    - "Update progress-log.json phase 4 entry."
+    - "Emit phase.completed event."
+    - "Run phase-gate.sh end 4."
+    - "Print banner: --- Phase 4 Complete: Test Planning ---"

@@ -97,10 +97,35 @@ M3 introduces the knob but does not alter the existing defaults' values — orch
 
 ## Non-requirements (what this is NOT)
 
-- **Replacing SKILL.md prose with YAML-as-data.** Prose narrative stays.
+- **Replacing SKILL.md prose with YAML-as-data.** Prose narrative stays — M3b adds **structured action checklists** alongside the prose (see below), not instead of it.
 - **Machine-evaluated preconditions/postconditions.** YAML declares; dispatcher/LLM checks.
 - **Full multi-brain parallelism.** That's M4.
-- **Byte-equality of views with procedural writes.** M2 explicitly accepts semantic equivalence; byte-equality becomes a goal at M3b if/when we switch reads.
+- **Byte-equality of views with procedural writes.** M2 accepts semantic equivalence; M2.5 adds the missing event types (`config.snapshot.recorded`, `plan.files.set`, `patterns.loaded`) so byte-equality becomes *possible*; the procedural write path still runs.
+
+## `instructions` field (M3b+)
+
+Each phase YAML may carry an `instructions` map containing structured step lists (typically keyed `entry`, `main`, `exit`, plus phase-specific keys like `gate`, `layer1_review`, `frozen_integrity`, `mistake_capture`). These are **"what to do" checklists** that complement — never replace — the SKILL.md prose which explains **"why" and "how to think about" each step**.
+
+When executing a phase, the dispatcher consults the YAML `instructions.main` (or the phase-specific section) for the step order, and cross-references SKILL.md §skillMdSection for reasoning, examples, and dialogue templates.
+
+### Why keep both
+
+- **YAML `instructions`**: machine-actionable checklist; survives model capability bumps; easy to extend/version.
+- **SKILL.md prose**: human-readable narrative; explains rationale; includes dialogue templates and examples.
+
+Future model generations may rely increasingly on the YAML (less prose needed), but the prose remains the source of truth for why things work the way they do.
+
+### Schema keys per phase
+
+| Phase | Typical instruction sections |
+|---|---|
+| 1-4, 6 | entry / main / exit |
+| 5 | entry / execution_rules / main / layer1_review / exit |
+| 3 | entry / main / gate / exit |
+| 6 | entry / main / layer2_review / frozen_integrity / exit |
+| 7 | entry / documentation / mistake_capture / gate / exit |
+
+Keys are advisory — the dispatcher reads `instructions.*` as a whole and follows them in document order.
 
 ## Invariants
 

@@ -54,3 +54,28 @@ budget:
   seconds: 600
 
 userGate: none
+
+instructions:
+  entry:
+    - "Read standards/RESULT_PATTERN.md, CODE_QUALITY.md, PERFORMANCE.md, autonomous/review-loop-protocol.md."
+    - "Emit phase.started event."
+    - "Run phase-gate.sh begin 6."
+  main:
+    - "Run all tests (unit, integration, smoke, E2E). All must pass."
+    - "Measure branch coverage. Compare against config.pipeline.testCoverageTarget."
+    - "If below target: invoke config.pipeline.skills.tdd to write tests targeting uncovered branches. Re-run tests until green."
+    - "Invoke config.pipeline.skills.verification to confirm each acceptance criterion with evidence."
+  layer2_review:
+    - "Run multi-agent-consensus with agents.review."
+    - "Context: final validation — integration-level consistency, test-to-requirement traceability, performance budget adherence, standards compliance."
+    - "Invoke config.pipeline.skills.receiveReview."
+    - "Fix valid issues, re-validate. Escalate on non-convergence."
+  frozen_integrity:
+    - "Scan code + tests for drift from freeze doc §1-§8."
+    - "On drift: halt and offer [1] update freeze doc via supersede, [2] revert to freeze doc, [3] bypass."
+  exit:
+    - "Log decisions, persist issues, merge phase-6-decisions.jsonl."
+    - "Update progress-log.json with review metrics + coverage."
+    - "Emit phase.completed with {phase:6, metrics:{coverage, rounds, issuesFixed}}."
+    - "Run phase-gate.sh end 6."
+    - "Print banner: --- Phase 6 Complete: Verification --- Coverage: {N}% | Rounds: {M} | Issues fixed: {K} ---"

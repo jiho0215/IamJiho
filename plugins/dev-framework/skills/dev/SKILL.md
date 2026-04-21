@@ -194,7 +194,10 @@ Before running any phase body below, read `phases/phase-${N}.yaml` (M3+) and act
 1. **Lazy-load refs:** For each entry in `requiredRefs[]`, read that file with the Read tool. Do not eager-load the entire Companion References table — phase YAMLs declare what's actually needed. This replaces the upfront reference table scan.
 2. **Emit entry events:** Execute each emit in `emits.entry[]` via `emit-event.sh`.
 3. **Run begin gates:** Run each script listed in `gates.begin[]` via `execute.sh hook`.
-4. **Consult the narrative:** The phase body below (anchored by `skillMdSection`) contains the actual how-to — prompts, user dialogue, decision logic. The YAML does not duplicate this.
+4. **Consult the narrative + checklist (M3b+):** Two sources, read together:
+   - Phase YAML `instructions.*` — a machine-actionable checklist of steps (entry/main/exit + phase-specific keys). Use this as the step order.
+   - Phase body below (anchored by `skillMdSection`) — the prose narrative explaining **why** each step matters, dialogue templates, and examples.
+   YAML answers "what to do now"; SKILL.md answers "why and how to think about it."
 5. **Invoke** per `invokes[]`:
    - `kind: hook` — `execute.sh hook <name>` runs to completion synchronously.
    - `kind: protocol` — `execute.sh protocol <name>` emits load event; you must Read the reference file separately.

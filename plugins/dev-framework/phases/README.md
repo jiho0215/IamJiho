@@ -41,6 +41,23 @@ produces:
   - kind: freeze-doc-sections
     sections: [1, 5, 6]
 
+instructions:
+  # (M3b) Structured per-phase checklist. Entry/main/exit steps are what the
+  # dispatcher should DO; SKILL.md §skillMdSection remains authoritative for
+  # WHY and HOW-TO-THINK.
+  entry:
+    - "Read each requiredRef path into working context."
+    - "Emit entry events and run begin gates."
+  main:
+    - "Dialogue-gather requirements (interactive) or extract from ticket (autonomous)."
+    - "Invoke requirements skill per invokes[0]."
+    - "Run multi-agent-consensus validation per invokes[1]."
+    - "Write docs/specs/${featureSlug}-requirements.md."
+    - "Populate freeze doc §1, §5, §6."
+  exit:
+    - "Emit exit events and run end gates."
+    - "Banner: '--- Phase N Complete: Name ---'."
+
 gates:
   begin:
     - script: phase-gate.sh
