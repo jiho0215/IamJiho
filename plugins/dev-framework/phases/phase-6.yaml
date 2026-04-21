@@ -1,0 +1,56 @@
+phase: 6
+name: "Verification + Coverage Fill + Layer 2 Review"
+skillMdSection: "Phase 6 — Verification + Coverage Fill + Layer 2 Review"
+
+requiredRefs:
+  - standards/RESULT_PATTERN.md
+  - standards/CODE_QUALITY.md
+  - standards/PERFORMANCE.md
+  - autonomous/review-loop-protocol.md
+
+emits:
+  entry:
+    - type: phase.started
+      data: "{\"phase\":6}"
+  exit:
+    - type: phase.completed
+      data: "{\"phase\":6, \"metrics\":${phaseMetrics}}"
+
+invokes:
+  - kind: skill
+    config: pipeline.skills.verification
+    fallback: inline
+  - kind: skill
+    config: pipeline.skills.tdd
+    when: "coverageBelowTarget"
+    fallback: inline
+  - kind: protocol
+    name: review-loop-protocol
+    input:
+      mode: multi-agent-consensus
+      agents_config: pipeline.agents.review
+      context: "Final validation: integration consistency, test-to-requirement traceability, performance budget adherence, standards compliance."
+  - kind: skill
+    config: pipeline.skills.receiveReview
+    fallback: inline
+
+produces:
+  - kind: verification
+    check: all-tests-green
+  - kind: verification
+    check: coverage-at-target
+  - kind: verification
+    check: frozen-categories-honored
+
+gates:
+  begin:
+    - script: phase-gate.sh
+      args: ["begin", "6"]
+  end:
+    - script: phase-gate.sh
+      args: ["end", "6"]
+
+budget:
+  seconds: 600
+
+userGate: none

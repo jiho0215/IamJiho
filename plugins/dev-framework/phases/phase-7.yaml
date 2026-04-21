@@ -1,0 +1,53 @@
+phase: 7
+name: "Documentation + Mistake Capture (GATE 2)"
+skillMdSection: "Phase 7 — Documentation + Mistake Capture → GATE 2"
+
+requiredRefs:
+  - protocols/project-docs.md
+  - methodology/DOCUMENTATION_STANDARDS.md
+  - autonomous/mistake-tracker-protocol.md
+
+emits:
+  entry:
+    - type: phase.started
+      data: "{\"phase\":7}"
+  exit:
+    - type: phase.completed
+      data: "{\"phase\":7}"
+    - type: session.completed
+      data: "{\"totalMinutes\":${totalMinutes}}"
+
+invokes:
+  - kind: protocol
+    name: project-docs
+  - kind: protocol
+    name: mistake-tracker-protocol
+  - kind: skill
+    config: pipeline.skills.finishing
+    when: "approvalOption == 3"
+    fallback: inline
+
+produces:
+  - kind: artifact-update
+    path: "docs/adr/**"
+  - kind: artifact-update
+    path: "docs/specs/${featureSlug}-requirements.md"
+  - kind: artifact-update
+    path: "docs/test-plans/${featureSlug}-test-plan.md"
+  - kind: freeze-doc-archival
+    target: "bypassHistory in freeze doc"
+  - kind: marker
+    path: "${sessionDir}/pipeline-complete.md"
+
+gates:
+  begin:
+    - script: phase-gate.sh
+      args: ["begin", "7"]
+  end:
+    - script: phase-gate.sh
+      args: ["end", "7"]
+
+budget:
+  seconds: 300
+
+userGate: 2

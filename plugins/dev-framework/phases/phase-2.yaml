@@ -1,0 +1,47 @@
+phase: 2
+name: "Research (Codebase + Architecture)"
+skillMdSection: "Phase 2 — Research (Codebase + Architecture)"
+
+requiredRefs:
+  - templates/ADR_TEMPLATE.md
+
+emits:
+  entry:
+    - type: phase.started
+      data: "{\"phase\":2}"
+  exit:
+    - type: phase.completed
+      data: "{\"phase\":2}"
+
+invokes:
+  - kind: skill
+    config: pipeline.skills.exploration
+    fallback: inline
+  - kind: skill
+    config: pipeline.skills.architect
+    fallback: inline
+  - kind: protocol
+    name: multi-agent-consensus
+    input:
+      task_type: plan
+      agents_config: pipeline.agents.plan
+      context: "Validate architecture design against requirements and existing codebase conventions."
+
+produces:
+  - kind: artifact
+    path: "docs/adr/ADR-NNN-${architectureTitle}.md"
+  - kind: freeze-doc-sections
+    sections: [2, 3, 4, 7, 8]
+
+gates:
+  begin:
+    - script: phase-gate.sh
+      args: ["begin", "2"]
+  end:
+    - script: phase-gate.sh
+      args: ["end", "2"]
+
+budget:
+  seconds: 120
+
+userGate: none

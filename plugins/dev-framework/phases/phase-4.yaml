@@ -1,0 +1,46 @@
+phase: 4
+name: "Test Planning"
+skillMdSection: "Phase 4 — Test Planning"
+
+requiredRefs:
+  - protocols/test-planning.md
+  - methodology/TESTING_STRATEGY.md
+  - templates/TEST_PLAN_TEMPLATE.md
+
+emits:
+  entry:
+    - type: phase.started
+      data: "{\"phase\":4}"
+  exit:
+    - type: phase.completed
+      data: "{\"phase\":4}"
+
+invokes:
+  - kind: skill
+    config: pipeline.skills.tdd
+    fallback: inline
+  - kind: protocol
+    name: multi-agent-consensus
+    input:
+      task_type: plan
+      agents_config: pipeline.agents.plan
+      context: "Validate test plan covers Unit, Integration, Smoke, E2E with 90%+ branch coverage target."
+
+produces:
+  - kind: artifact
+    path: "${sessionDir}/tdd-plan.md"
+  - kind: artifact
+    path: "docs/test-plans/${featureSlug}-test-plan.md"
+
+gates:
+  begin:
+    - script: phase-gate.sh
+      args: ["begin", "4"]
+  end:
+    - script: phase-gate.sh
+      args: ["end", "4"]
+
+budget:
+  seconds: 120
+
+userGate: none

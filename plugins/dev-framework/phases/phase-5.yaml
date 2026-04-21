@@ -1,0 +1,57 @@
+phase: 5
+name: "Implementation + Layer 1 Review"
+skillMdSection: "Phase 5 — Implementation + Layer 1 Review"
+
+requiredRefs:
+  - standards/RESULT_PATTERN.md
+  - standards/EARLY_EXIT.md
+  - standards/ERROR_HANDLING.md
+  - standards/CODE_QUALITY.md
+  - standards/OBSERVABILITY.md
+  - standards/PERFORMANCE.md
+  - autonomous/review-loop-protocol.md
+
+emits:
+  entry:
+    - type: phase.started
+      data: "{\"phase\":5}"
+  exit:
+    - type: phase.completed
+      data: "{\"phase\":5, \"metrics\":${phaseMetrics}}"
+
+invokes:
+  - kind: skill
+    config: pipeline.skills.implementation
+    fallback: inline
+  - kind: skill
+    config: pipeline.skills.requestReview
+    fallback: inline
+  - kind: protocol
+    name: review-loop-protocol
+    input:
+      mode: multi-agent-consensus
+      agents_config: pipeline.agents.review
+  - kind: skill
+    config: pipeline.skills.receiveReview
+    fallback: inline
+  - kind: skill
+    config: pipeline.skills.debugging
+    when: "onBugOrFailure"
+    fallback: inline
+
+produces:
+  - kind: artifact
+    path: "src/** (feature implementation)"
+
+gates:
+  begin:
+    - script: phase-gate.sh
+      args: ["begin", "5"]
+  end:
+    - script: phase-gate.sh
+      args: ["end", "5"]
+
+budget:
+  seconds: 900
+
+userGate: none

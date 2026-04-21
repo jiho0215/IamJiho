@@ -1,0 +1,52 @@
+phase: 3
+name: "Plan + Freeze Doc Assembly (GATE 1)"
+skillMdSection: "Phase 3 — Plan + Freeze Doc Assembly → GATE 1"
+
+requiredRefs:
+  - autonomous/review-loop-protocol.md
+  - templates/FREEZE_DOC_TEMPLATE.md
+
+emits:
+  entry:
+    - type: phase.started
+      data: "{\"phase\":3}"
+  exit:
+    - type: phase.completed
+      data: "{\"phase\":3}"
+
+invokes:
+  - kind: skill
+    config: pipeline.skills.planning
+    fallback: inline
+  - kind: protocol
+    name: multi-agent-consensus
+    input:
+      task_type: plan
+      agents_config: pipeline.agents.plan
+      context: "Verify plan covers all acceptance criteria, aligns with frozen architecture, and is testable."
+  - kind: protocol
+    name: review-loop-protocol
+    input:
+      mode: self
+      target: plan-and-freeze-doc
+
+produces:
+  - kind: artifact
+    path: "docs/specs/${featureSlug}-freeze.md"
+  - kind: freeze-doc-sections
+    sections: [9]
+  - kind: freeze-doc-status
+    value: APPROVED
+
+gates:
+  begin:
+    - script: phase-gate.sh
+      args: ["begin", "3"]
+  end:
+    - script: phase-gate.sh
+      args: ["end", "3"]
+
+budget:
+  seconds: 600
+
+userGate: 1
