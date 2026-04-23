@@ -225,7 +225,7 @@ Test must pass before moving to the next design entry — but "pass" means the d
    - "One loop-back per run" refers to a Section B full build invocation (and any `--from N` resume continuing that build). Section A audit runs are independent — audits do not execute Phase 6 and do not consume the budget.
    - **On loop-back, the mis-specification re-run budget (Phase 4 table) resets**: the budget is per Phase 4 pass, and Phase 6 loop-back triggers a new pass through Phases 2→3→4, so a fresh mis-spec re-run is allowed.
    - **Phase 2 on loop-back must subtract existing `untestable.json` caseIds** from its proposal list (they've already been declared unreachable) so the loop doesn't re-propose them as phantom gaps.
-5. **CI wiring** — audit inline (no script, no runtime dependency). Detect CI config first:
+5. **CI wiring** — audit inline. No bundled script: CI shapes vary across five supported platforms, a single parser can't robustly cover all of them, and Claude reading the YAML directly catches trait-rename drift and filter/actual-trait mismatches a regex-based parser would miss. Detect CI config first:
    - GitHub Actions: `.github/workflows/*.yml`
    - GitLab: `.gitlab-ci.yml`
    - Azure Pipelines: `azure-pipelines.yml` / `.azure-pipelines/*.yml`
@@ -257,7 +257,7 @@ Test must pass before moving to the next design entry — but "pass" means the d
    - Detect existing test projects/folders.
    - Infer tier assignment per [BLACKBOX_BOUNDARY.md](references/standards/BLACKBOX_BOUNDARY.md).
 4. Populate the **Running locally** section with the repo's real commands (detected from existing scripts, Makefiles, or tool conventions).
-5. Populate the **CI** section from existing workflows under `.github/workflows/` (or note "local-only" if intentional).
+5. Populate the **CI** section from existing CI config (detect across GitHub Actions `.github/workflows/*.yml`, GitLab `.gitlab-ci.yml`, Azure Pipelines `azure-pipelines.yml`, CircleCI `.circleci/config.yml`, Jenkins `Jenkinsfile`). Note `local-only` if none is present.
 6. Leave **Known Gaps** empty with a pointer to /testbuilder for future updates.
 7. Commit as a standalone PR titled `chore(testing): scaffold TESTING.md ledger`.
 
