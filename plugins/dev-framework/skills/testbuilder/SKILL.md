@@ -187,7 +187,12 @@ Test must pass before moving to the next design entry — but "pass" means the d
 **Review mode**: in full consensus mode, dispatch 3 doc-review agents (step 3 below). In standalone fallback mode (see Multi-Agent Consensus section), run a single doc-review agent over the same inputs; fix its findings in one pass; done.
 
 1. Load the current `TESTING.md` (created in Section I if absent).
-2. **Build the surviving-skip inventory** — scan the test tree for `[Skip]`, `xit`/`xdescribe`, `@Disabled`, `@pytest.mark.skip` (per language) and assemble `{file, test, message, trackingLink, exitCriterion}` for each. This inventory feeds the Known Gaps section below; without this step Known Gaps would be blind to skips Phase 4 didn't write (legacy skips carried over).
+2. **Build the surviving-skip inventory** by running the bundled audit script:
+   ```
+   bash ${CLAUDE_PLUGIN_ROOT}/skills/testbuilder/scripts/skip-truth-audit.sh \
+     --repo <repo-root> --out <SESSION_DIR>/skip-audit.json
+   ```
+   The script walks the test tree for `[Skip]`, `xit`/`xdescribe`, `@Disabled`, `@pytest.mark.skip`, and Go `t.Skip(...)`, extracts each skip's message, and for any message that claims coverage elsewhere ("covered in X", "verified by Y", "tested in Z") greps for the claim target and records whether it resolves. The output JSON has a `summary` (total / verified / unverified / noClaim / noTracking counts) and a `skips[]` list with the raw evidence per skip. Use this inventory directly for the Known Gaps section below, and let the `unverified` bucket flag false-claim skips for Phase 4 follow-up (either write the claimed test or rewrite the message to drop the claim). Running the script beats re-deriving the loop each time — the grep pattern set and framework regex list are subtle enough to be worth keeping in one place.
 3. Update sections per [TESTING_MD_TEMPLATE.md](references/templates/TESTING_MD_TEMPLATE.md):
    - **Overview**: keep; update if new projects/folders introduced.
    - **Running locally**: update commands if Phase 6 added CI variants.
@@ -220,11 +225,16 @@ Test must pass before moving to the next design entry — but "pass" means the d
    - "One loop-back per run" refers to a Section B full build invocation (and any `--from N` resume continuing that build). Section A audit runs are independent — audits do not execute Phase 6 and do not consume the budget.
    - **On loop-back, the mis-specification re-run budget (Phase 4 table) resets**: the budget is per Phase 4 pass, and Phase 6 loop-back triggers a new pass through Phases 2→3→4, so a fresh mis-spec re-run is allowed.
    - **Phase 2 on loop-back must subtract existing `untestable.json` caseIds** from its proposal list (they've already been declared unreachable) so the loop doesn't re-propose them as phantom gaps.
-5. **CI wiring** — per [ci-organization.md](references/protocols/ci-organization.md):
-   - New test projects referenced by CI filter
-   - No orphan projects (a project excluded from `unit-tests` must be explicitly run by another job)
-   - Redundant runs (same tests in two workflows) eliminated unless intentional
-   - Filter syntax matches actual test traits
+5. **CI wiring** — run the bundled auditor:
+   ```
+   python3 ${CLAUDE_PLUGIN_ROOT}/skills/testbuilder/scripts/ci-audit.py \
+     --repo <repo-root> --out <SESSION_DIR>/ci-audit.json
+   ```
+   The script parses `.github/workflows/*.yml`, enumerates test projects (heuristics for `.csproj`/`package.json`/`pytest`/`go.mod`; override with `--test-globs` if the repo uses something custom), and emits a JSON report with `orphans[]`, `redundancies[]`, and `filterWarnings[]`. Follow up per [ci-organization.md](references/protocols/ci-organization.md):
+   - Fix every orphan (add a CI job that runs it, or delete the project if dead)
+   - Annotate every redundancy with an intent comment, or consolidate
+   - Resolve every filter warning (replace fragile `FullyQualifiedName!~` with trait filters; add comments to undocumented filters)
+   - Spot-check that filter syntax matches actual test traits (the script flags fragile patterns; trait↔filter alignment still needs a human eye when traits were renamed mid-run)
 
 **Exit criterion**: all tiers pass locally, all tiers either already run in CI or now wired to do so, coverage targets met.
 
