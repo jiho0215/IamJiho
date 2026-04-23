@@ -43,7 +43,7 @@ Before entering any section, execute these steps in order:
 2. **Resolve scope**:
    - `--init`: the target is the repo root. No ticket/epic required.
    - Full build or `--audit`: read epic ID / ticket ID / module path from `$ARGUMENTS`. If only a module path, synthesize a scope slug from it (e.g., `BuckitApi/Services/Advisor` → `advisor`).
-3. **Resolve epic session folder** — `SESSION_DIR = ~/.claude/autodev/sessions/{repo}--epic-{epicId}/`. Sanitize `{repo}` and `{epicId}` by replacing any character not in `[A-Za-z0-9._-]` with `-` and collapsing runs of `-` (so `buckit/api` → `buckit-api`, `EPIC#42` → `EPIC-42`). For `--init` or ad-hoc module scope, use `{repo}--testbuilder-{scopeSlug}` with the same sanitization.
+3. **Resolve epic session folder** — `SESSION_DIR = ~/.autodev/sessions/{repo}--epic-{epicId}/`. Sanitize `{repo}` and `{epicId}` by replacing any character not in `[A-Za-z0-9._-]` with `-` and collapsing runs of `-` (so `buckit/api` → `buckit-api`, `EPIC#42` → `EPIC-42`). For `--init` or ad-hoc module scope, use `{repo}--testbuilder-{scopeSlug}` with the same sanitization.
 4. **Locate TESTING.md** — the repo's testing source of truth:
    - Look for `<repo>/TESTING.md` first (root-level).
    - If absent, check `<repo>/docs/TESTING.md`.
@@ -225,16 +225,20 @@ Test must pass before moving to the next design entry — but "pass" means the d
    - "One loop-back per run" refers to a Section B full build invocation (and any `--from N` resume continuing that build). Section A audit runs are independent — audits do not execute Phase 6 and do not consume the budget.
    - **On loop-back, the mis-specification re-run budget (Phase 4 table) resets**: the budget is per Phase 4 pass, and Phase 6 loop-back triggers a new pass through Phases 2→3→4, so a fresh mis-spec re-run is allowed.
    - **Phase 2 on loop-back must subtract existing `untestable.json` caseIds** from its proposal list (they've already been declared unreachable) so the loop doesn't re-propose them as phantom gaps.
-5. **CI wiring** — run the bundled auditor:
-   ```
-   python3 ${CLAUDE_PLUGIN_ROOT}/skills/testbuilder/scripts/ci-audit.py \
-     --repo <repo-root> --out <SESSION_DIR>/ci-audit.json
-   ```
-   The script parses `.github/workflows/*.yml`, enumerates test projects (heuristics for `.csproj`/`package.json`/`pytest`/`go.mod`; override with `--test-globs` if the repo uses something custom), and emits a JSON report with `orphans[]`, `redundancies[]`, and `filterWarnings[]`. Follow up per [ci-organization.md](references/protocols/ci-organization.md):
-   - Fix every orphan (add a CI job that runs it, or delete the project if dead)
-   - Annotate every redundancy with an intent comment, or consolidate
-   - Resolve every filter warning (replace fragile `FullyQualifiedName!~` with trait filters; add comments to undocumented filters)
-   - Spot-check that filter syntax matches actual test traits (the script flags fragile patterns; trait↔filter alignment still needs a human eye when traits were renamed mid-run)
+5. **CI wiring** — audit inline (no script, no runtime dependency). Detect CI config first:
+   - GitHub Actions: `.github/workflows/*.yml`
+   - GitLab: `.gitlab-ci.yml`
+   - Azure Pipelines: `azure-pipelines.yml` / `.azure-pipelines/*.yml`
+   - CircleCI: `.circleci/config.yml`
+   - Jenkins: `Jenkinsfile`
+
+   If **no CI config exists**, note `local-only` in TESTING.md §CI and skip the rest of step 5.
+
+   If CI config exists, read the files with the Read tool, enumerate test projects (heuristics for `.csproj`/`package.json`/`pytest`/`go.mod`), and apply [ci-organization.md](references/protocols/ci-organization.md):
+   - Flag every orphan (project not run by any job — fix: add a job, or delete if dead)
+   - Annotate or consolidate every redundancy (same project run by multiple jobs without documented intent)
+   - Resolve every fragile filter (replace `FullyQualifiedName!~` exclusions with trait filters; add intent comments to undocumented filters)
+   - Verify filter syntax matches actual test traits — trait↔filter alignment needs a human (or Claude) eye when traits were renamed mid-run
 
 **Exit criterion**: all tiers pass locally, all tiers either already run in CI or now wired to do so, coverage targets met.
 
