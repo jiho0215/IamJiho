@@ -5,3 +5,6 @@ Thumbs.db
 .vscode/
 *.log
 node_modules/
+
+# testbuilder skill-creator eval artifacts (ephemeral, per-iteration)
+plugins/dev-framework/skills/testbuilder-workspace/
