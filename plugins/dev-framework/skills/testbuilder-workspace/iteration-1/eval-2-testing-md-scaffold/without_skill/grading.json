@@ -1,0 +1,39 @@
+{
+  "expectations": [
+    {
+      "text": "Contains all 7 template sections: Overview, Running locally, CI, Writing new tests, Coverage, Known Gaps, Appendix",
+      "passed": false,
+      "evidence": "Has Overview, Running locally, CI, Writing new tests, Coverage, Known Gaps — but no Appendix section exists in the file."
+    },
+    {
+      "text": "Has a tier table distinguishing Unit / Integration / E2E with locations",
+      "passed": true,
+      "evidence": "Lines 7-11: table with Tier|Framework|Location|Purpose columns listing Unit (test/unit/), Integration (test/integration/), E2E (test/e2e/)."
+    },
+    {
+      "text": "Has a 3rd-party mocks table listing Stripe and Twilio",
+      "passed": false,
+      "evidence": "Stripe and Twilio are mentioned on lines 15-18 as a bulleted list, not a table. No dedicated mocks table exists."
+    },
+    {
+      "text": "Documents CI workflows (test.yml + e2e.yml) with trigger and filter",
+      "passed": true,
+      "evidence": "Lines 80-83: table lists test.yml (trigger: push, filter: excludes E2E / test/unit/ + test/integration/) and e2e.yml (trigger: pull_request, filter: test/e2e/)."
+    },
+    {
+      "text": "Includes an orphan-check statement for CI coverage",
+      "passed": false,
+      "evidence": "No mention of orphan-check or any statement verifying tests are not orphaned from CI."
+    },
+    {
+      "text": "Known Gaps section is present and explicitly empty (no placeholder text lies)",
+      "passed": true,
+      "evidence": "Line 140-142: '## Known Gaps\\n\\nNone at this time.' — section present and explicitly empty."
+    },
+    {
+      "text": "Appendix contains concrete filter expressions for each workflow",
+      "passed": false,
+      "evidence": "No Appendix section exists in the file. Filter expressions are mentioned inline in the CI table (line 82) but not in a dedicated Appendix."
+    }
+  ]
+}

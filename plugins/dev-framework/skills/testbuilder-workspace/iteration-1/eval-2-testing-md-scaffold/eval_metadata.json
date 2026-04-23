@@ -1,0 +1,14 @@
+{
+  "eval_id": 2,
+  "eval_name": "testing-md-scaffold",
+  "prompt": "Scaffold TESTING.md for a Node.js repo with unit/integration/e2e structure, Jest+Playwright+testcontainers, two CI workflows, Stripe/Twilio as 3rd-party deps.",
+  "assertions": [
+    {"text": "Contains all 7 template sections: Overview, Running locally, CI, Writing new tests, Coverage, Known Gaps, Appendix"},
+    {"text": "Has a tier table distinguishing Unit / Integration / E2E with locations"},
+    {"text": "Has a 3rd-party mocks table listing Stripe and Twilio"},
+    {"text": "Documents CI workflows (test.yml + e2e.yml) with trigger and filter"},
+    {"text": "Includes an orphan-check statement for CI coverage"},
+    {"text": "Known Gaps section is present and explicitly empty (no placeholder text lies)"},
+    {"text": "Appendix contains concrete filter expressions for each workflow"}
+  ]
+}

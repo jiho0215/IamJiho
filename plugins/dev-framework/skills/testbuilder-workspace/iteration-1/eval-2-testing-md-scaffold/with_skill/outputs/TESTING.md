@@ -1,0 +1,138 @@
+# my-api — Testing
+
+The single source of truth for this repo's testing. Updated by `/dev-framework:testbuilder` — do not edit Known Gaps or Coverage sections by hand; run the skill instead.
+
+## 1. Overview
+
+`my-api` is a Node.js/TypeScript service. Tests are organized into three tiers under `test/`, separated by dependency scope. Unit tests exercise in-process logic with all dependencies stubbed; integration tests bring up real infrastructure (Postgres via testcontainers); E2E tests drive the full stack through Playwright. 3rd-party production dependencies (Stripe, Twilio) are always mocked in tests.
+
+### Tiers
+
+| Tier | Location | What it covers | Deps |
+|---|---|---|---|
+| Unit | `test/unit/` | In-process logic, edge cases (e.g. `user.service`) | all stubbed |
+| Integration | `test/integration/` | Real Postgres via testcontainers (e.g. `order.service`) | Docker-up internal (Postgres 15, Redis 7); mock 3rd-party |
+| E2E | `test/e2e/` | Full user flows via Playwright (e.g. checkout) | image-tag only; no source ref |
+
+### 3rd-party mocks
+
+| Service | Mock mechanism | Location |
+|---|---|---|
+| Stripe | TBD — add framework mock or recorded fixtures | TBD |
+| Twilio | TBD — add framework mock or recorded fixtures | TBD |
+
+## 2. Running locally
+
+### Unit tests (fast)
+
+```bash
+npm test
+```
+
+Expected duration: <30 seconds for the full suite.
+
+### Integration tests (Docker-backed)
+
+```bash
+docker compose -f docker-compose.test.yml up -d
+npm test -- test/integration
+```
+
+Prerequisites: Docker running, Postgres (5432) and Redis (6379) ports free. Testcontainers manages lifecycles per test, but `docker-compose.test.yml` provides a shared stack for local iteration.
+
+### E2E tests
+
+```bash
+npm run test:e2e
+```
+
+Prerequisites: Docker running, the app buildable, Playwright browsers installed (`npx playwright install`).
+
+### Coverage
+
+```bash
+# TBD — wire up a coverage runner (e.g. `npx jest --coverage` or `c8`)
+```
+
+Report lands at `coverage/` (TBD until wired).
+
+## 3. CI
+
+Workflows live under `.github/workflows/`. Each listed workflow runs on each event with the specified filter.
+
+| Workflow | Trigger | What it runs | Filter |
+|---|---|---|---|
+| `test.yml` | push | Jest (unit + integration) | tests except E2E |
+| `e2e.yml` | pull_request | Playwright E2E | E2E only |
+
+**Orphan check**: every test folder in the repo is run by at least one workflow. `test/unit/` and `test/integration/` run in `test.yml`; `test/e2e/` runs in `e2e.yml`. No silent drops.
+
+## 4. Writing new tests
+
+### Conventions
+
+- **Naming**: verb-first, describes behavior (e.g. `returns 404 when user not found`).
+- **Pattern**: Arrange — Act — Assert. Every test has all three.
+- **Tier placement**: follow the folder convention — `test/unit/`, `test/integration/`, `test/e2e/`. CI filters depend on folder paths being consistent.
+- **Independent**: a test must not depend on another test's side effects.
+- **Deterministic**: same input → same result, always.
+- **Assertions**: use Jest's built-in `expect` for unit/integration; Playwright's `expect` for E2E. Stay consistent.
+
+### Placement decision
+
+Use the decision tree in `BLACKBOX_BOUNDARY.md`:
+
+1. Multiple services over the wire → E2E (`test/e2e/`, Playwright)
+2. Real internal service needed (Postgres, Redis) → Integration (`test/integration/`, testcontainers)
+3. Else → Unit (`test/unit/`, pure Jest)
+
+### Dependency handling
+
+- 3rd-party (Stripe, Twilio) → mock (recorded fixture preferred, framework mock last resort)
+- Internal (Postgres, Redis) → Docker (testcontainers or `docker-compose.test.yml`, image-pinned, health-gated)
+
+Never invert. See `DEPENDENCY_POLICY.md` (in `dev-framework:testbuilder` references).
+
+### When NOT to write a test
+
+Do not write a test that:
+
+- Only asserts the constructor didn't throw
+- Re-verifies a mocked dependency's mocked return
+- Would require `.skip` to land — escalate tier instead (see Known Gaps contract below)
+
+## 5. Coverage
+
+| Module | Line | Branch | Case | Last measured |
+|---|---|---|---|---|
+| users | — | — | — | Not yet measured |
+| orders | — | — | — | Not yet measured |
+
+Targets:
+
+- Line: ≥ 90%
+- Branch: ≥ 90%
+- **Case**: ≥ 95%  ← mothership standard
+
+Not yet measured — run `/dev-framework:testbuilder my-api` to populate this table.
+
+## 6. Known Gaps
+
+Every deliberately-skipped test, tier-escalated case, and untestable scenario is listed here. Each entry has tier, reason, tracking link, exit criterion.
+
+Entries are maintained by `/dev-framework:testbuilder`. Do not edit manually — the skill's Phase 5 reconcile consensus will remove untracked entries or flag manually-added ones as stale.
+
+(No gaps yet — freshly scaffolded.)
+
+## 7. Appendix — CI filter expressions
+
+Document the exact filter each CI job uses. Reviewers of this doc should be able to reconstruct which tests run where.
+
+```text
+test.yml (push):          jest --testPathIgnorePatterns=test/e2e
+e2e.yml  (pull_request):  playwright test test/e2e
+```
+
+---
+
+_Generated by `/dev-framework:testbuilder`. Last full reconcile: 2026-04-22._

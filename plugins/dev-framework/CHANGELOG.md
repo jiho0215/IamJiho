@@ -22,6 +22,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 - Plugin description expanded to cover three skills (spike, implement, testbuilder).
 - Keywords: added `testbuilder`, `case-coverage`, `testing-mothership`, `mock-vs-docker`, `skip-hygiene`, `blackbox-boundary`.
 
+### Removed
+- `commands/dev.md` tombstone — the `/dev-framework:dev` → `/dev-framework:implement` redirect shipped in v4.0.0 is now gone. Typing `/dev-framework:dev` yields "unknown command"; use `/dev-framework:implement` instead.
+
 ### Notes
 - `/testbuilder` runs independently of `/implement`. No dispatch, no handoff contract — the two skills share only the epic-scoped event log when invoked against the same epic. Ad-hoc invocation against a legacy module or greenfield repo is a first-class mode.
 - `/implement`'s Phase 4 Test Planning and Phase 6 Coverage Fill are unchanged. Tests it produces (or doesn't produce) are simply input to `/testbuilder` Phase 1; `/testbuilder` Phase 5 (Document) has absolute authority to rewrite or delete any existing test that violates HYGIENE/DEPENDENCY_POLICY/BLACKBOX_BOUNDARY, regardless of origin.

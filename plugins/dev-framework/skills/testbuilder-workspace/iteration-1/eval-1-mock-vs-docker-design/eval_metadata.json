@@ -1,0 +1,13 @@
+{
+  "eval_id": 1,
+  "eval_name": "mock-vs-docker-design",
+  "prompt": "Design dependency strategy for PaymentService integration tests across 6 deps: UserService (own), Postgres (own), AuditLogService (own), Stripe (3rd-party), SendGrid (3rd-party), OpenAI (3rd-party).",
+  "assertions": [
+    {"text": "Classifies UserService, Postgres, AuditLogService all as Docker (internal)"},
+    {"text": "Classifies Stripe, SendGrid, OpenAI all as Mock (3rd-party)"},
+    {"text": "States 'never mock internal services' / 'never invert' rule"},
+    {"text": "Flags the :latest tag on buckit-user-api and requires a pinned tag"},
+    {"text": "Prefers recorded fixtures over framework mocks for 3rd-party"},
+    {"text": "Mentions that vendor sandboxes (real 3rd-party) belong in a separate nightly job, not main CI"}
+  ]
+}

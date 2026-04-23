@@ -1,0 +1,11 @@
+{
+  "expectations": [
+    {"text": "Flags the 'verified in integration tests' claim as false (grep confirms zero matches)", "passed": true, "evidence": "the message claims \"verified in integration tests\", but the user has already run grep ... and found zero matches. The claim is a lie."},
+    {"text": "Identifies all three skipped tests as empty shells with no arrange/act/assert", "passed": true, "evidence": "Rule 1 (No empty test shells) cited for all three: 48-hour test ('body is comments only. No arrange/act/assert'), ToBlockedUser ('empty body'), Concurrent ('empty body')."},
+    {"text": "Flags 'TODO: fix later' as a forbidden skip pattern (no tracking link or exit criterion)", "passed": true, "evidence": "\"TODO: fix later\" is explicitly listed in the HYGIENE forbidden-patterns table (\"No tracking, no exit criterion\"). This is a textbook violation."},
+    {"text": "Flags 'flaky' skip as forbidden (no tracking link, masks a real issue)", "passed": true, "evidence": "\"flaky\" with no tracking link is explicitly forbidden (\"No SLA, no owner, no plan\")."},
+    {"text": "Flags Service_CanBeConstructed as a forbidden false-coverage-inflation test", "passed": true, "evidence": "Rule 7 (No false coverage inflation) — explicitly lists \"Tests that only assert the constructor didn't throw\" as forbidden."},
+    {"text": "Recommends tier escalation (unit -> integration with Docker) for the 48-hour DateTime test instead of skip", "passed": true, "evidence": "Delete this test from the unit project and write it in Buckit.Services.IntegrationTests against a real SQL Server (Docker/Testcontainers)"},
+    {"text": "Recommends a Known Gaps / TESTING.md ledger entry for any skip that survives", "passed": true, "evidence": "record in TESTING.md Known Gaps per HYGIENE Rule 6 with tier/tracking/exit-criterion/last-reviewed fields"}
+  ]
+}
