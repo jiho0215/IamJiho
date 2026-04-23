@@ -1,0 +1,23 @@
+{
+  "skill_name": "testbuilder",
+  "evals": [
+    {
+      "id": 0,
+      "name": "skip-hygiene-audit",
+      "prompt": "Review this C# unit test file and tell me what's wrong with it and how to fix it. Write your review as markdown to `review.md`.\n\n```csharp\nusing Xunit;\n\nnamespace Buckit.Services.UnitTests;\n\npublic class FriendRequestServiceTests\n{\n    [Fact(Skip = \"DateTime comparison issue with InMemory DB - verified in integration tests\")]\n    public async Task SendFriendRequest_Exactly48HoursAfterReject_Succeeds()\n    {\n        // This test requires real DB for accurate DateTime comparison\n        // In-Memory DB doesn't handle DateTime.UtcNow.AddHours(-48) correctly\n    }\n\n    [Fact(Skip = \"TODO: fix later\")]\n    public async Task SendFriendRequest_ToBlockedUser_ReturnsError()\n    {\n    }\n\n    [Fact(Skip = \"flaky\")]\n    public async Task SendFriendRequest_Concurrent_HandlesCorrectly()\n    {\n    }\n\n    [Fact]\n    public async Task Service_CanBeConstructed()\n    {\n        var service = new FriendRequestService(null!, null!);\n        Assert.NotNull(service);\n    }\n\n    [Fact]\n    public async Task SendFriendRequest_HappyPath_Succeeds()\n    {\n        // Arrange\n        var service = BuildService();\n        // Act\n        var result = await service.SendFriendRequestAsync(userA, userB);\n        // Assert\n        Assert.True(result.IsSuccess);\n    }\n}\n```\n\nContext: our team claims the `Buckit.Services.IntegrationTests` project exists but a grep for `SendFriendRequest_Exactly48HoursAfterReject` across that project returns zero matches. The file above is the only test coverage for `FriendRequestService`.",
+      "files": []
+    },
+    {
+      "id": 1,
+      "name": "mock-vs-docker-design",
+      "prompt": "I'm adding integration tests for our new `PaymentService`. It calls:\n1. Our own `UserService` (another .NET service we operate, has a Docker image `buckit-user-api:latest`)\n2. Our own Postgres DB\n3. Stripe (3rd-party payment gateway)\n4. SendGrid (3rd-party email)\n5. Our internal `AuditLogService` (another service we operate)\n6. OpenAI (for fraud detection scoring)\n\nDesign the dependency strategy for integration tests. For each dependency, tell me: mock OR docker, which specific technique, and why. Write your answer as markdown to `design.md` with a table + justification.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "name": "testing-md-scaffold",
+      "prompt": "Scaffold a `TESTING.md` file for this Node.js repo. Write the final markdown to `TESTING.md`.\n\nRepo structure:\n```\nmy-api/\n├── package.json       (name: my-api, test: jest, test:e2e: playwright)\n├── src/\n│   ├── users/user.service.ts\n│   └── orders/order.service.ts\n├── test/\n│   ├── unit/user.service.test.ts\n│   ├── integration/order.integration.test.ts   (uses testcontainers for Postgres)\n│   └── e2e/checkout.e2e.spec.ts                 (Playwright)\n├── docker-compose.test.yml   (postgres:15, redis:7)\n└── .github/workflows/\n    ├── test.yml              (runs jest on push, filter: tests except e2e)\n    └── e2e.yml               (runs playwright on PR)\n```\n\n3rd-party dependencies used in production: Stripe (payments), Twilio (SMS).\n\nThe file must follow a standard testing-doc format with sections for Overview, Running locally, CI, Writing new tests, Coverage, and Known Gaps. There are currently no known gaps.",
+      "files": []
+    }
+  ]
+}

@@ -1,0 +1,172 @@
+# TESTING.md Template
+
+Every repo has exactly **one** `TESTING.md` at the root. It is the source of truth for how tests are organized, how to run them, how CI executes them, how to write new ones, and what is deliberately not covered yet.
+
+Copy this file to `<repo>/TESTING.md` during `/testbuilder --init`. Fill each section from the repo's actual state; do not leave placeholders.
+
+---
+
+```markdown
+# <Repo Name> — Testing
+
+The single source of truth for this repo's testing. Updated by `/dev-framework:testbuilder` — do not edit Known Gaps or Coverage sections by hand; run the skill instead.
+
+## 1. Overview
+
+Brief (under 10 lines) description of what gets tested here and how it's organized.
+
+### Tiers
+
+| Tier | Location | What it covers | Deps |
+|---|---|---|---|
+| Unit | `<path>` | In-process logic, edge cases | all stubbed |
+| Integration | `<path>` | Real DB/Redis/internal services | Docker-up internal; mock 3rd-party |
+| E2E | `<path or sibling repo>` | Full user flows over the wire | image-tag only; no source ref |
+
+### 3rd-party mocks
+
+| Service | Mock mechanism | Location |
+|---|---|---|
+| Stripe | recorded fixtures via WireMock | `test/fixtures/stripe/` |
+| Plaid | FakePlaidGateway DI swap | `BuckitApi/Plaid/FakePlaidGateway.cs` |
+| OpenAI | FakeAICoreProvider | `Buckit.AI.Core/Fakes/` |
+
+## 2. Running locally
+
+### Unit tests (fast)
+
+```bash
+# real command here
+```
+
+Expected duration: <30 seconds for the full suite.
+
+### Integration tests (Docker-backed)
+
+```bash
+# command to bring up compose + run
+```
+
+Prerequisites: Docker running, ports <list> free, `.env.test` populated (copy from `.env.test.example`).
+
+### E2E tests
+
+```bash
+# command to build image, bring up stack, run e2e
+```
+
+Prerequisites: <list>
+
+### Coverage
+
+```bash
+# command that produces the coverage report
+```
+
+Report lands at `<path>`.
+
+## 3. CI
+
+Workflows live under `.github/workflows/`. Each listed workflow runs on each event with the specified filter.
+
+| Workflow | Trigger | What it runs | Filter |
+|---|---|---|---|
+| `test.yml` | push + PR to main/develop | Unit + Integration | `Category!=E2E` |
+| `e2e.yml` | workflow_run after test.yml | E2E | `Category=E2E` |
+| `coverage.yml` | nightly | Coverage report | all |
+
+**Orphan check**: every test project listed in the repo is run by at least one workflow. Any project excluded from one filter is explicitly included in another. No silent drops.
+
+## 4. Writing new tests
+
+### Conventions
+
+- **Naming**: `MethodName_Scenario_ExpectedResult` (verb-first, describes behavior).
+- **Pattern**: Arrange — Act — Assert. Every test has all three.
+- **Traits**: every test has `[Trait("Category", "Unit|Integration|E2E")]` (or the repo's equivalent). CI filters depend on this.
+- **Independent**: a test must not depend on another test's side effects.
+- **Deterministic**: same input → same result, always.
+- **Assertions**: use the repo's chosen assertion library consistently (FluentAssertions / Chai / pytest asserts / testify).
+
+### Placement decision
+
+Use the decision tree in `BLACKBOX_BOUNDARY.md`:
+
+1. Multiple services over the wire → E2E
+2. Real internal service needed → Integration
+3. Else → Unit
+
+### Dependency handling
+
+- 3rd-party → mock (recorded fixture preferred, framework mock last resort)
+- Internal → Docker (image-pinned, health-gated)
+
+Never invert. See `DEPENDENCY_POLICY.md` (in `dev-framework:testbuilder` references).
+
+### When NOT to write a test
+
+Do not write a test that:
+
+- Only asserts the constructor didn't throw
+- Re-verifies a mocked dependency's mocked return
+- Would require `[Skip]` to land — escalate tier instead (see Known Gaps contract below)
+
+## 5. Coverage
+
+| Module | Line | Branch | Case | Last measured |
+|---|---|---|---|---|
+| <module-a> | 92% | 88% | 96% | YYYY-MM-DD |
+| <module-b> | 85% | 78% | 89% | YYYY-MM-DD |
+
+Targets:
+
+- Line: ≥ 90%
+- Branch: ≥ 90%
+- **Case**: ≥ 95%  ← testbuilder standard
+
+Re-run `/dev-framework:testbuilder <scope>` to update this table.
+
+## 6. Known Gaps
+
+Every deliberately-skipped test, tier-escalated case, and untestable scenario is listed here. Each entry has tier, reason, tracking link, exit criterion.
+
+Entries are maintained by `/dev-framework:testbuilder`. Do not edit manually — the skill's Phase 5 (Document) consensus will remove untracked entries or flag manually-added ones as stale.
+
+### GAP-001 — <short title>
+
+- **Tier**: <unit | integration | e2e>
+- **Why**: one-sentence reason
+- **Tracking**: <issue URL or ID>
+- **Exit criterion**: specific, observable condition under which this is resolved
+- **Last reviewed**: YYYY-MM-DD
+
+### GAP-002 — ...
+
+(No gaps yet — freshly scaffolded.)
+
+## 7. Appendix — CI filter expressions
+
+Document the exact filter each CI job uses. Reviewers of this doc should be able to reconstruct which tests run where.
+
+```text
+unit-tests filter:  Category=Unit
+integration filter: Category=Integration
+e2e filter:         Category=E2E
+```
+
+---
+
+_Generated by `/dev-framework:testbuilder`. Last testbuilder run: YYYY-MM-DD._
+```
+
+---
+
+## Notes for `/testbuilder` when generating
+
+- **Section 1 (Overview)** — populate from repo scan (detected stack, detected test projects/folders). Keep under 10 lines.
+- **Section 2 (Running locally)** — detect commands from existing scripts (`scripts/`, `Makefile`, `package.json` scripts, `*.ps1`). Do not invent commands; if a command doesn't exist, note `TBD — add a script`.
+- **Section 3 (CI)** — parse `.github/workflows/*.yml`. List each workflow with its triggers, runs, and filter. If no workflows exist, write `This repo has no CI (intentional: <reason>)`.
+- **Section 4 (Writing)** — usually unchanged from template unless repo has a specific convention (e.g., `describe.each` pattern, custom fixture hierarchy).
+- **Section 5 (Coverage)** — populate from Phase 6 (Verify) results. During `--init` before any testbuilder run has completed, leave as "Not yet measured — run `/dev-framework:testbuilder <scope>`".
+- **Section 6 (Known Gaps)** — initial state is empty. Phase 5 (Document) populates.
+- **Section 7 (Appendix)** — extract from CI workflow filter expressions.

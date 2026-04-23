@@ -4,6 +4,28 @@ All notable changes to the `dev-framework` plugin.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows [SemVer](https://semver.org/).
 
+## 4.1.0 — 2026-04-22
+
+### Added
+- `/dev-framework:testbuilder` skill — standalone testing workflow. Takes any repo state (TDD starter tests from `/implement`, legacy tests, manual tests, or nothing) and builds a formalized, complete test suite at 95%+ **case coverage** across unit, integration, and E2E tiers, organized under one `TESTING.md` per repo. Pure function of repo state — does not depend on `/implement`. 6 phases: Assess → Gap Analysis → Design → Build → Document (TESTING.md) → Verify.
+- `skills/testbuilder/references/standards/HYGIENE.md` — no empty test shells; `[Skip]` requires tracking link + exit criterion + truthful message (grep-verifiable); no `.only`/`.skip` leaks; Known Gaps ledger enforced.
+- `skills/testbuilder/references/standards/DEPENDENCY_POLICY.md` — 3rd-party → mock; internal services → Docker (image-pinned, health-gated). Never invert.
+- `skills/testbuilder/references/standards/BLACKBOX_BOUNDARY.md` — tier placement rules; E2E has zero source `ProjectReference`; compose uses `image:` tag only.
+- `skills/testbuilder/references/protocols/coverage-gap-analysis.md` — multi-agent Phase 2 consensus. Two-dimensional coverage (code + case); default 10-item case checklist per entry point; 95% case-coverage target.
+- `skills/testbuilder/references/protocols/ci-organization.md` — orphan detection, redundancy detection, filter correctness, CI-vs-local parity audit.
+- `skills/testbuilder/references/templates/TESTING_MD_TEMPLATE.md` — the per-repo testing-ledger skeleton with 7 sections (Overview / Run / CI / Writing / Coverage / Known Gaps / Appendix).
+- `/dev-framework:testbuilder --init` mode — scaffold `TESTING.md` for a new or legacy repo.
+- `/dev-framework:testbuilder --audit` mode — report gaps without writing.
+- `commands/testbuilder.md` command passthrough.
+
+### Changed
+- Plugin description expanded to cover three skills (spike, implement, testbuilder).
+- Keywords: added `testbuilder`, `case-coverage`, `testing-mothership`, `mock-vs-docker`, `skip-hygiene`, `blackbox-boundary`.
+
+### Notes
+- `/testbuilder` runs independently of `/implement`. No dispatch, no handoff contract — the two skills share only the epic-scoped event log when invoked against the same epic. Ad-hoc invocation against a legacy module or greenfield repo is a first-class mode.
+- `/implement`'s Phase 4 Test Planning and Phase 6 Coverage Fill are unchanged. Tests it produces (or doesn't produce) are simply input to `/testbuilder` Phase 1; `/testbuilder` Phase 5 (Document) has absolute authority to rewrite or delete any existing test that violates HYGIENE/DEPENDENCY_POLICY/BLACKBOX_BOUNDARY, regardless of origin.
+
 ## 4.0.0 — 2026-04-21
 
 ### Breaking
