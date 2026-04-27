@@ -369,6 +369,51 @@ These are NOT in this redesign:
 - Tracker integration (out per v1.0.0 design too)
 - Pre-spike intake / triage (same)
 
+## §8.5 Implementation phasing (v2.0 vs v2.1)
+
+The full design above represents the eventual target. **What ships in this PR (v2.0)** is a lean subset that addresses the highest-leverage changes; the rest defers to **v2.1** for evidence-based prioritization after running 1-2 epics through v2.0.
+
+### v2.0 — ships now (~270 LOC, 3 files)
+
+The minimum that addresses root causes of PR1 over-scope:
+
+1. **Phase 0 scope-or-implement gate** (§3.2) — cheap, prevents misuse
+2. **Phase 1 triaged NFR** (§3.3) — full omission when no triage box checked
+3. **Phase 2 inline prune step** (§3.5 modified) — at end of Phase 2, NOT a separate Phase 2.5. No new yaml file, no banner ceremony. Inline single-agent task + user review + fold into spike-plan §10.
+4. **Phase 3 forward-compat detection prompt** (§3.6 partial) — soft size guidance ("≥800 LOC consider split"), no hard 400/800 numeric thresholds
+5. **Phase 4 reviewer prompt rewrite** (§3.7 partial) — equally weight remove vs missing
+6. **Severity-gated multi-agent consensus** (§3.7) — Critical/Major block exit, Minor/Nit go to `review-backlog.md`. Hard cap 10 iterations.
+7. **Power-user escape hatch** (NEW §10.5 below) — framework defaults lean, but spec documents that users can manually expand spike-plan.md / ticket refs for genuine enterprise contexts.
+
+### v2.1 — deferred until evidence (NOT in this PR)
+
+Items here are correct-in-principle but ship-ceremony. Defer until 1-2 epics show specific need:
+
+1. Type-1 / Type-2 forced tagging on every decision (§3.4)
+2. Fitness functions section as required (§3.4 §2.2)
+3. Walking Skeleton paragraph as required (§3.4 §9)
+4. MVP-SCOPE.md as separate audit artifact (§3.5) — v2.0 puts deferred items directly in spike-plan §10
+5. Phase 2.5 as numbered half-phase (§3.5) — v2.0 inlines as Phase 2 final step
+6. Hard 400/800 LOC threshold (§3.6) — v2.0 uses soft "≥800 consider split" guidance
+7. Removal pass as separate Phase 4 step (§3.7) — v2.0 folds into reviewer prompt rewrite
+8. Phased commit order (§4.4 #3a-3g) — v2.0 single coherent commit
+
+**Trigger for promoting v2.1 items**: post-v2.0 retro shows 2+ epics where the missing v2.1 item caused over-scope. Without that evidence, we'd be repeating the over-engineering pattern this redesign is supposed to fix.
+
+## §10.5 Power-user escape hatch
+
+Framework defaults to lean output but does NOT prevent users from adding more detail when their context genuinely requires it.
+
+**When this matters** (concrete examples):
+- HIPAA / PCI / regulated data context → user manually adds detailed threat model in §1 NFR
+- High-traffic system (1000+ RPS) → user adds SLO / SLI burn rate alerts in §4
+- External API consumers → user adds backwards-compatibility policy + deprecation timeline in §5
+- Multi-team coordination → user adds detailed RACI / ownership matrix
+
+**How**: spike-plan.md is a markdown file. User edits directly. Framework re-reads on `/spike --status` and `/implement` consumes ticket refs as-is. No special mechanism needed — escape hatch is "just edit the file".
+
+**Cost awareness**: users who use the escape hatch should know they're trading speed for thoroughness. Framework doesn't enforce ROI judgment; that's the user's call. Spec exists to make the trade-off explicit, not to discourage it.
+
 ## §9 Success criteria
 
 The redesign succeeds when:

@@ -18,11 +18,13 @@ The protocol accepts these parameters. The caller provides them (or uses default
 |-----------|---------|-------------|
 | `agents` | 3 | Number of agents to run in parallel |
 | `max_iterations` | 10 | Maximum iteration rounds before forced stop |
-| `zero_threshold` | 2 | Consecutive zero-issue rounds needed to converge |
+| `exit_on` | `zero_total` | Convergence criterion: `zero_total` (current behavior — every Minor/Nit blocks) or `zero_blocking` (only Critical+Major block; Minor+Nit go to backlog without gating) |
+| `zero_threshold` | 2 | When `exit_on=zero_total`: consecutive zero-issue rounds needed. When `exit_on=zero_blocking`: ignored (single zero-blocking round exits). |
 | `task_type` | — | One of: `plan`, `implement`, `validate`, `review` |
 | `agents_list` | — | Which specific agents to dispatch (by name) |
 | `context` | — | Task description, requirements, files to examine |
 | `quality_target` | "high" | Quality bar: "high" requires thorough reasoning |
+| `backlog_path` | null | When `exit_on=zero_blocking`: path to a markdown file where Minor/Nit findings are appended for caller follow-up. Null = findings logged in iteration output only (caller routes manually). |
 
 When invoking this skill, the caller specifies these parameters. Example:
 
@@ -118,10 +120,29 @@ Dispatch `agents` count of agents concurrently. Each agent independently:
 2. Produces a list of issues with:
    - Clear description of the issue
    - Evidence (specific file, line, or section)
-   - Severity (CRITICAL / HIGH / MEDIUM / LOW)
+   - Severity per the rubric below — agents MUST use this rubric, not their own interpretation
    - Reasoning for why it's an issue
    - Suggested fix
 3. Self-validates each issue: "Is this actually a problem, or am I being overly pedantic?"
+
+**Severity Rubric** (concrete definitions — included in agent prompts to prevent inflation):
+
+| Severity | Definition | Examples |
+|----------|------------|----------|
+| **CRITICAL** (a.k.a. Blocking) | Ship 시 data corruption / security breach / production outage 가능 | SQL injection, race condition causing duplicate writes, missing auth check, broken migration |
+| **HIGH** (a.k.a. Major / Blocking) | Oncall이 incident 디버그 불가 / documented contract 깨짐 / concurrency bug | Missing required telemetry on critical path, breaking API change without deprecation, untested concurrency-sensitive code |
+| **MEDIUM** (a.k.a. Minor / Non-blocking) | System 동작. 개선 기회 (test coverage gap, naming, completeness) | Test coverage gap on edge case, suboptimal but functional naming, missing-but-not-required documentation |
+| **LOW** (a.k.a. Nit / Non-blocking) | Style / 문서 / 부가 thoroughness | Whitespace, doc-comment improvements, alternate phrasing suggestions |
+
+**When `exit_on=zero_blocking`**: only CRITICAL + HIGH issues block convergence. MEDIUM + LOW issues are listed in the iteration output AND optionally appended to `backlog_path` (when caller provides one), but do NOT gate the loop. This prevents low-severity findings from accumulating across iterations and inflating scope — a known anti-pattern where iterative review converts every "could be more thorough" comment into a must-fix.
+
+**When `exit_on=zero_total` (default for back-compat)**: every issue regardless of severity blocks convergence per the original protocol. Use this when the consumer requires absolute zero-issue convergence (e.g., security-critical contexts where Minor/Nit findings should not be deferred).
+
+**Severity inflation guardrails**: agents tend to over-classify findings as CRITICAL or HIGH to ensure they're addressed. Mitigation:
+- The rubric uses concrete examples ("SQL injection", "missing auth check") so agents have a baseline
+- Caller MUST include the rubric block verbatim in agent task prompts
+- If the caller observes inflation patterns (e.g., 80% CRITICAL across iterations), they should add a calibration note to the prompt: "If your finding doesn't match the CRITICAL examples above, classify lower"
+- User can override severity in the merged output with rationale recorded in `decision-log.json`
 
 **Step 2 — Issue Consolidation**
 Once all agents complete:
@@ -142,14 +163,24 @@ For each validated issue (highest severity first):
 4. Verify the fix doesn't introduce new issues
 
 **Step 4 — Iteration Check**
-After resolving all issues in this round:
+
+After resolving all issues in this round, behavior depends on `exit_on`:
+
+**`exit_on: zero_total` (default — back-compat)**:
 - If validated issues found > 0: increment iteration counter, apply fixes, **then go back to Step 1 to re-validate the fixes** (this is mandatory — never skip re-validation)
 - If validated issues found = 0 (agents were dispatched and found nothing new): increment zero counter
   - If zero counter >= `zero_threshold`: **CONVERGED** — stop
   - Otherwise: go back to Step 1 for one more confirmation round
 - If iteration counter >= `max_iterations`: **FORCED STOP** — escalate remaining issues to caller
 
-**Important:** The zero counter only increments when agents are dispatched and return zero issues. Fixing issues without re-dispatching agents does not count toward convergence.
+**`exit_on: zero_blocking` (severity-gated)**:
+- Partition issues by severity: blocking = CRITICAL + HIGH, non-blocking = MEDIUM + LOW.
+- Append all non-blocking issues to `backlog_path` (when provided) with iteration-N attribution.
+- If blocking issues > 0: increment iteration counter, apply fixes for blocking issues only (non-blocking deferred to backlog), **go back to Step 1 to re-validate**.
+- If blocking issues = 0: **CONVERGED** — stop. (Single zero-blocking round suffices; `zero_threshold` is ignored in this mode.)
+- If iteration counter >= `max_iterations`: **FORCED STOP** — escalate ALL remaining blocking issues to caller (non-blocking already in backlog).
+
+**Important:** In both modes, the zero counter / convergence trigger only fires when agents are dispatched and return zero issues at the relevant severity level. Fixing issues without re-dispatching agents does not count toward convergence.
 
 ---
 

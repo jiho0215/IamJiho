@@ -1,7 +1,7 @@
 ---
 name: spike
-version: 1.0.0
-description: "Multi-ticket Research Spike workflow. Takes a high-level epic goal and produces a master spike plan plus N per-ticket ref docs with dependency classification, rollout plan, observability plan, API contracts, and migration chain — all committed under docs/plan/{epic}/ for PR review. Built on Managed Agents architecture with an epic-scoped event log shared with /implement. 5 phases: Requirements → System Design → Ticket Decomposition → Cross-Ticket Gap Review → Retro (async, runs after all tickets merged). Use when the user wants to decompose a non-trivial feature into multiple tickets before implementation begins, or when the input is 'build X' at a scale larger than a single PR. For single-ticket implementation, use /dev-framework:implement instead. Also trigger on: '/spike', 'plan this epic', 'decompose this feature', 'research spike', 'break this down into tickets', 'multi-ticket plan', or any request for cross-ticket architecture work."
+version: 2.0.0
+description: "Multi-ticket Research Spike workflow with lean YAGNI defaults. Takes a high-level epic goal and produces a master spike plan plus N per-ticket ref docs — focused on MVP scope by default with explicit prune step + severity-gated review consensus. Phase 0 gate redirects single-PR work to /implement. Phase 1 NFR is triaged (not forced-asked). Phase 2 ends with an inline scope-prune step that defers forward-compat / nice-to-have / 'while-we-here' items. Phase 4 multi-agent consensus exits on zero Critical+Major findings (Minor/Nit go to review-backlog.md without blocking). Power-user escape hatch: framework defaults lean but users can manually expand spike-plan.md sections for genuine enterprise contexts (HIPAA, high-scale, etc.). 5 phases: Requirements → System Design (with inline prune) → Ticket Decomposition → Cross-Ticket Gap Review → Retro. Use when the user wants to decompose a genuinely multi-PR feature; for single-PR work, Phase 0 redirects to /dev-framework:implement. Also trigger on: '/spike', 'plan this epic', 'decompose this feature', 'research spike', 'break this down into tickets', 'multi-ticket plan'."
 ---
 
 # `/spike` — Research Spike Framework
@@ -68,13 +68,24 @@ Read these internal references into context when the current phase needs them. T
 
 The /implement reference tree is shared by design — these are internal protocols, not user-facing skills, and `/spike` reuses them where semantics match.
 
-## Multi-Agent Consensus
+## Multi-Agent Consensus (lean defaults — v2.0)
 
-Phases 1, 2, and 4 run multi-agent consensus via `../implement/references/protocols/multi-agent-consensus.md`. Defaults apply unless a phase overrides them:
+Phases 1, 2, and 4 run multi-agent consensus via `../implement/references/protocols/multi-agent-consensus.md`. **Lean defaults apply** unless a phase overrides them:
 
-- `agents: 3` (from `config.pipeline.agents.plan` or `config.pipeline.agents.review`)
-- `max_iterations: 10` (from `config.pipeline.maxReviewIterations`)
-- `zero_threshold: 2` (from `config.pipeline.consecutiveZerosToExit`)
+- `agents`: Phase 1 = 1 (user is human consensus), Phase 2 = 1 (architect deep-dive), Phase 4 = 2 (cross-ticket dependency multi-perspective)
+- `max_iterations: 10` (hard cap — infinite-loop guard)
+- `exit_on: zero_blocking` (severity-gated — only Critical + Major findings block exit; Minor + Nit findings append to `docs/plan/{epic}/review-backlog.md` without gating convergence)
+
+**Severity rubric** (concrete language so reviewers don't inflate):
+
+| Severity | Definition |
+|---|---|
+| **Critical** | Ship 시 data corruption / security breach / production outage 가능 |
+| **Major** | Oncall이 incident 디버그 불가 / documented contract 깨짐 / concurrency bug |
+| **Minor** | System 동작. 개선 기회 (test coverage gap, naming, completeness) |
+| **Nit** | Style / 문서 / 부가 thoroughness |
+
+The protocol treats `Critical` and `Major` as blocking; `Minor` and `Nit` as backlog. The reviewer agent's task instruction MUST include this rubric — without it, severity inflation defeats the gate.
 
 Never short-circuit. Fixing issues without re-dispatching agents is NOT a zero-issue round.
 
@@ -116,7 +127,24 @@ Emits are best-effort (exit 0 on missing session). Never abort a phase on emit f
 
 ## Section S: Research Spike (new, full 5-phase flow)
 
-Runs sequentially through Phases 1-4. Phase 5 runs asynchronously later, triggered by `/spike --retro EPIC-ID` once all tickets reach `merged` status.
+Runs sequentially through Phase 0 (gate) + Phases 1-4. Phase 5 runs asynchronously later, triggered by `/spike --retro EPIC-ID` once all tickets reach `merged` status.
+
+### Phase 0 — Scope-or-implement gate (v2.0 NEW)
+
+Before Session Initialization, run a 2-question gate to redirect single-PR work away from spike's multi-ticket overhead:
+
+**Q1**: "Could this epic ship as a single PR (~500 LOC, ~1주일 작업)?"
+- **Yes** → exit with: `"This is single-PR scope. Use /dev-framework:implement <ticket> instead — spike adds overhead for single-ticket work without benefit."` Emit `spike.aborted` with `{epicId, reason: "single-pr-scope"}` and stop.
+- **No** → continue to Q2.
+
+**Q2**: "How many PRs do you anticipate for this epic?"
+- **1** → same as Q1=yes; redirect to /implement.
+- **2-4** → continue to Section S Session Initialization.
+- **5+** → flag scope warning: `"5+ PR scope is unusual. Confirm this is one cohesive epic (not multiple independent epics) or split into sub-epics now."` User confirms or splits before continuing.
+
+**Why**: PR1 retro identified that spike's ceremony (5 phases, multi-agent consensus, plan doc, ticket refs) inflates single-PR work. The gate is cheap (2 questions) and prevents wrong-tool-for-the-job misuse.
+
+**Implementation note**: Phase 0 runs after Pre-Workflow's epic ID resolution but BEFORE Session Initialization. If Q1 redirects, no SESSION_DIR state is created. If Q2=5+ and user splits, the resulting smaller epic restarts at Phase 0 with the new (smaller) scope.
 
 ### Session Initialization
 
@@ -163,7 +191,22 @@ Dialogue-gather epic-level requirements:
 
 1. **Epic goal** — one paragraph capturing the outcome the user wants. Prompt: "In one or two sentences, what is the epic supposed to accomplish when done?"
 2. **Success criteria** — bullet list, each testable at epic scope. "How will you know the epic is complete — what observable change or metric?"
-3. **Non-functional requirements** — ask explicitly about each of: SLA, security threat model, privacy / compliance (PII, residency, retention), accessibility (WCAG tier or N/A). Do not let the user skip any — ask one at a time with a default fallback they can accept or refine.
+3. **Non-functional requirements (triaged — v2.0)** — single triage question first; only ask follow-up NFR for applicable categories:
+
+   ```
+   "이 epic이 다음 중 어떤 거에 해당해? (해당되는 것 모두 선택)
+   [ ] 새 user-facing 엔드포인트 / API → SLA 질문
+   [ ] PII / 사용자 데이터 처리 → privacy / compliance 질문
+   [ ] 새 user-visible UI → accessibility 질문
+   [ ] 인증 / 권한 변경 → security threat model 질문
+   [ ] 위 어느 것도 아님 → NFR sub-section 전체 omit"
+   ```
+
+   For each checked box, ask the original question with a default fallback (SLA target, threat-model depth, WCAG tier, etc.). For unchecked boxes, do NOT ask — they're explicitly out of scope.
+
+   **If all unchecked**: §1 of `spike-plan.md` keeps goal + success criteria but **omits the NFR sub-section entirely** (no "N/A" placeholder — full omission). Power-user escape hatch: user can manually add NFR detail to the file later if context surfaces a need.
+
+   **Why triaged**: PR1 retro showed forced-asking NFR for irrelevant categories (a transaction-categorization feature got asked about SLA / privacy / accessibility) committed those concerns to spec where they bloated subsequent phases. Triage lets the user honestly say "not applicable" without ceremony.
 4. **Rollout / rollback** — feature flags (owner, scope), canary stages (percent, dwell time, success gates), migration reversibility. If any schema migration is irreversible, flag it now.
 
 **Autonomous mode:** the user-supplied description is the ticket content. Extract requirements; log assumptions to `decision-log.json` category `spike-autonomous-inference`.
@@ -195,13 +238,43 @@ Persist the Phase 1 result as a working draft (in-memory or `SESSION_DIR/spike-p
 8. **§6 Data migration chain** — ordered migration steps across tickets: schema change, owning ticket ID placeholder, reversibility, backfill plan. For long chains, externalize to `<repo>/docs/plan/${epicId}/shared/migrations.md`.
 9. Run multi-agent consensus:
    - `task_type: validate`
-   - `agents_list: config.pipeline.agents.plan`
-   - Context: "Validate epic architecture coherence. Component boundaries clean? Data flow consistent with requirements? Rollout/rollback actually reversible? Observability complete? API contracts match the data model? Migration chain ordered and non-conflicting?"
+   - `agents_list: 1 architect agent` (lean default — see Multi-Agent Consensus section)
+   - `exit_on: zero_blocking` (severity-gated)
+   - Context: "Validate epic architecture coherence. Equally weight: (a) what's MISSING (component boundaries, data flow gaps, contract mismatches) AND (b) what should be REMOVED (forward-compat baked in, 'while we're here' cleanup, speculative future-proofing without evidence)."
+
+10. **Inline scope prune (v2.0 NEW — replaces separate Phase 2.5)** — single-agent task at end of Phase 2:
+
+    ```
+    Agent task: Read spike-plan.md §2-§6. List items NOT required for first ship to be useful.
+    Classify each:
+      - forward-compat: preparing for future PR; current epic ships without it
+      - nice-to-have: improvement opportunity, not correctness
+      - while-we-here: unrelated cleanup that snuck in
+      - future-need: speculative requirement without current evidence
+    For each item, propose: keep in MVP / move to deferred / remove entirely.
+    ```
+
+    Present output to user. User reviews and overrides classifications. Approved deferred items are folded INTO `spike-plan.md` §10 (NEW — `## §10 Deferred items`) with format:
+
+    ```markdown
+    ## §10 Deferred items
+
+    These items were considered during Phase 2 but deferred to follow-up epics or to
+    /implement Phase 4 backlog. Revisit when [trigger condition specified per item].
+
+    - **<item>** — Type: <forward-compat | nice-to-have | while-we-here | future-need>
+      - Why deferred: <1-2 sentence rationale>
+      - When to revisit: <specific trigger or "next epic" or "post-MVP retro">
+    ```
+
+    **Why inline (not separate Phase 2.5)**: avoids new yaml file + new banner + new emit ceremony. The prune is a sub-step of Phase 2's exit, not a separate orchestration phase. If experience shows it warrants its own phase, v2.1 promotes it.
+
+    **Emit**: `spike.scope.pruned` with `{epicId, deferredCount, items: [{type, summary}]}`.
 
 **Update:** `progress-log.json` — set `planDocPath: "docs/plan/${epicId}/spike-plan.md"`.
 **Emit:** `spike.phase.2.completed`.
 **Gate:** `phase-gate.sh end 2`.
-**Banner:** `--- Spike Phase 2 Complete: System Design ---`
+**Banner:** `--- Spike Phase 2 Complete: System Design (deferred ${deferredCount} items) ---`
 
 ### Phase 3 — Ticket Decomposition
 
@@ -213,6 +286,16 @@ Decompose one ticket at a time. The one-at-a-time loop is deliberate: it forces 
 **Per-iteration:**
 
 1. **Propose** — draft a ticket title and a 2-3-sentence scope summary derived from the spike-plan §2-§6 content. Example: "`pay-123` — Payment API endpoint. Scope: POST /payments handler, auth, persistence, basic validation. Implements contract §5 lines 12-40; owns migration step 2."
+
+   **Size sanity (v2.0 — soft guidance, no hard threshold)**: ask user "예상 LOC?" — if estimate ≥800 LOC, prompt "consider splitting? a single ticket >800 LOC tends to push reviewable PRs into multi-day cycles". User can justify and proceed; framework records the justification in `decision-log.json` but does NOT block. Hard thresholds defer to v2.1 once we have data on what actually works in practice.
+
+   **Forward-compat check (v2.0 NEW)**: when user describes scope including "and we'll need X for PR3" or "register Y now so future PR can...", framework prompts:
+   ```
+   "Item '<X>' sounds like forward-compat. Can THIS PR ship without it?
+    - Yes → automatic deferred (added to ticket §3/§4/§5 'Deferred' sub-section, NOT MVP)
+    - No → MVP. Justify why blocking (recorded in decision-log.json)."
+   ```
+
 2. **User dialogue** — ask user to accept, modify, or reject. On reject, propose a different slice.
 3. **Ticket ID** — ask user for an ID. Prefer their tracker ID (JIRA `PAY-123`, Linear `ENG-456`, GitHub `#47`). If no tracker, ask for a slug. Sanitize to lowercase/dashes.
 4. **Collision check** — if `<repo>/docs/plan/${epicId}/<id>.md` exists, prompt: overwrite, suffix (`-2`, `-3`), or pick a new ID.
@@ -250,14 +333,19 @@ Decompose one ticket at a time. The one-at-a-time loop is deliberate: it forces 
 2. Write **§8 Testing Strategy** — cross-ticket integration tests, end-to-end flow tests, contract tests for the API surface, load/stress test plan if NFR demands it. Ticket-local unit tests are the responsibility of `/implement` Phase 4.
 3. Run multi-agent consensus:
    - `task_type: review`
-   - `agents_list: config.pipeline.agents.review`
-   - Context (gap review):
-     - "Does the ticket set fully cover epic §1 requirements? Flag uncovered requirements."
-     - "Is the dependency graph acyclic and minimally coupled? Flag unnecessary hard blockers."
-     - "Is the `deployBlockedBy` order actually deployable end-to-end?"
-     - "Are there integration tests in §8 that span tickets where needed?"
-     - "Are blocker classifications accurate? Flag any `soft` that should be `hard`."
-   - Iterate until convergence (global cap / consecutive-zero rules).
+   - `agents_list: 2 reviewers` (lean default — see Multi-Agent Consensus section)
+   - `exit_on: zero_blocking` (severity-gated — see rubric in Multi-Agent Consensus section)
+   - Context (gap review — equally weight ADD and REMOVE concerns per v2.0):
+     - **Coverage check (additive)**: "Does the ticket set fully cover epic §1 requirements? Flag uncovered requirements as Critical or Major."
+     - **Pruning check (subtractive — v2.0 NEW)**: "Is anything in the ticket set forward-compat / nice-to-have / 'while-we-here' that should be deferred? Flag with severity:
+       - Forward-compat (next-PR setup baked in current PR): Major if it's expensive to undo later, else Minor
+       - 'While we're here' (unrelated cleanup): Minor
+       - 'In case of...' (speculative future-proofing): Minor or Nit"
+     - **Dependency check**: "Is the dependency graph acyclic and minimally coupled? Hard blockers actually hard, or 'might want' that should be soft?"
+     - **Deploy order**: "Is the `deployBlockedBy` order actually deployable end-to-end?"
+     - **Cross-ticket testing**: "Are there integration tests in §8 that span tickets where needed?"
+     - **Severity classification mandatory**: every finding tagged Critical / Major / Minor / Nit per the rubric in Multi-Agent Consensus section.
+   - Iterate until `exit_on: zero_blocking` (zero Critical + zero Major). Minor + Nit findings append to `docs/plan/{epicId}/review-backlog.md` (NEW artifact, see template) without blocking exit. Hard cap 10 iterations.
 4. For each issue returned, classify and act:
    - **Missing ticket** — re-enter Phase 3 loop for that one ticket, then return.
    - **Misclassified blocker** — update the target ticket's ref doc and re-emit `ticket.decomposed` (supersedes prior event at the reducer level).
@@ -330,6 +418,23 @@ Resume a previously-interrupted spike at phase N.
 Resume is safest at phase boundaries (between completed phases). Mid-phase interruption can be resumed but the user should expect some Phase-N work to be redone — the event log surfaces which iteration was last `spike.phase.N.iteration.M.started` so the orchestrator can skip forward.
 
 ---
+
+## Power-user escape hatch (v2.0)
+
+Framework defaults are **lean by design** (YAGNI — see `docs/specs/2026-04-27-spike-lean-redesign.md`). For genuine enterprise contexts where lean defaults are insufficient, **users can manually expand** `spike-plan.md` and ticket ref docs without framework intervention. The framework does not prompt for these and does not require them, but does NOT block them either.
+
+**When this matters** (concrete examples — none of these are framework-prompted):
+
+- HIPAA / PCI / regulated data context → user manually adds detailed threat model in §1 NFR
+- High-traffic system (1000+ RPS) → user adds SLO / SLI burn rate alerts in §4 Observability
+- External API consumers → user adds backwards-compatibility policy + deprecation timeline in §5 API contracts
+- Multi-team coordination → user adds RACI / ownership matrix anywhere appropriate
+
+**How**: `spike-plan.md` is a markdown file. User edits directly with any editor. Framework re-reads on `/spike --status` and `/implement` consumes ticket refs as-is. No special mechanism, flag, or mode needed.
+
+**Cost awareness**: thoroughness has nontrivial cost (review cycles, maintenance burden, cognitive load). Framework defaults to lean because most epics don't need it; users who genuinely need more are responsible for the ROI judgment. The framework makes the trade-off explicit by NOT generating these sections by default — the absence is a feature, not a gap.
+
+If a class of escape-hatch usage becomes consistent across epics, that's evidence to promote it from "user manually adds" to "framework generates" in v2.1.
 
 ## Explicitly NOT Added (see design spec §9)
 
