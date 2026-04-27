@@ -4,6 +4,27 @@ All notable changes to the `dev-framework` plugin.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows [SemVer](https://semver.org/).
 
+## 4.2.0 — 2026-04-27
+
+### Changed
+- `/dev-framework:spike` v1.0.0 → v2.0.0 — **lean redesign**. Motivated by Bucket Advisor PR1 retro: framework optimized for thoroughness without a counterweight for scope discipline. v2.0 adds the counterweight at minimum cost (~230 LOC across 3 files + 1 new template).
+  - **Phase 0 scope-or-implement gate** (NEW) — single-PR work redirected to `/implement`; spike only for genuinely multi-PR epics
+  - **Phase 1 NFR triaged** — replaces forced-ask ("Do not let the user skip any") with a checkbox triage; unchecked categories are fully omitted, no "N/A" placeholder
+  - **Phase 2 inline scope prune** — at end of Phase 2, single-agent task classifies items as forward-compat / nice-to-have / while-we-here / future-need; deferred items folded into spike-plan.md §10 (NEW). NOT a separate Phase 2.5 (avoids new yaml + banner + emit ceremony — defers structural promotion to v2.1 if evidence warrants)
+  - **Phase 3 forward-compat detection** — when user mentions "and we'll need X for PR3", framework prompts whether THIS PR ships without X (yes → automatic deferred). Soft size guidance (≥800 LOC consider split); no hard threshold
+  - **Phase 4 reviewer prompt rewrite** — equally weights ADD and REMOVE concerns. Pruning check (subtractive) added alongside Coverage check (additive)
+  - **Severity-gated multi-agent consensus** — Critical+Major block exit; Minor+Nit append to `review-backlog.md` (NEW template) without blocking. Hard cap 10 iterations. Agents reduced 3/3/3 → 1/1/2 (Phase 1/2/4) reflecting that consensus quality plateaus after the first few rounds
+  - **Power-user escape hatch** (NEW SKILL.md section) — framework defaults lean BUT does not block users from manually adding sections to spike-plan.md / ticket refs for genuine enterprise contexts (HIPAA, high-scale, external API consumers). Cost-awareness explicit
+- `multi-agent-consensus.md` — new `exit_on` parameter (`zero_total` back-compat default / `zero_blocking` opt-in for severity gating). New `backlog_path` parameter for routing non-blocking findings. Concrete severity rubric with anti-inflation guardrails. Step 4 iteration check updated for both modes. **Back-compat**: existing /implement consumers see no behavior change (defaults to zero_total).
+
+### Added
+- `skills/spike/references/templates/REVIEW_BACKLOG_TEMPLATE.md` — Minor/Nit findings accumulator with disposition log section (accepted / deferred / dismissed tracking).
+- `docs/specs/2026-04-27-spike-lean-redesign.md` — full design spec capturing v2.0 changes + v2.1 deferred items + research benchmarks (Walking Skeleton, Two-Way Doors, Evolutionary Architecture, Spike-and-Stabilize, Strangler Fig, Tidy First?, DORA, ADRs).
+
+### Notes
+- v2.1 items (type-1/2 forced tagging, fitness functions section, walking skeleton paragraph mandate, MVP-SCOPE.md separate artifact, Phase 2.5 numbered phase, hard 400/800 LOC threshold, removal pass separate step, full template rewrites) are **deferred until evidence**: post-v2.0 retro must show 2+ epics where the missing item caused over-scope before promotion. Without that evidence, promoting them would repeat the over-engineering pattern v2.0 is supposed to fix.
+- Existing v1.0 spike-plan.md files keep parsing — `/spike --status`, `--from N`, and `/implement` consumption all work unchanged. New §10 (Deferred items) is additive in v2.0 spike runs only.
+
 ## 4.1.0 — 2026-04-22
 
 ### Added

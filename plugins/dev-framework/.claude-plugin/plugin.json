@@ -1,7 +1,7 @@
 {
   "name": "dev-framework",
   "description": "AI-led development framework built on Managed Agents architecture. Three skills for the three shapes of engineering work: /spike (multi-ticket research and decomposition), /implement (single-ticket rigorous execution), and /testbuilder (standalone testing — takes any repo state, including TDD starter tests from /implement or none at all, and builds a complete formalized test suite at 95%+ case coverage across unit/integration/E2E with one TESTING.md per repo, enforced skip hygiene, mock-vs-Docker dependency policy, and blackbox boundary). /testbuilder is a pure function of repo state and does not depend on /implement. All skills share one epic-scoped event log (events.jsonl) with derivable views, stateless restart (wake.sh), seq-level replay, and multi-brain fan-out. Plan docs live in-repo under docs/plan/{epic}/ with bi-directional plan-ticket reference updates. /implement retains freeze-doc-enforced research/execution boundary and two user approval gates. Retro-per-skill: code patterns in /implement, design patterns in /spike. modelProfile config knob tunes iteration counts as model capabilities evolve.",
-  "version": "4.1.0",
+  "version": "4.2.0",
   "author": {
     "name": "Jiho Lee",
     "email": "ianjiholee@gmail.com"
