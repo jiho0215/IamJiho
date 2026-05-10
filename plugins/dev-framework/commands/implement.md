@@ -12,7 +12,7 @@ Pure execution. Reads an APPROVED freeze doc produced by `/spike` and runs E1/E2
 
 Initial request: $ARGUMENTS
 
-Use the Skill tool to invoke the `dev-framework:implement` skill, passing along the user's request. The skill contains the full 7-phase workflow (plus Phase 0 prereq check for spike-sourced tickets), routing logic, agent orchestration, and reference documentation.
+Use the Skill tool to invoke the `dev-framework:implement` skill, passing along the user's request. v5: pure execution. Reads APPROVED freeze doc -> E1 Execute -> E2 Verify -> E3 Finalize. freeze-doc-path required.
 
 ## Usage
 

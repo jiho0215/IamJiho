@@ -1,110 +1,134 @@
-# Dev Framework Plugin
+# Dev Framework Plugin (v5.0.0)
 
-AI-led, end-to-end software development built on the Managed Agents architecture. Two skills covering the two shapes of engineering work: **research spike** (multi-ticket decomposition) and **ticket implementation** (single-ticket rigorous execution). Both skills share one epic-scoped event log.
+AI-led, end-to-end software development built on the Managed Agents architecture. v5 cleanly splits **planning** (`/spike`) from **execution** (`/implement`): all requirements, research, decomposition, and freeze-doc authorship live in `/spike`; `/implement` is pure execution against an APPROVED freeze doc. `/testbuilder` remains the standalone testing skill. All three share one epic-scoped event log.
 
 ## Core Philosophy
 
-1. **Two shapes, two skills.** `/spike` handles multi-ticket research and decomposition; `/implement` handles single-ticket rigorous execution. Both run on the same Managed Agents primitives (event log, wake, views, execute).
-2. **Shared epic session.** `/spike` and `/implement` write to one `events.jsonl` keyed by epic. `wake()` returns cross-ticket state in a single call (MA invariant: many brains share many hands).
-3. **Move slow, do it right.** Reduce revisits and refactoring. Multi-agent consensus reviews with 10-iteration / 2-consecutive-zero convergence.
-4. **Research-execution boundary is physical.** In `/implement`, Phase 1-3 decisions are frozen in a single freeze doc artifact; src/** edits are blocked by a hook until the user approves at GATE 1; git push is blocked until GATE 2 approval.
+1. **Planning vs. execution.** `/spike` is the universal planning skill — handles Epic decomposition, single-ticket Story planning, and standalone Research. `/implement` is pure execution: read APPROVED freeze doc → E1 Execute → E2 Verify → E3 Finalize. `/testbuilder` is standalone testing.
+2. **Shared epic session.** All three skills write to one `events.jsonl` keyed by epic. `wake()` returns cross-ticket state in a single call (MA invariant: many brains share many hands).
+3. **Move slow, do it right.** Reduce revisits and refactoring. Multi-agent consensus reviews with 10-iteration / 2-consecutive-zero convergence (severity-gated in `/spike`).
+4. **Research-execution boundary is physical.** Freeze doc carries an `approvedHash` (sha256 over canonical body) and `§11 Prerequisites` (DAG-derived dependencies). `freeze-gate.sh` reads `active-freeze-doc.txt`, verifies hash + prereqs before unlocking src/** edits; `push-guard.sh` blocks `git push` until GATE 2.
 5. **Language-agnostic.** Works with any tech stack. (Exception noted: `test-failure-capture.sh` default is `dotnet test` — override via `config.hooks.testCapture.testCommand`; tracked for correction.)
 6. **Documentation as a first-class artifact.** `project-docs` protocol enforces `docs/` structure; `/spike` plan docs live in-repo under `docs/plan/{epic}/` and are PR-reviewable.
 
 ## The Workflows
 
 ```
-/spike [epic description]                   Research spike (new, multi-ticket decomposition)
+/spike <epic description>                   Epic mode — multi-ticket research + decomposition
+/spike story <ticket>                       Story mode — single-ticket planning -> freeze doc
+/spike research <topic>                     Research mode — standalone investigation -> research doc
+/spike --revisit <freeze-or-research-doc>   Re-open an APPROVED doc for amendment
 /spike --retro EPIC-ID                      Post-merge retro (design pattern capture)
 
-/implement [ticket-or-feature]              Single-ticket implementation (interactive)
-/implement --autonomous TICKET-123          Single-ticket implementation (autonomous)
-/implement --from N                         Resume at phase N
-/implement --status                         Show current session status
-/implement init                             Initialize a new project
-/implement review                           Standalone review
-/implement test                             Standalone test planning
-/implement docs                             Standalone docs maintenance
+/implement <freeze-doc-path>                Pure execution against APPROVED freeze doc
+/implement --from <N> <freeze-doc-path>     Resume at E<N> (1=E1, 2=E2, 3=E3)
+/implement --status <freeze-doc-path>       Status print
+
+/testbuilder [...]                          Standalone testing workflow (independent of /implement)
 ```
 
-`/spike` 5 phases (phase 5 runs async after all tickets merge):
+`/spike` universal planning skill — 7 phases (P1-P7); mode dictates depth (Epic runs all 7, Story/Research run a subset):
 
 ```
-1. Requirements (multi-feature; NFR + rollout/rollback)
-2. System design (epic architecture + observability + API contracts + migration chain)
-3. Ticket decomposition (one-at-a-time; ref docs with hard/soft blockers)
-4. Cross-ticket gap review (multi-agent consensus) \u2192 human signoff
-5. Retro (async; fires when all spike tickets reach merged)
+P1. Scope            (mode detection; epic/story/research routing)
+P2. Investigate      (dispatch research-investigator agents; capture findings + Doc-vs-Reality)
+P3. Decompose        (Epic only — break into tickets with DAG ordering)
+P4. Spec             (author freeze doc §1-§11 OR research doc; compute approvedHash)
+P5. Review           (multi-agent consensus, severity-gated — Critical/Major block, Minor/Nit -> backlog)
+P6. Approve          (GATE 1 — user approval; status: APPROVED + approvedHash sealed)
+P7. Retro            (async; design-pattern capture after all merges)
 ```
 
-`/implement` full cycle phases (both modes):
+`/implement` v5 — pure execution, 3 phases (E1-E3):
 
 ```
-1. Requirements          (populates freeze doc §1, §5, §6)
-2. Research              (populates freeze doc §2-§4, §7, §8)
-3. Plan + Freeze Doc  →  🚪 GATE 1 (interactive approves; autonomous auto-approves with audit)
-[freeze-gate hook ACTIVE — src/** edits blocked unless freeze doc APPROVED]
-4. Test Planning
-5. Implementation + Layer 1 Review (multi-agent consensus, 10 max / 2 zero)
-6. Verification + Coverage Fill + Layer 2 Review (same convergence rules)
-7. Documentation + Mistake Capture  →  🚪 GATE 2 (always interactive)
+[Startup: load freeze doc -> verify approvedHash -> verify §11 Prerequisites -> write active-freeze-doc.txt]
+E1 Execute           (TDD against freeze doc plan; freeze-gate enforces hash+prereqs on every src/** edit)
+E2 Verify            (full test suite + Layer 1/Layer 2 multi-agent consensus reviews)
+E3 Finalize          (docs + PR + mistake capture -> 🚪 GATE 2)
 [push-guard hook — blocks git push until GATE 2 approved]
 ```
 
 ## Plugin Structure
 
 ```
+```
 plugins/dev-framework/
 ├── CLAUDE.md                  this file
 ├── README.md
-├── .claude-plugin/
+├── CHANGELOG.md
+├── .claude-plugin/            plugin.json (v5.0.0)
 ├── commands/
-│   ├── implement.md           routes to implement skill (single-ticket)
-│   ├── spike.md               routes to spike skill (multi-ticket research)
-│   └── dev.md                 v4.0.0 tombstone \u2014 redirects users to /implement (removed in v4.1.0)
-├── agents/                    six review/plan agents (shared)
-├── phases/                    (M3+) phase YAML metadata
+│   ├── implement.md           routes to implement skill (pure execution; requires freeze-doc-path)
+│   ├── spike.md               routes to spike skill (universal planning — epic/story/research/--revisit)
+│   └── testbuilder.md         routes to testbuilder skill (standalone testing)
+├── agents/                    shared review/plan agents
+│   ├── architect.md
+│   ├── code-quality-reviewer.md
+│   ├── observability-reviewer.md
+│   ├── performance-reviewer.md
+│   ├── requirements-analyst.md
+│   ├── research-investigator.md   v5 — universal Research agent (strategy toolbelt, Doc-vs-Reality, Bash scope guard)
+│   └── test-strategist.md
+├── phases/                    phase YAML metadata (M3+); v5 split by skill
 │   ├── README.md                     schema spec
-│   └── phase-1.yaml..phase-7.yaml    metadata per phase
+│   ├── spike/
+│   │   ├── p1-scope.yaml             mode detection
+│   │   ├── p2-investigate.yaml       dispatch research-investigator agents
+│   │   ├── p3-decompose.yaml         Epic-only ticket decomposition
+│   │   ├── p4-spec.yaml              author freeze/research doc + approvedHash
+│   │   ├── p5-review.yaml            severity-gated consensus
+│   │   ├── p6-approve.yaml           GATE 1 user approval
+│   │   └── p7-retro.yaml             async retro
+│   └── implement/
+│       ├── e1-execute.yaml           TDD against APPROVED freeze doc
+│       ├── e2-verify.yaml            tests + Layer 1/2 reviews
+│       └── e3-finalize.yaml          docs + PR + GATE 2
 ├── hooks/
 │   ├── hooks.json
 │   └── scripts/
 │       ├── ensure-config.sh          config bootstrap (single source of truth)
-│       ├── freeze-gate.sh            block src/** edits unless freeze doc APPROVED
+│       ├── freeze-gate.sh            v5 — reads active-freeze-doc.txt; verifies approvedHash + §11 Prerequisites before unlocking src/** edits
 │       ├── push-guard.sh             block git push until GATE 2
-│       ├── phase-gate.sh             phase boundary validation
+│       ├── phase-gate.sh             v5 — resolves phase YAML by skill (phases/spike/ vs phases/implement/)
 │       ├── phase-progress-validator.sh  independent progress consistency check
 │       ├── load-chronic-patterns.sh  SessionStart: inject mistake patterns
 │       ├── precompact.sh             PreCompact: preserve pipeline state
 │       ├── sessionend.sh             SessionEnd: temp cleanup + interrupted marker
 │       ├── test-failure-capture.sh   audit failed test runs
+│       ├── freeze-doc-hash.sh        v5 — compute/verify canonical-body sha256 (approvedHash)
+│       ├── freeze-doc-prereqs.sh     v5 — verify §11 Prerequisites against ticket.merged events / git merge log
 │       ├── _session-lib.sh           (M1) shared session resolution helpers
 │       ├── emit-event.sh             (M1) append event with atomic seq
 │       ├── get-events.sh             (M1) query events.jsonl
 │       ├── _reducers.sh              (M2) shared reducer helpers
-│       ├── reduce-progress-log.sh    (M2) events → views/progress-log.json
-│       ├── reduce-decision-log.sh    (M2) events → views/decision-log.json
-│       ├── reduce-pipeline-issues.sh (M2) events → views/pipeline-issues.json
+│       ├── reduce-progress-log.sh    (M2) events -> views/progress-log.json
+│       ├── reduce-decision-log.sh    (M2) events -> views/decision-log.json
+│       ├── reduce-pipeline-issues.sh (M2) events -> views/pipeline-issues.json
 │       ├── regenerate-views.sh       (M2) orchestrate all reducers
 │       ├── wake.sh                   (M2) stateless restart summary
 │       ├── replay.sh                 (M2) seq-level rewind into alt dir
 │       ├── read-phase.sh             (M3) YAML field reader
 │       └── execute.sh                (M3) uniform tool dispatch with auto events
 └── skills/
-    ├── implement/             ticket implementation skill (renamed from /dev in v4.0.0)
+    ├── implement/             v5 — pure execution skill (E1 Execute / E2 Verify / E3 Finalize)
     │   ├── SKILL.md
     │   └── references/
     │       ├── methodology/          DECISION_MAKING, DEVELOPMENT_CYCLE, DOCUMENTATION_STANDARDS, TESTING_STRATEGY
     │       ├── standards/            CODE_QUALITY, EARLY_EXIT, ERROR_HANDLING, OBSERVABILITY, PERFORMANCE, RESULT_PATTERN
-    │       ├── templates/            ADR_TEMPLATE, CODE_REVIEW_CHECKLIST, FEATURE_SPEC_TEMPLATE, FREEZE_DOC_TEMPLATE, TEST_PLAN_TEMPLATE
+    │       ├── templates/            ADR_TEMPLATE, CODE_REVIEW_CHECKLIST, TEST_PLAN_TEMPLATE
     │       ├── protocols/            internal protocols (multi-agent-consensus, project-docs, test-planning)
     │       └── autonomous/           session-management, review-loop-protocol, mistake-tracker-protocol (code),
     │                                 events-schema (M1), views-spec (M2), dispatcher-spec (M3)
-    └── spike/                 research spike skill (new in v4.0.0)
-        ├── SKILL.md
-        └── references/
-            ├── templates/            SPIKE_PLAN_TEMPLATE, TICKET_REF_TEMPLATE
-            └── autonomous/           mistake-tracker-protocol (design) \u2014 variant for architectural patterns
+    ├── spike/                 v5 — universal planning skill (epic/story/research/--revisit)
+    │   ├── SKILL.md
+    │   └── references/
+    │       ├── guardrails.md         v5 — SOLID/DRY/YAGNI/Open-Closed reference for all dispatched agents
+    │       ├── templates/            SPIKE_PLAN_TEMPLATE, TICKET_REF_TEMPLATE, FREEZE_DOC_TEMPLATE (with approvedHash + §11), RESEARCH_DOC_TEMPLATE, REVIEW_BACKLOG_TEMPLATE
+    │       ├── protocols/            research-dispatch (fan-out + crash recovery + parallel rules)
+    │       └── autonomous/           mistake-tracker-protocol (design) — variant for architectural patterns
+    └── testbuilder/           standalone testing skill (independent of /implement)
+        └── ...
 ```
 
 All protocol files are **internal references** read by `SKILL.md` via the Read tool. They are not discoverable as standalone skills and are not exposed to the user.
@@ -113,12 +137,12 @@ All protocol files are **internal references** read by `SKILL.md` via the Read t
 
 | Gate | Phase | Mode behavior | Physical artifact |
 |---|---|---|---|
-| **GATE 1** — Freeze doc approval | End of Phase 3 | Interactive: user approves by category. Autonomous: auto-approves with audit note. | Freeze doc frontmatter `status: APPROVED` + `approvedAt`/`approvedBy`/`approvalMode`. |
-| **GATE 2** — Final approval | End of Phase 7 | Always user-interactive (both modes). | `pipeline-complete.md` marker in session folder + progress-log `status: completed`. |
+| **GATE 1** — Freeze doc approval | End of `/spike` P6 (owner: Spike) | Interactive: user approves by category. Autonomous: auto-approves with audit note. Sealed by `approvedHash` over canonical body. | Freeze doc frontmatter `status: APPROVED` + `approvedHash` + `approvedAt`/`approvedBy`/`approvalMode`. |
+| **GATE 2** — Final approval | End of `/implement` E3 (owner: Implement) | Always user-interactive (both modes). | `pipeline-complete.md` marker in session folder + progress-log `status: completed`. |
 
-Between the two gates, `freeze-gate.sh` blocks src/** edits; after GATE 2, `push-guard.sh` allows `git push`.
+Between the two gates, `freeze-gate.sh` reads `active-freeze-doc.txt`, verifies `approvedHash` + §11 Prerequisites, and blocks src/** edits on mismatch; after GATE 2, `push-guard.sh` allows `git push`.
 
-## Execution Question Zones (Phases 4-7)
+## Execution Question Zones (/implement E1-E3)
 
 Four zones govern how the LLM handles questions during execution:
 
@@ -164,7 +188,7 @@ M3 introduces the knob but keeps legacy defaults when unset, so upgrading does n
 | Hook | Event | Purpose |
 |---|---|---|
 | `load-chronic-patterns.sh` | SessionStart | Load recurring-mistake patterns into session context |
-| `freeze-gate.sh` | PreToolUse (Edit\|Write) | Block src/** edits unless freeze doc is APPROVED for this feature on this branch |
+| `freeze-gate.sh` | PreToolUse (Edit\|Write) | v5 — reads `active-freeze-doc.txt` pointer (written by `/implement` at startup); verifies `approvedHash` (canonical-body sha256) and §11 Prerequisites (against `ticket.merged` events / git merge log). Blocks src/** edits on mismatch or until freeze doc is APPROVED |
 | `push-guard.sh` | PreToolUse (Bash git push) | Block `git push` until `pipeline-complete.md` marker exists (GATE 2 approval) or ticket-scoped bypass is active |
 | `phase-gate.sh` | Called by SKILL.md | Validate progress-log.json at phase boundaries (begin/end). Blocks on failure (exit 2) |
 | `phase-progress-validator.sh` | PostToolUse (phase-gate) | Independent post-gate consistency check (warning-only, exit 0) |
