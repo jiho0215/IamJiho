@@ -138,6 +138,8 @@ Session folder for `/spike` is epic-scoped: `{repo}--epic-{epicId}/`. `session.s
 | `spike.gate.rejected` | `{epicId: string, returnToPhase: int, reason: string}` | `/spike` Phase 4 rejection |
 | `spike.integration.verified` | `{epicId: string, ticketCount: int}` | cross-ticket integration verifier (after all tickets merged) |
 | `spike.retro.completed` | `{epicId: string, patternsPromoted: int, patternsDemoted: int}` | `/spike` Phase 5 retro end |
+| `spike.revisit.started` | `{epicId, reason, revokedFreezeDocs: [paths]}` | `/spike --revisit` Pre-Workflow (v5+) — re-spike entry on verification-failure recovery |
+| `spike.revisit.completed` | `{epicId, newFreezeDocs: [paths], newApprovedHashes: [hashes]}` | `/spike --revisit` end (v5+) — after P6 produces new approved artifacts |
 
 ### `ticket.*` — ticket decomposition and lifecycle (v4.0+)
 
