@@ -1,0 +1,3 @@
+# Freeze docs hash-locked; force LF to ensure cross-platform hash determinism.
+**/docs/plan/**/freeze-*.md text eol=lf
+**/skills/spike/references/templates/FREEZE_DOC_TEMPLATE.md text eol=lf

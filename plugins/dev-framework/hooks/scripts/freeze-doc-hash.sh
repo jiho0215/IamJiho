@@ -42,7 +42,7 @@ canonical_body() {
     /^bypassHistory:/ { in_bh=1; next }
     in_bh && /^[ \t]/ { next }
     { in_bh=0; print }
-  ' "$1"
+  ' "$1" | tr -d '\r'
 }
 
 case "$CMD" in

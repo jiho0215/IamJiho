@@ -60,4 +60,49 @@ EOF
 sed -i.bak "s/approvedHash: PLACEHOLDER/approvedHash: $H1/" "$DOC"
 "$HASH_SH" verify "$DOC" || { echo "FAIL: bypassHistory mutation should not affect hash"; exit 1; }
 
+# Multiple approvedHash lines: compute strips all; verify uses first only.
+cat > "$DOC" <<'EOF'
+---
+status: APPROVED
+approvedAt: 2026-05-09T12:00:00Z
+approvedBy: jiho
+approvalMode: interactive
+approvedHash: null
+bypassHistory: []
+---
+
+# Freeze: ticket-x
+
+## §1 Requirements
+Body content here.
+EOF
+H3=$("$HASH_SH" compute "$DOC")
+# Set the first approvedHash line to match H3, then inject a second (rogue) line.
+sed -i.bak "s/approvedHash: null/approvedHash: $H3/" "$DOC"
+# Inject second approvedHash inside frontmatter (before bypassHistory line).
+sed -i.bak "/bypassHistory: \[\]/i\\
+approvedHash: deadbeef" "$DOC"
+# canonical_body strips ALL approvedHash lines, so hash should still match the
+# FIRST approvedHash value (the legitimate one). Verify reads only the first.
+"$HASH_SH" verify "$DOC" \
+  || { echo "FAIL: multiple-approvedHash test (legitimate first should still verify)"; exit 1; }
+
+# approvedHash absent entirely -> verify exits 1
+cat > "$DOC" <<'EOF'
+---
+status: APPROVED
+approvedAt: 2026-05-09T12:00:00Z
+approvedBy: jiho
+approvalMode: interactive
+bypassHistory: []
+---
+
+# Freeze: ticket-x
+
+## §1 Requirements
+Body content here.
+EOF
+"$HASH_SH" verify "$DOC" 2>/dev/null \
+  && { echo "FAIL: verify accepted absent approvedHash"; exit 1; } || true
+
 echo "PASS"
