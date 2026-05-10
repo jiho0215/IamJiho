@@ -17,7 +17,7 @@ status: DRAFT
 createdAt: [ISO-8601 UTC]
 approvedAt: null
 approvedBy: null
-approvedHash: null   # sha256 of canonical body at GATE 1 approval; null until approved
+approvedHash: null   # sha256 of canonical body at GATE 1; /implement aborts on mismatch (immutability gate). Null until approved.
 approvalMode: null            # "interactive" or "autonomous" when set at approval time
 bypassHistory: []
 supersededBy: null
