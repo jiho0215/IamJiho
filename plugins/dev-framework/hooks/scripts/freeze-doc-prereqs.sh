@@ -21,12 +21,14 @@ FILE="$1"
 [ -f "$FILE" ] || { echo "ERROR: file not found: $FILE" >&2; exit 2; }
 
 # Extract prereq ticket ids: lines under "## §11 Prerequisites" matching
-# `- \`<id>\` —` pattern. Stop at next "## " header.
+# `- \`<id>\` --` pattern (ASCII double-dash; em-dash also accepted via byte
+# sequence E2 80 94 to remain locale-independent on git-bash). Stop at next
+# "## " header.
 extract_prereqs() {
   awk '
     /^## §11 Prerequisites/ { in_section=1; next }
     in_section && /^## / { in_section=0 }
-    in_section && /^- `[^`]+`/ {
+    in_section && /^- `[^`]+`[[:space:]]+(--|\xe2\x80\x94)/ {
       match($0, /`[^`]+`/);
       id = substr($0, RSTART+1, RLENGTH-2);
       print id;
@@ -44,15 +46,17 @@ while IFS= read -r ticket; do
   [ -z "$ticket" ] && continue
   ok=0
 
-  # (a) event check
+  # (a) event check — two-stage fixed-string match so JSON field order doesn't
+  # matter and any regex metachars in the ticket id (e.g. `.`) are inert.
   if [ -f "$EVENTS" ] && \
-     grep -qE "\"type\":\"ticket\.merged\".*\"ticketId\":\"$ticket\"" "$EVENTS"; then
+     grep -F '"type":"ticket.merged"' "$EVENTS" | grep -qF "\"ticketId\":\"$ticket\""; then
     ok=1
   fi
 
-  # (b) git history fallback
+  # (b) git history fallback — -F treats the pattern as a fixed string so a
+  # ticket id with `.` doesn't match unintended characters.
   if [ "$ok" = 0 ] && command -v git >/dev/null 2>&1; then
-    if git log --grep="$ticket" --merges --format=%H 2>/dev/null | head -1 | grep -q .; then
+    if git log -F --grep="$ticket" --merges --format=%H 2>/dev/null | head -1 | grep -q .; then
       ok=1
     fi
   fi
