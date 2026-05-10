@@ -1,0 +1,15 @@
+id: spike.p3
+name: Decompose
+purpose: Build DAG of children + dependency edges
+primaryAgent: architect
+modes: [epic]    # skipped in story / research modes
+inputs:
+  - architectureNotes
+outputs:
+  - dag
+  - children    # list of {ticketId, kind: research|story, dependsOn: [...]}
+emits:
+  - spike.phase.3.started
+  - ticket.decomposed
+  - spike.tickets.decomposed
+  - spike.phase.3.completed

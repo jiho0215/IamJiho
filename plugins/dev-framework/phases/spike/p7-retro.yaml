@@ -1,0 +1,14 @@
+id: spike.p7
+name: Retro
+purpose: Async pattern extraction once all-children-merged
+primaryAgent: code-quality-reviewer
+modes: [epic, story]    # research-only epics: no merge event ever; deferred
+inputs:
+  - mergedTickets
+outputs:
+  - patternsDelta    # promoted / demoted patterns
+emits:
+  - spike.phase.5.started   # numbering legacy; this is "phase 7" but emit name kept stable
+  - spike.retro.completed
+  - spike.phase.5.completed
+trigger: spike.integration.verified

@@ -1,0 +1,15 @@
+id: spike.p6
+name: Approve
+purpose: User signoff (GATE 1); compute approvedHash; emit approval event
+primaryAgent: null    # human gate
+modes: [epic, story, research]
+inputs:
+  - freezeDocs OR spikePlanDoc OR researchDoc
+outputs:
+  - approvedArtifacts
+emits:
+  - spike.gate.approved
+  - spike.gate.rejected    # if user rejects
+  - freeze.doc.approved    # one per Story
+  - research.doc.approved  # one per Research
+  - spike.phase.6.completed

@@ -1,0 +1,17 @@
+id: spike.p4
+name: Spec
+purpose: Produce final artifacts — freeze doc / research doc / multi-ticket plan
+primaryAgent: architect
+secondaryAgents: [test-strategist]
+modes: [epic, story, research]
+inputs:
+  - architectureNotes
+  - researchOutputs
+  - dag    # epic mode only
+outputs:
+  - freezeDocs       # one per Story (Epic mode) or one (Story mode) or zero (Research mode)
+  - researchDoc      # one (Research mode) or zero
+  - spikePlanDoc     # one (Epic mode) or zero
+emits:
+  - spike.phase.4.started
+  - spike.phase.4.completed
