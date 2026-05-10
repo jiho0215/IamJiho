@@ -46,3 +46,12 @@ resolve_session_dir() {
 }
 
 iso_utc() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
+
+# resolve_active_freeze_doc — return path to the freeze doc currently active for
+# the given SESSION_DIR (written by /implement at startup). Empty if absent.
+resolve_active_freeze_doc() {
+  local session_dir="$1"
+  local pointer="$session_dir/active-freeze-doc.txt"
+  [ -f "$pointer" ] || { echo ""; return 0; }
+  cat "$pointer"
+}
