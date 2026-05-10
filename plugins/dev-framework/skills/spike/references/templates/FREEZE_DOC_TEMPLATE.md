@@ -229,6 +229,26 @@ When Zone 3 tier 1 or tier 2 requires a question:
 
 ---
 
+## §10 Verification Backlog
+
+<doc-only or inferred findings (with confidence tag) imported from Research §9 that are load-bearing for this Story. Each item has a verification recipe.
+
+Empty if this Story has no Research dependencies, OR if all dependent Research findings are `verified-empirically` / `user-confirmed`.
+
+Format:
+- **Finding:** <text>
+  Confidence: doc-only | inferred-from-code
+  Source Research ticket: <research-ticketIdOrSlug>
+  Recipe:
+  ```
+  <command or query that confirms the finding empirically>
+  ```
+  Expected: <expected-result>. Actual: ___
+
+`/implement` E1 Execute should reference this section before relying on doc-only behavior; if any Recipe fails, halt and follow the spec §5 verification-failure recovery path.>
+
+---
+
 ## §11 Prerequisites
 
 <List of other Story ticket-ids that MUST be merged before /implement can run on this freeze doc. Extracted from Epic-mode DAG; empty for standalone Story.
