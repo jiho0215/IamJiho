@@ -130,6 +130,7 @@ Session folder for `/spike` is epic-scoped: `{repo}--epic-{epicId}/`. `session.s
 | Type | Data | Emitted by |
 |---|---|---|
 | `spike.started` | `{epicId: string, goal: string}` | `/spike` SKILL.md Pre-Workflow |
+| `spike.mode.detected` | `{epicId: string, mode: "epic"\|"story"\|"research"}` | `/spike` SKILL.md Pre-Workflow after mode resolves (v5+) |
 | `spike.phase.N.started` | `{epicId: string, phase: 1\|2\|3\|4\|5}` | `/spike` SKILL.md at Begin gate pass |
 | `spike.phase.N.completed` | `{epicId: string, phase: int, metrics?: object}` | `/spike` SKILL.md at End gate pass |
 | `spike.tickets.decomposed` | `{epicId: string, tickets: [{ticketId, title}]}` | `/spike` Phase 3 end |
@@ -147,6 +148,7 @@ Emitted by both `/spike` (decomposition) and `/implement` (impl progress). All c
 | `ticket.decomposed` | `{epicId, ticketId, title, implBlockedBy: [{ticketId, kind, reason}], deployBlockedBy: [{ticketId, kind, reason}]}` | `/spike` Phase 3 per-iteration |
 | `ticket.started` | `{epicId, ticketId, branch: string}` | `/implement` Phase 0 success |
 | `ticket.discovery` | `{epicId, ticketId, section: string, correction: string}` | `/implement` on spike-plan / ref-doc error discovery |
+| `ticket.research.completed` | `{epicId, ticketIdOrSlug, blockedStoriesUnblocked: [string]}` | reducer-derived from `research.completed`; unblocks dependent Story tickets (v5+) |
 | `ticket.merged` | `{epicId, ticketId, prUrl?: string}` | `/implement` Phase 7 GATE 2 approval option [1] or [3] |
 
 **Re-emit semantics for `ticket.decomposed`:** if the same `ticketId` is decomposed a second time (e.g., Phase 4 gap-review correction reclassifies a blocker), the later event supersedes the earlier one in the reducer's view. Events themselves are still append-only; the reducer picks the latest.
@@ -154,6 +156,26 @@ Emitted by both `/spike` (decomposition) and `/implement` (impl progress). All c
 **Cross-skill reducer consumers:**
 - `reduce-spike-plan.sh` — reads `ticket.decomposed`, `ticket.started`, `ticket.merged` to regenerate `docs/plan/{epicId}/spike-plan.md` §7 registry.
 - `reduce-ticket-doc.sh` — reads per-ticket phase/consensus/gate events to regenerate `docs/plan/{epicId}/{ticketId}.md` §6 impl log + frontmatter `.status`.
+
+### `research.*` — research investigator dispatch and findings (v5+)
+
+Emitted when `/spike` fans out a Research agent for a Research-mode ticket and when the agent reports back. Pairs with `ticket.research.completed` (reducer-derived) to unblock dependent Story tickets.
+
+| Type | Data | Emitted by |
+|---|---|---|
+| `research.dispatched` | `{epicId, ticketIdOrSlug, question: string, blockedStoryTickets: [string], interactionAllowed: bool}` | `/spike` parent at fan-out of Research agent |
+| `research.findings.captured` | `{ticketIdOrSlug, findingCount: int}` | `research-investigator` agent intermediate (long runs) |
+| `research.completed` | `{ticketIdOrSlug, outputPath: string, confidence: {empirical: int, docOnly: int, inferred: int, userConfirmed: int}}` | `research-investigator` agent end |
+| `research.redispatched` | `{epicId, ticketIdOrSlug, attempt: int}` | `/spike` parent re-dispatches after detected child crash |
+
+### `freeze.doc.*` / `research.doc.*` — Phase 6 GATE 1 doc approvals (v5+)
+
+Emitted at `/spike` Phase 6 GATE 1 when an Epic-Story or Epic-Research child ticket's per-ticket doc is approved. Distinct from `gate.approved` (which is `/implement` GATE 1 freeze-doc approval) and from `spike.gate.approved` (which is `/spike` Phase 4 epic-level signoff).
+
+| Type | Data | Emitted by |
+|---|---|---|
+| `freeze.doc.approved` | `{epicId, ticketId, freezeDocPath: string, approvedHash: string, approvedBy: string}` | `/spike` Phase 6 GATE 1 (Story / Epic-Story-child) |
+| `research.doc.approved` | `{epicId, ticketIdOrSlug, researchDocPath: string, approvedBy: string}` | `/spike` Phase 6 GATE 1 (Research / Epic-Research-child) |
 
 ## Invariants
 
