@@ -81,17 +81,32 @@ emit_passed() {
   bash "$SCRIPT_DIR/emit-event.sh" gate.passed --actor "hook:phase-gate" --data "$data" 2>/dev/null || true
 }
 
-# --- Phase name lookup (unified /implement 7-phase workflow) ---
+# --- Phase name lookup (v5 — skill-aware) ---
+# Callers pass SKILL env var ("spike" or "implement"). Default is "implement"
+# for backward compatibility with v4-numeric callers (phases 5-7 mapped to E1-E3).
+# v5 /spike uses phases 1-7 (P1 Scope … P7 Retro); v5 /implement uses phases 5-7
+# (legacy numbering retained for gate compatibility; mapped to E1 Execute / E2 Verify / E3 Finalize).
+SKILL="${SKILL:-implement}"
+
 phase_name() {
-  case "$1" in
-    1) echo "Requirements" ;;
-    2) echo "Research" ;;
-    3) echo "Plan + Freeze Doc (GATE 1)" ;;
-    4) echo "Test Planning" ;;
-    5) echo "Implementation + Layer 1 Review" ;;
-    6) echo "Verification + Layer 2 Review" ;;
-    7) echo "Documentation + Mistake Capture (GATE 2)" ;;
-    *) echo "Unknown" ;;
+  local n="$1"
+  case "${SKILL}:${n}" in
+    spike:1) echo "P1 Scope" ;;
+    spike:2) echo "P2 Investigate" ;;
+    spike:3) echo "P3 Decompose" ;;
+    spike:4) echo "P4 Spec" ;;
+    spike:5) echo "P5 Review" ;;
+    spike:6) echo "P6 Approve (GATE 1)" ;;
+    spike:7) echo "P7 Retro" ;;
+    implement:5) echo "E1 Execute" ;;
+    implement:6) echo "E2 Verify" ;;
+    implement:7) echo "E3 Finalize (GATE 2)" ;;
+    # Legacy v4 numeric (only reachable if a stale v4 in-flight session resumes)
+    implement:1) echo "Phase 1 (v4 legacy: Requirements — moved to /spike P1)" ;;
+    implement:2) echo "Phase 2 (v4 legacy: Research — moved to /spike P2)" ;;
+    implement:3) echo "Phase 3 (v4 legacy: Plan + Freeze — moved to /spike P4)" ;;
+    implement:4) echo "Phase 4 (v4 legacy: Test Planning — moved to /spike P4)" ;;
+    *) echo "Phase $n" ;;
   esac
 }
 
