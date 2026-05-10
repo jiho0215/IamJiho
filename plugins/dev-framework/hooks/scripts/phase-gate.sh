@@ -95,6 +95,35 @@ phase_name() {
   esac
 }
 
+# --- v5 phase YAML resolution ------------------------------------------------
+# v5 reorganized phase YAMLs under per-skill subdirs:
+#   plugins/dev-framework/phases/spike/p{1..5}-*.yaml
+#   plugins/dev-framework/phases/implement/{p1..p4,e1..e3}-*.yaml
+# Resolves a phase YAML path by skill + phase_id. Caller passes
+# SKILL ("spike" or "implement") and a phase_id like "p1-scope" or "e1-execute".
+resolve_phase_yaml() {
+  local skill="$1" phase_id="$2"   # phase_id like "p1-scope" or "e1-execute"
+  local candidate="${CLAUDE_PLUGIN_ROOT}/phases/${skill}/${phase_id}.yaml"
+  [ -f "$candidate" ] && { echo "$candidate"; return 0; }
+  echo "ERROR: phase YAML not found: $candidate" >&2
+  return 1
+}
+
+# Legacy phase-number -> v5 skill+phase mapping. Use ONLY for error messages on
+# v4 in-flight session resume attempts; the actual phase files are gone.
+# v4 phases 1-4 (Requirements/Research/Plan+Freeze/Test-Planning) were spike-side
+# planning concerns and have been folded into phases/spike/. v4 phases 5-7
+# (Implementation/Verification/Docs) map cleanly to phases/implement/ e1-e3.
+v4_to_v5_phase() {
+  case "$1" in
+    1|2|3|4)  echo "spike-LEGACY (content moved to phases/spike/; cannot resume v4 session)" ;;
+    5) echo "implement e1-execute" ;;
+    6) echo "implement e2-verify" ;;
+    7) echo "implement e3-finalize" ;;
+    *) return 1 ;;
+  esac
+}
+
 # =============================================
 # VERIFY — check progress-log.json exists and is valid (Pre-Workflow only)
 # =============================================
