@@ -52,13 +52,13 @@ Before entering E1, execute these steps **in order**. Each step's failure mode i
    ```
    On non-zero exit, halt with: `"Freeze doc body modified after approval (hash mismatch). The contract is broken. Re-run /spike to re-approve (a new approvedHash will be issued), or revoke this freeze doc and start a new ticket."` Do not attempt to silently fix the hash — the immutability is the whole point.
 
-4. **Verify §11 Prerequisites all merged.** With `SESSION_DIR` exported (computed in step 5; if step 5 hasn't run yet, compute it ahead of time here — the resolution algorithm is deterministic), run:
+4. **Resolve SESSION_DIR.** Use the standard epic-scoped session-folder algorithm: `SESSION_DIR = ~/.claude/autodev/sessions/{repo}--epic-{epicOrSlug}/`, where `{epicOrSlug}` is read from the freeze doc frontmatter (`epicId` for Epic-child Stories, the ticket id for standalone Stories — both forms produce the same session prefix). This is the **same** session folder `/spike` writes to; you append to its `events.jsonl`. The full algorithm is in `references/autonomous/session-management.md` (read on demand).
+
+5. **Verify §11 Prerequisites all merged.** With `SESSION_DIR` exported (from step 4), run:
    ```bash
    SESSION_DIR="$SESSION_DIR" bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/freeze-doc-prereqs.sh "<freeze-doc-path>"
    ```
    The script extracts each `- \`<ticket-id>\` --` row under `## §11 Prerequisites` and confirms each via either a `ticket.merged` event in `events.jsonl` or a matching merge commit reachable from `HEAD`. On non-zero exit, halt with: `"Prerequisites not satisfied: <list from stderr>. Merge prerequisites first, or run /implement on them in dependency order."`
-
-5. **Resolve SESSION_DIR.** Use the standard epic-scoped session-folder algorithm: `SESSION_DIR = ~/.claude/autodev/sessions/{repo}--epic-{epicOrSlug}/`, where `{epicOrSlug}` is read from the freeze doc frontmatter (`epicId` for Epic-child Stories, the ticket id for standalone Stories — both forms produce the same session prefix). This is the **same** session folder `/spike` writes to; you append to its `events.jsonl`. The full algorithm is in `references/autonomous/session-management.md` (read on demand).
 
 6. **Write `active-freeze-doc.txt` pointer.** Write the absolute freeze-doc-path on a single line to `${SESSION_DIR}/active-freeze-doc.txt`. This is the disambiguation pointer that `freeze-gate.sh` reads: it tells the hook which doc is "active" for this `/implement` run, so src/** edits are evaluated against the right doc when an epic contains multiple Story freeze docs. Without this pointer, freeze-gate falls back to a scan, which is ambiguous. On write failure (permission, disk), halt with: `"Cannot write active-freeze-doc.txt at <path>: <error>. Aborting before src/** edits unlock."`
 
@@ -87,7 +87,7 @@ Read these references into context when the phase needs them. They are not exter
 | `references/methodology/DOCUMENTATION_STANDARDS.md` | E3 docs updates |
 | `references/methodology/DEVELOPMENT_CYCLE.md` | Overview / refresher |
 | `references/protocols/project-docs.md` | E3 docs updates |
-| `references/autonomous/session-management.md` | Step 5 (SESSION_DIR algorithm), Resume Handler |
+| `references/autonomous/session-management.md` | Step 4 (SESSION_DIR algorithm), Resume Handler |
 | `references/autonomous/events-schema.md` | Event catalog and invariants |
 | `references/autonomous/review-loop-protocol.md` | E1 Layer 1 review, E2 Layer 2 review |
 | `references/autonomous/mistake-tracker-protocol.md` | E3 retro / mistake capture |
@@ -359,7 +359,7 @@ On rejection (option 2):
 
 ## `--status` Handler
 
-1. Parse `<freeze-doc-path>` and resolve `SESSION_DIR` via the same algorithm as Pre-Workflow step 5.
+1. Parse `<freeze-doc-path>` and resolve `SESSION_DIR` via the same algorithm as Pre-Workflow step 4.
 2. Read `progress-log.json`, `decision-log.json`, the freeze doc (status + approvedHash recheck), `active-freeze-doc.txt`, `bypass.json`, `bypass-audit.jsonl`, `pipeline-complete.md`.
 3. Print:
    - Ticket / freeze doc path / freeze doc status / approvedHash verify result.
