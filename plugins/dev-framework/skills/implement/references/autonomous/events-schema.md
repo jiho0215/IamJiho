@@ -161,6 +161,8 @@ Emitted by both `/spike` (decomposition) and `/implement` (impl progress). All c
 
 Emitted when `/spike` fans out a Research agent for a Research-mode ticket and when the agent reports back. Pairs with `ticket.research.completed` (reducer-derived) to unblock dependent Story tickets.
 
+> **Field naming — `ticketIdOrSlug` vs `ticketId`.** Research-emitted events use `ticketIdOrSlug` rather than the schema-wide `ticketId` to make explicit that an inline-Research within a Story-mode spike has a descriptive slug (e.g., `research-stripe-signature`), not a tracker ID. Story-class events (`ticket.merged`, `freeze.doc.approved`) keep `ticketId` because Story-mode work always has a tracker ID. Reducers joining `research.completed` to its parent ticket use the value as-is — no normalization. (This is a deliberate split from the convention in `TICKET_REF_TEMPLATE.md`, where `ticketId` already accepts slug-form values for ad-hoc work; here the rename is purely for reader clarity at the event-log level.)
+
 | Type | Data | Emitted by |
 |---|---|---|
 | `research.dispatched` | `{epicId, ticketIdOrSlug, question: string, blockedStoryTickets: [string], interactionAllowed: bool}` | `/spike` parent at fan-out of Research agent |
@@ -171,6 +173,8 @@ Emitted when `/spike` fans out a Research agent for a Research-mode ticket and w
 ### `freeze.doc.*` / `research.doc.*` — Phase 6 GATE 1 doc approvals (v5+)
 
 Emitted at `/spike` Phase 6 GATE 1 when an Epic-Story or Epic-Research child ticket's per-ticket doc is approved. Distinct from `gate.approved` (which is `/implement` GATE 1 freeze-doc approval) and from `spike.gate.approved` (which is `/spike` Phase 4 epic-level signoff).
+
+> **Field naming.** `freeze.doc.approved` carries `ticketId` (Story child tickets always have a tracker ID); `research.doc.approved` carries `ticketIdOrSlug` (a standalone Research ticket may be slug-only). See the `research.*` section above for the full rationale.
 
 | Type | Data | Emitted by |
 |---|---|---|
