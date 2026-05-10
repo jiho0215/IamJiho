@@ -38,7 +38,7 @@ Format:
   Notes: <optional clarifier>
 >
 
-## §4 Schemas / Types
+## §4 Schemas/Types
 
 <Extracted shapes (TS, JSON, OpenAPI). Also commit as separate files under `docs/plan/{epic-or-slug}/schemas/`.>
 
