@@ -1,6 +1,6 @@
 id: implement.e2
 name: Verify
-skillMdSection: "Phase 6 — Verification + Coverage Fill + Layer 2 Review"
+skillMdSection: "E2 Verify"
 
 requiredRefs:
   - standards/RESULT_PATTERN.md

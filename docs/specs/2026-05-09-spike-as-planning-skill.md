@@ -305,11 +305,19 @@ Research-mode P6 only sets the research doc status (no src/** unlock needed sinc
 
 **/implement startup checks (in order):**
 
+> **Step-order amendment (2026-05-10).** The original draft of this spec
+> ordered the checks as parse → status → hash → §11 Prerequisites →
+> SESSION_DIR → pointer → begin. During implementation we discovered the
+> §11 Prerequisites check needs `SESSION_DIR` exported (to consult
+> `events.jsonl` for `ticket.merged` events), so SESSION_DIR must resolve
+> first. The amended order below is what ships in v5 and matches
+> `skills/implement/SKILL.md` "Pre-Workflow / 7-Step Startup".
+
 1. **Parse freeze doc** at given path; fail if file missing or unparseable.
 2. **Verify `status == APPROVED`**; fail loudly otherwise.
 3. **Verify `approvedHash`** matches sha256 of current canonical body; fail with hash-mismatch error if modified post-approval.
-4. **Verify §11 Prerequisites all merged**: for each prerequisite ticket-id, check that `ticket.merged` event exists in events.jsonl OR git log shows the merge commit. If any prerequisite unmerged → abort with `"Prerequisites not satisfied: [...]. Merge prerequisites first or run /implement on them in order."`
-5. **Resolve SESSION_DIR** (epic-scoped event log; shared with `/spike`).
+4. **Resolve SESSION_DIR** (epic-scoped event log; shared with `/spike`). Exported so subsequent steps can read `events.jsonl`.
+5. **Verify §11 Prerequisites all merged**: for each prerequisite ticket-id, check that `ticket.merged` event exists in `${SESSION_DIR}/events.jsonl` OR git log shows the merge commit. If any prerequisite unmerged → abort with `"Prerequisites not satisfied: [...]. Merge prerequisites first or run /implement on them in order."`
 6. **Write `active-freeze-doc.txt`** pointer in SESSION_DIR (so freeze-gate hook knows which doc is active for this run).
 7. **Begin Phase E1 Execute.**
 

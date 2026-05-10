@@ -153,7 +153,7 @@ Four zones govern how the LLM handles questions during execution:
 | 🤔 Ambiguous | Technical, not covered above | 4-tier rule: existing code → follow; reference repo → follow; initial impl → ask; else → self-decide |
 | ⚙️ Self-decide | Pure technical (naming, extraction, internal boundaries) | Decide without asking |
 
-See `skills/implement/references/templates/FREEZE_DOC_TEMPLATE.md` §9 for the full "Ask with Suggestion" format.
+See `skills/spike/references/templates/FREEZE_DOC_TEMPLATE.md` §9 for the full "Ask with Suggestion" format (v5: spike owns the freeze doc template).
 
 ## Config
 

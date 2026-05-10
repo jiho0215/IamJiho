@@ -1,6 +1,6 @@
 id: implement.e3
 name: Finalize
-skillMdSection: "Phase 7 — Documentation + Mistake Capture → GATE 2"
+skillMdSection: "E3 Finalize"
 
 requiredRefs:
   - protocols/project-docs.md

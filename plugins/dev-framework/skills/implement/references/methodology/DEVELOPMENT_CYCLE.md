@@ -1,8 +1,13 @@
 # Development Cycle
 
-The development framework enforces a 7-phase cycle for new feature development and significant changes (plus Phase 0 prereq check when the ticket is sourced from a `/spike` plan). Standalone review, test analysis, and documentation maintenance use abbreviated workflows (see `skills/implement/SKILL.md` Sections C-E).
+> **v5 note.** This document describes the v4 7-phase cycle as historical
+> context and refresher reading. In v5, planning (Phases 1-3 below) moved
+> into `/spike`; `/implement` runs only Phases 5-7 as E1 Execute / E2 Verify
+> / E3 Finalize against an APPROVED, hash-locked freeze doc. SKILL.md is
+> authoritative for current behavior — if this document conflicts, defer
+> to SKILL.md.
 
-This document is a refresher overview. SKILL.md is authoritative — if this document conflicts, defer to SKILL.md.
+The development framework enforces a 7-phase cycle for new feature development and significant changes (plus Phase 0 prereq check when the ticket is sourced from a `/spike` plan). Standalone review, test analysis, and documentation maintenance use abbreviated workflows (see `skills/implement/SKILL.md` Sections C-E).
 
 ## Core Philosophy
 
@@ -48,7 +53,7 @@ This document is a refresher overview. SKILL.md is authoritative — if this doc
 **Goal:** Detailed implementation plan + completed freeze doc approved by the user.
 
 1. Invoke `config.pipeline.skills.planning` (default `superpowers:writing-plans`) for structured plan creation.
-2. Assemble the freeze doc (see `references/templates/FREEZE_DOC_TEMPLATE.md`) — aggregate §1-§8 into `docs/specs/[feature-slug]-freeze.md`. Populate §9 from `config.pipeline.freezeDoc.nonFrozenAllowList`. Render any custom categories from `config.pipeline.freezeDoc.customCategoryTemplatesDir`.
+2. Assemble the freeze doc (see `../../../spike/references/templates/FREEZE_DOC_TEMPLATE.md` — spike owns the template in v5) — aggregate §1-§8 into `docs/specs/[feature-slug]-freeze.md`. Populate §9 from `config.pipeline.freezeDoc.nonFrozenAllowList`. Render any custom categories from `config.pipeline.freezeDoc.customCategoryTemplatesDir`.
 3. Run consensus protocol (plan + freeze doc as a combined artifact) with `config.pipeline.agents.plan`.
 4. Self-review loop per `references/autonomous/review-loop-protocol.md`. Inject chronic patterns as prevention checklist.
 5. Set freeze doc `status: PENDING_APPROVAL`.

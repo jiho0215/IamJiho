@@ -1,6 +1,6 @@
 id: implement.e1
 name: Execute
-skillMdSection: "Phase 5 — Implementation + Layer 1 Review"
+skillMdSection: "E1 Execute"
 
 requiredRefs:
   - standards/RESULT_PATTERN.md

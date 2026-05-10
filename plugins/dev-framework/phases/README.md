@@ -1,21 +1,21 @@
 # Phase YAMLs
 
-Two skills, two phase-file prefixes:
+Two skills, two sub-folders (v5):
 
-- `phase-N.yaml` — `/implement` phases 1-7. Narrative prose: [`../skills/implement/SKILL.md`](../skills/implement/SKILL.md).
-- `spike-phase-N.yaml` — `/spike` phases 1-5. Narrative prose: [`../skills/spike/SKILL.md`](../skills/spike/SKILL.md).
+- `phases/spike/p1-scope.yaml` … `p7-retro.yaml` — `/spike` phases (universal planning; Epic/Story/Research modes). Narrative prose: [`../skills/spike/SKILL.md`](../skills/spike/SKILL.md).
+- `phases/implement/e1-execute.yaml` … `e3-finalize.yaml` — `/implement` phases (pure execution against APPROVED freeze doc). Narrative prose: [`../skills/implement/SKILL.md`](../skills/implement/SKILL.md).
 
 Each YAML captures a phase's **metadata** — what it needs, emits, invokes, and produces.
 
-Read by the dispatcher preamble at phase entry (see [`../skills/implement/references/autonomous/dispatcher-spec.md`](../skills/implement/references/autonomous/dispatcher-spec.md)). `read-phase.sh` takes a file path, so both naming conventions work without any dispatcher change.
+Read by the dispatcher preamble at phase entry (see [`../skills/implement/references/autonomous/dispatcher-spec.md`](../skills/implement/references/autonomous/dispatcher-spec.md)). `read-phase.sh` takes a file path, so the sub-folder layout works without any dispatcher change.
 
 ## Schema
 
 ```yaml
-phase: <int>                  # 1-7 for /implement; 1-5 for /spike
+id: <skill>.<phase-id>        # e.g. "implement.e1", "spike.p4"
 name: <human-readable phase name>
-skillMdSection: <anchor into SKILL.md, e.g. "Phase 1 — Requirements">
-skill: implement | spike      # optional; defaults to "implement" for unprefixed files
+skillMdSection: <anchor into SKILL.md, e.g. "E1 Execute" or "P4 Spec">
+skill: implement | spike      # optional; inferred from parent folder
 
 requiredRefs:
   - <path under the owning skill's references/, e.g. "methodology/DECISION_MAKING.md">
@@ -76,7 +76,7 @@ gates:
 budget:
   seconds: <int>
 
-userGate: none | 1 | 2  # marks GATE 1 (phase 3) or GATE 2 (phase 7) phases
+userGate: none | 1 | 2  # GATE 1 (spike P6 approve) or GATE 2 (implement E3 finalize)
 ```
 
 ## Variable substitution
