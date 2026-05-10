@@ -1,5 +1,5 @@
-phase: 6
-name: "Verification + Coverage Fill + Layer 2 Review"
+id: implement.e2
+name: Verify
 skillMdSection: "Phase 6 — Verification + Coverage Fill + Layer 2 Review"
 
 requiredRefs:
