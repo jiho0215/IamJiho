@@ -4,6 +4,38 @@ All notable changes to the `dev-framework` plugin.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows [SemVer](https://semver.org/).
 
+## [5.0.0] - 2026-05-09
+
+### Breaking
+
+- `/implement` invocation now requires a freeze-doc-path argument. Old `/implement <ticket-id>` form removed.
+- `/implement` reduces from 7 phases (Phase 1-7) to 3 (E1 Execute / E2 Verify / E3 Finalize). Phases 1-4 (Requirements / Research / Plan+Freeze / Test Planning) move to `/spike`.
+- `phases/phase-1.yaml` … `phase-4.yaml` removed; `phase-5/6/7.yaml` renamed under `phases/implement/e1-e3.yaml`.
+- `FREEZE_DOC_TEMPLATE.md` and `FEATURE_SPEC_TEMPLATE.md` moved out of `skills/implement/references/templates/`.
+- In-flight v4 pipelines must finish or be abandoned before upgrading; no compat-layer.
+
+### Added
+
+- `/spike` becomes the universal planning skill. New invocation modes: `research <topic>`, `story <ticket>`, `--revisit`. Phase 0 (scope-or-implement gate) removed in favor of explicit modes.
+- New `phases/spike/p1-scope.yaml` … `p7-retro.yaml` (7 phase YAML files).
+- New `agents/research-investigator.md` — universal Research agent with strategy toolbelt (external docs / internal explore / empirical test / user collab / behavioral observation), Doc-vs-Reality confidence tagging, and prompt-injection-resistant Bash scope guard.
+- New templates: `RESEARCH_DOC_TEMPLATE.md`, plus `FREEZE_DOC_TEMPLATE.md` enriched with `approvedHash` (canonical-body sha256 enforcing immutability) and `§11 Prerequisites` (DAG-derived ticket dependencies enforced at /implement startup).
+- New protocol: `skills/spike/references/protocols/research-dispatch.md` (fan-out + crash recovery + parallel rules).
+- New guardrails: `skills/spike/references/guardrails.md` (SOLID/DRY/YAGNI/Open-Closed reference for all dispatched agents).
+- New scripts: `freeze-doc-hash.sh` (compute/verify), `freeze-doc-prereqs.sh` (verify §11 against ticket.merged events or git merge log).
+- New events: `spike.mode.detected`, `research.dispatched`, `research.findings.captured`, `research.completed`, `research.redispatched`, `ticket.research.completed`, `freeze.doc.approved`, `research.doc.approved`, `spike.revisit.started`, `spike.revisit.completed`.
+
+### Changed
+
+- `freeze-gate.sh` now reads `active-freeze-doc.txt` pointer (written by /implement at startup) and verifies hash + prereqs before unlocking src/** edits.
+- `phase-gate.sh` now resolves phase YAML by skill (`phases/spike/` vs `phases/implement/`).
+
+### Migration
+
+Finish or abandon v4 in-flight pipelines first. New v5 sessions begin under the new flow automatically.
+
+Reference design: [docs/specs/2026-05-09-spike-as-planning-skill.md](docs/specs/2026-05-09-spike-as-planning-skill.md).
+
 ## 4.2.0 — 2026-04-27
 
 ### Changed

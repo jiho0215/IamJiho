@@ -17,6 +17,7 @@ status: DRAFT
 createdAt: [ISO-8601 UTC]
 approvedAt: null
 approvedBy: null
+approvedHash: null   # sha256 of canonical body at GATE 1; /implement aborts on mismatch (immutability gate). Null until approved.
 approvalMode: null            # "interactive" or "autonomous" when set at approval time
 bypassHistory: []
 supersededBy: null
@@ -225,6 +226,41 @@ When Zone 3 tier 1 or tier 2 requires a question:
 💡 Proposal: [proposed alternative with reasoning]
 ❓ Decision needed: [concrete question for user]
 ```
+
+---
+
+## §10 Verification Backlog
+
+<doc-only or inferred findings (with confidence tag) imported from Research §9 that are load-bearing for this Story. Each item has a verification recipe.
+
+Empty if this Story has no Research dependencies, OR if all dependent Research findings are `verified-empirically` / `user-confirmed`.
+
+Format:
+- **Finding:** <text>
+  Confidence: doc-only | inferred-from-code
+  Source Research ticket: <research-ticketIdOrSlug>
+  Recipe:
+  ```
+  <command or query that confirms the finding empirically>
+  ```
+  Expected: <expected-result>. Actual: ___
+
+`/implement` E1 Execute should reference this section before relying on doc-only behavior; if any Recipe fails, halt and follow the spec §5 verification-failure recovery path.>
+
+---
+
+## §11 Prerequisites
+
+<List of other Story ticket-ids that MUST be merged before /implement can run on this freeze doc. Extracted from Epic-mode DAG; empty for standalone Story.
+
+Format:
+- `<ticket-id>` — <one-line reason this is a prerequisite>
+
+`/implement` startup verifies each entry has either:
+  (a) a `ticket.merged` event in the shared events.jsonl, OR
+  (b) a git merge commit reachable from current HEAD.
+
+Failing the check → /implement aborts with the unmet prerequisite list.>
 ```
 
 ## Rendering Notes
@@ -253,6 +289,7 @@ status: APPROVED
 createdAt: 2026-04-19T09:00:00Z
 approvedAt: 2026-04-19T11:32:00Z
 approvedBy: jane@example.com
+approvedHash: 9f4b1c8e2a7d3f6a5b8c0e1d2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a
 approvalMode: interactive
 bypassHistory: []
 supersededBy: null

@@ -1,0 +1,13 @@
+id: spike.p1
+name: Scope
+purpose: Clarify requirements at the level (Epic / Story / Research)
+primaryAgent: requirements-analyst
+modes: [epic, story, research]
+inputs:
+  - userInputDescription
+  - mode
+outputs:
+  - scopeDoc        # Epic mode: spike-plan.md §0-§1 sketch; Story/Research: ticket-level requirements summary
+emits:
+  - spike.phase.1.started
+  - spike.phase.1.completed

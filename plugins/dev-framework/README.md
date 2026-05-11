@@ -1,45 +1,49 @@
 # Dev Framework Plugin
 
-**v4.0.0** \u2014 AI-led, end-to-end development framework built on **Managed Agents** architecture. Two skills for the two shapes of engineering work: `/spike` (multi-ticket research and decomposition) and `/implement` (single-ticket rigorous execution). Both share one epic-scoped event log. Seq-level replay, stateless restart, multi-brain fan-out.
+**v5.0.0** \u2014 AI-led, end-to-end software development plugin built on the **Managed Agents** architecture. v5 cleanly splits engineering work into two skills:
 
-> **v3 \u2192 v4 breaking change.** The `/dev` command is retired in favor of `/implement` (single-ticket) and `/spike` (multi-ticket research). A one-version tombstone at `/dev` informs users of the rename. See [docs/specs/2026-04-21-spike-implement-split.md](../../docs/specs/2026-04-21-spike-implement-split.md) for design rationale.
+- **`/spike`** \u2014 the universal planning skill. Modes: **Epic** (multi-ticket decomposition), **Story** (single freeze doc), **Research** (investigation only).
+- **`/implement`** \u2014 pure execution. Reads an **APPROVED** freeze doc produced by `/spike` and runs E1 Execute \u2192 E2 Verify \u2192 E3 Finalize.
+
+Both skills share one epic-scoped event log; freeze docs are hash-locked contracts between them. Seq-level replay, stateless restart, multi-brain fan-out.
+
+> **v4 \u2192 v5 breaking change.** `/implement` now requires an APPROVED freeze doc path as its argument; all requirements / research / planning moved into `/spike`. See [docs/specs/2026-05-09-spike-as-planning-skill.md](../../docs/specs/2026-05-09-spike-as-planning-skill.md) for design rationale.
 
 ## At a glance
 
 ```
-/spike [epic description]                   Research spike \u2014 decompose into N tickets
+/spike <epic description>                   Epic mode \u2014 multi-ticket research + decomposition
+/spike story <ticket>                       Story mode \u2014 single-ticket planning \u2192 freeze doc
+/spike research <topic>                     Research mode \u2014 standalone investigation
+/spike --revisit <freeze-or-research-doc>   Re-open an APPROVED doc for amendment
 /spike --retro EPIC-ID                      Post-merge design-pattern retro
 
-/implement [ticket-or-feature]              Single-ticket implementation (interactive)
-/implement --autonomous TICKET-123          Single-ticket implementation (autonomous)
-/implement --from N                         Resume at phase N
-/implement --status                         Show session status
-/implement init | review | test | docs      Standalone workflows
+/implement <freeze-doc-path>                Pure execution against APPROVED freeze doc
+/implement --from N <freeze-doc-path>       Resume at E<N> (1=E1, 2=E2, 3=E3)
+/implement --status <freeze-doc-path>       Status print
 ```
 
-`/implement` full cycle: **7 phases (plus Phase 0 prereq check for spike-sourced tickets), 2 user gates, multi-agent consensus at every step.**
+`/implement` v5 \u2014 **pure execution**, 3 phases (E1\u2013E3), 1 user gate (GATE 2):
 
 ```
-0. Prereq check           (spike-sourced only; reads ticket ref doc, enforces hard blockers)
-1. Requirements           (populates freeze doc \u00a71, \u00a75, \u00a76)
-2. Research               (populates freeze doc \u00a72-\u00a74, \u00a77, \u00a78)
-3. Plan + Freeze Doc   \u2192  \ud83d\udeaa GATE 1
-[freeze-gate hook ACTIVE \u2014 src/** edits blocked unless freeze doc APPROVED]
-4. Test Planning
-5. Implementation + Layer 1 Review  (multi-agent consensus, 10 max / 2 zero)
-6. Verification + Layer 2 Review
-7. Documentation + PR + bi-dir plan update + Mistake Capture \u2192  \ud83d\udeaa GATE 2
+[Startup: parse freeze doc \u2192 verify status=APPROVED \u2192 verify approvedHash \u2192 resolve SESSION_DIR
+         \u2192 verify \u00a711 Prerequisites \u2192 write active-freeze-doc.txt pointer \u2192 begin E1]
+E1 Execute          (TDD against freeze doc plan; freeze-gate hook enforces hash + prereqs on src/** edits)
+E2 Verify           (full test suite + Layer 1 / Layer 2 multi-agent consensus reviews)
+E3 Finalize         (docs + PR + mistake capture \u2192 \ud83d\udeaa GATE 2)
 [push-guard hook \u2014 blocks git push until GATE 2 approved]
 ```
 
-`/spike` 5-phase workflow:
+`/spike` v5 \u2014 **universal planning**, 7 phases (P1\u2013P7); mode dictates depth:
 
 ```
-1. Requirements review      (multi-feature; NFR + rollout/rollback)
-2. System design            (epic architecture + observability + API contracts + migration chain)
-3. Ticket decomposition     (one-at-a-time; hard/soft impl and deploy blockers)
-4. Cross-ticket gap review  (multi-agent consensus) \u2192 human signoff
-5. Retro (async)            (fires when all spike tickets reach merged)
+P1. Scope            (mode detection; epic/story/research routing)
+P2. Investigate      (dispatch research-investigator agents; capture findings + Doc-vs-Reality)
+P3. Decompose        (Epic only \u2014 break into tickets with DAG ordering)
+P4. Spec             (author freeze doc \u00a71\u2013\u00a711 OR research doc; compute approvedHash)
+P5. Review           (multi-agent consensus, severity-gated \u2014 Critical/Major block; Minor/Nit \u2192 backlog)
+P6. Approve          (GATE 1 \u2014 user approval; status: APPROVED + approvedHash sealed)
+P7. Retro            (async; design-pattern capture after all merges)
 ```
 
 ## Why this plugin
@@ -84,7 +88,7 @@ The three existing state files (`progress-log.json`, `decision-log.json`, `pipel
 
 ### Phase YAML + dispatcher
 
-Each phase's metadata (requiredRefs, emits, invokes, produces, gates, budget, **instructions checklist**) lives in `phases/phase-N.yaml`. SKILL.md contains narrative prose. The dispatcher preamble reads both: YAML answers *what to do now*; SKILL.md answers *why and how to think about it*.
+Each phase's metadata (requiredRefs, emits, invokes, produces, gates, budget, **instructions checklist**) lives in `phases/{spike,implement}/<phase-id>.yaml`. SKILL.md contains narrative prose. The dispatcher preamble reads both: YAML answers *what to do now*; SKILL.md answers *why and how to think about it*.
 
 ### Uniform tool dispatch
 
@@ -162,20 +166,27 @@ plugins/dev-framework/
 ├── CLAUDE.md                     Plugin structure + config docs
 ├── README.md                     This file
 ├── .claude-plugin/
-│   └── plugin.json               Manifest (v3.0.0)
+│   └── plugin.json               Manifest (v5.0.0)
 ├── commands/
-│   └── dev.md                    Only command — routes to dev skill
-├── agents/                       6 review/plan agents
-├── phases/                       (v3.0+) phase YAML metadata
+│   ├── spike.md                  Routes to spike skill (universal planning)
+│   ├── implement.md              Routes to implement skill (pure execution; freeze-doc-path required)
+│   └── testbuilder.md            Routes to testbuilder skill (standalone testing)
+├── agents/                       Shared review/plan agents + research-investigator
+├── phases/                       Phase YAML metadata, split by skill (v5)
 │   ├── README.md                         schema spec
-│   └── phase-1.yaml..phase-7.yaml        per-phase metadata + instructions
+│   ├── spike/p1-scope..p7-retro.yaml     /spike phase metadata
+│   └── implement/e1-execute..e3-finalize.yaml  /implement phase metadata
 ├── hooks/
 │   ├── hooks.json
-│   └── scripts/                  v1 hooks + v3 primitives (14 total)
+│   └── scripts/                  v1 hooks + M1-M4 primitives + v5 freeze-doc-hash/prereqs
 └── skills/
-    └── dev/                      The one skill
-        ├── SKILL.md              Orchestrator narrative
-        └── references/           methodology / standards / templates / protocols / autonomous
+    ├── spike/                    Universal planning (epic / story / research / --revisit)
+    │   ├── SKILL.md              Orchestrator narrative (P1–P7)
+    │   └── references/           guardrails / templates / protocols / autonomous
+    ├── implement/                Pure execution (E1 Execute / E2 Verify / E3 Finalize)
+    │   ├── SKILL.md              Orchestrator narrative (E1–E3 + 7-step startup)
+    │   └── references/           methodology / standards / templates / protocols / autonomous
+    └── testbuilder/              Standalone testing workflow
 ```
 
 ### Hook scripts (v3.0.0)
@@ -304,6 +315,7 @@ External skills the default config references (all optional — phase operates i
 - **v2.0** — consolidated to 7-phase cycle with freeze-doc enforcement + 2 user gates
 - **v3.0** \u2014 **Managed Agents architecture**: event log, views, wake, replay, phase YAML + instructions, uniform tool dispatch, modelProfile, multi-brain fan-out. Non-breaking for existing `/dev` behavior.
 - **v4.0** \u2014 **Workflow split into `/spike` + `/implement`**; `/dev` retired. Epic-scoped session folder (MA invariant: many brains share many hands). Plan docs in-repo under `docs/plan/{epic}/` with bi-directional plan\u2194ticket reference updates via append-only events. Retro-per-skill (code patterns in `/implement`, design patterns in `/spike`). See [docs/specs/2026-04-21-spike-implement-split.md](../../docs/specs/2026-04-21-spike-implement-split.md).
+- **v5.0** \u2014 **Planning vs. execution split.** `/spike` becomes the universal planning skill (Epic / Story / Research / `--revisit` modes). `/implement` becomes pure execution against an APPROVED, hash-locked freeze doc (E1 Execute / E2 Verify / E3 Finalize). Freeze docs carry `approvedHash` (sha256 over canonical body) + `\u00a711 Prerequisites` (DAG-derived); `freeze-gate.sh` verifies both on every src/** edit. See [docs/specs/2026-05-09-spike-as-planning-skill.md](../../docs/specs/2026-05-09-spike-as-planning-skill.md).
 
 See `docs/specs/2026-04-20-managed-agents-evolution.md` and the four milestone plans in `docs/plans/` for the evolution rationale and scorecard (68/80 — all 8 principles ≥8).
 

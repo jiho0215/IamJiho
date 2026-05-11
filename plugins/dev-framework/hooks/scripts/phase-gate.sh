@@ -81,17 +81,61 @@ emit_passed() {
   bash "$SCRIPT_DIR/emit-event.sh" gate.passed --actor "hook:phase-gate" --data "$data" 2>/dev/null || true
 }
 
-# --- Phase name lookup (unified /implement 7-phase workflow) ---
+# --- Phase name lookup (v5 — skill-aware) ---
+# Callers pass SKILL env var ("spike" or "implement"). Default is "implement"
+# for backward compatibility with v4-numeric callers (phases 5-7 mapped to E1-E3).
+# v5 /spike uses phases 1-7 (P1 Scope … P7 Retro); v5 /implement uses phases 5-7
+# (legacy numbering retained for gate compatibility; mapped to E1 Execute / E2 Verify / E3 Finalize).
+SKILL="${SKILL:-implement}"
+
 phase_name() {
+  local n="$1"
+  case "${SKILL}:${n}" in
+    spike:1) echo "P1 Scope" ;;
+    spike:2) echo "P2 Investigate" ;;
+    spike:3) echo "P3 Decompose" ;;
+    spike:4) echo "P4 Spec" ;;
+    spike:5) echo "P5 Review" ;;
+    spike:6) echo "P6 Approve (GATE 1)" ;;
+    spike:7) echo "P7 Retro" ;;
+    implement:5) echo "E1 Execute" ;;
+    implement:6) echo "E2 Verify" ;;
+    implement:7) echo "E3 Finalize (GATE 2)" ;;
+    # Legacy v4 numeric (only reachable if a stale v4 in-flight session resumes)
+    implement:1) echo "Phase 1 (v4 legacy: Requirements — moved to /spike P1)" ;;
+    implement:2) echo "Phase 2 (v4 legacy: Research — moved to /spike P2)" ;;
+    implement:3) echo "Phase 3 (v4 legacy: Plan + Freeze — moved to /spike P4)" ;;
+    implement:4) echo "Phase 4 (v4 legacy: Test Planning — moved to /spike P4)" ;;
+    *) echo "Phase $n" ;;
+  esac
+}
+
+# --- v5 phase YAML resolution ------------------------------------------------
+# v5 reorganized phase YAMLs under per-skill subdirs:
+#   plugins/dev-framework/phases/spike/p{1..5}-*.yaml
+#   plugins/dev-framework/phases/implement/{p1..p4,e1..e3}-*.yaml
+# Resolves a phase YAML path by skill + phase_id. Caller passes
+# SKILL ("spike" or "implement") and a phase_id like "p1-scope" or "e1-execute".
+resolve_phase_yaml() {
+  local skill="$1" phase_id="$2"   # phase_id like "p1-scope" or "e1-execute"
+  local candidate="${CLAUDE_PLUGIN_ROOT}/phases/${skill}/${phase_id}.yaml"
+  [ -f "$candidate" ] && { echo "$candidate"; return 0; }
+  echo "ERROR: phase YAML not found: $candidate" >&2
+  return 1
+}
+
+# Legacy phase-number -> v5 skill+phase mapping. Use ONLY for error messages on
+# v4 in-flight session resume attempts; the actual phase files are gone.
+# v4 phases 1-4 (Requirements/Research/Plan+Freeze/Test-Planning) were spike-side
+# planning concerns and have been folded into phases/spike/. v4 phases 5-7
+# (Implementation/Verification/Docs) map cleanly to phases/implement/ e1-e3.
+v4_to_v5_phase() {
   case "$1" in
-    1) echo "Requirements" ;;
-    2) echo "Research" ;;
-    3) echo "Plan + Freeze Doc (GATE 1)" ;;
-    4) echo "Test Planning" ;;
-    5) echo "Implementation + Layer 1 Review" ;;
-    6) echo "Verification + Layer 2 Review" ;;
-    7) echo "Documentation + Mistake Capture (GATE 2)" ;;
-    *) echo "Unknown" ;;
+    1|2|3|4)  echo "spike-LEGACY (content moved to phases/spike/; cannot resume v4 session)" ;;
+    5) echo "implement e1-execute" ;;
+    6) echo "implement e2-verify" ;;
+    7) echo "implement e3-finalize" ;;
+    *) return 1 ;;
   esac
 }
 

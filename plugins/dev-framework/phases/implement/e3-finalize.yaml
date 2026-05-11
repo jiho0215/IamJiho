@@ -1,6 +1,6 @@
-phase: 7
-name: "Documentation + Mistake Capture (GATE 2)"
-skillMdSection: "Phase 7 — Documentation + Mistake Capture → GATE 2"
+id: implement.e3
+name: Finalize
+skillMdSection: "E3 Finalize"
 
 requiredRefs:
   - protocols/project-docs.md

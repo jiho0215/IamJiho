@@ -1,6 +1,6 @@
-phase: 5
-name: "Implementation + Layer 1 Review"
-skillMdSection: "Phase 5 — Implementation + Layer 1 Review"
+id: implement.e1
+name: Execute
+skillMdSection: "E1 Execute"
 
 requiredRefs:
   - standards/RESULT_PATTERN.md

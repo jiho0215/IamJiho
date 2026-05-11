@@ -1,0 +1,17 @@
+id: spike.p2
+name: Investigate
+purpose: Architecture / research; dispatch research-investigator on blocking deps
+primaryAgent: architect
+secondaryAgents: [research-investigator]
+modes: [epic, story, research]
+inputs:
+  - scopeDoc
+outputs:
+  - architectureNotes
+  - researchOutputs    # array; one per research dispatched
+emits:
+  - spike.phase.2.started
+  - research.dispatched      # zero or more
+  - research.redispatched    # on resume after crash
+  - research.completed       # zero or more (emitted by child agent)
+  - spike.phase.2.completed

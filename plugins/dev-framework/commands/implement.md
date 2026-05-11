@@ -8,10 +8,20 @@ allowed-tools: Read, Write, Edit, Glob, Grep, Bash, TodoWrite, AskUserQuestion, 
 
 You are launching the dev-framework **implement** workflow.
 
+Pure execution. Reads an APPROVED freeze doc produced by `/spike` and runs E1/E2/E3.
+
 Initial request: $ARGUMENTS
 
-Use the Skill tool to invoke the `dev-framework:implement` skill, passing along the user's request. The skill contains the full 7-phase workflow (plus Phase 0 prereq check for spike-sourced tickets), routing logic, agent orchestration, and reference documentation.
+Use the Skill tool to invoke the `dev-framework:implement` skill, passing along the user's request. v5: pure execution. Reads APPROVED freeze doc -> E1 Execute -> E2 Verify -> E3 Finalize. freeze-doc-path required.
 
-If no arguments were provided, the skill will detect the appropriate workflow from project context (spike ticket ref doc, bare branch, or empty cwd) and user intent.
+## Usage
+
+| Invocation | Behavior |
+|---|---|
+| `/implement <freeze-doc-path>` | Start E1 against the given freeze doc |
+| `/implement --from <N> <freeze-doc-path>` | Resume at phase E<N> (1=E1, 2=E2, 3=E3) |
+| `/implement --status <freeze-doc-path>` | Status print |
+
+The freeze-doc-path is REQUIRED. If you do not have one, run `/spike story <ticket>` (or `/spike <epic>`) first to produce one. The freeze doc must have `status: APPROVED`; v5 also requires `approvedHash` to match the canonical body.
 
 For multi-ticket research and decomposition, use `/dev-framework:spike` instead.

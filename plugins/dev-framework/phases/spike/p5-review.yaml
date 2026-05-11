@@ -1,0 +1,13 @@
+id: spike.p5
+name: Review
+purpose: Multi-agent consensus on artifacts (gaps, completeness, edge cases)
+primaryAgent: code-quality-reviewer
+secondaryAgents: [observability-reviewer, performance-reviewer, test-strategist]
+modes: [epic, story]    # skipped in research mode
+inputs:
+  - freezeDocs OR spikePlanDoc
+outputs:
+  - reviewBacklog    # docs/plan/{epic-or-slug}/review-backlog.md
+emits:
+  - spike.phase.5.started
+  - spike.phase.5.completed
