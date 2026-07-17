@@ -46,7 +46,9 @@ if [ -f "$SPEC" ]; then
   # Within §5 startup-checks block, the line for "Resolve SESSION_DIR" must
   # appear before "Verify §11 Prerequisites" (i.e., SESSION_DIR ordinal < §11 ordinal).
   SESSDIR_LINE=$(grep -n 'Resolve \*\*SESSION_DIR\*\*\|Resolve `SESSION_DIR`\|Resolve SESSION_DIR' "$SPEC" | head -1 | cut -d: -f1)
-  PREREQ_LINE=$(grep -n 'Verify .11 Prerequisites' "$SPEC" | head -1 | cut -d: -f1)
+  # -F, not a '.' wildcard: § is two bytes, so '.' matched only half of it and this
+  # grep always came up empty — which killed the test under set -e + pipefail.
+  PREREQ_LINE=$(grep -nF 'Verify §11 Prerequisites' "$SPEC" | head -1 | cut -d: -f1)
   if [ -n "${SESSDIR_LINE:-}" ] && [ -n "${PREREQ_LINE:-}" ]; then
     [ "$SESSDIR_LINE" -lt "$PREREQ_LINE" ] \
       || fail "spec §5 step order not amended (SESSION_DIR must precede §11 Prerequisites)"

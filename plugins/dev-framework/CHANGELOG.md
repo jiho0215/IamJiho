@@ -4,6 +4,17 @@ All notable changes to the `dev-framework` plugin.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows [SemVer](https://semver.org/).
 
+## [5.0.1] - 2026-07-16
+
+### Fixed
+
+- `/dev-framework:implement`, `/dev-framework:spike` and `/dev-framework:testbuilder` never loaded their skill. Each had a same-named command wrapper, and the harness treats a rendered command as the loaded skill — so the wrapper's body was injected instead of `SKILL.md`, and the follow-up Skill call was deduped as already-loaded. The workflow never started; re-invoking returned the wrapper again.
+- `tests/v5/sweep.test.sh` could never pass: its `Verify .11 Prerequisites` grep used `.` for `§`, which is two bytes, so the match came up empty and `set -e` + `pipefail` killed the test at the assignment — before the `[ -n ]` guard written to handle that case. The v5 suite was already red on `main`. The spec itself was correct; only the pattern was wrong.
+
+### Removed
+
+- `commands/implement.md`, `commands/spike.md`, `commands/testbuilder.md`. Each only forwarded to the same-named skill, which it shadowed. Skills are slash-invocable on their own, so `/dev-framework:<name>` now resolves straight to `skills/<name>/SKILL.md` — the invocation is unchanged.
+
 ## [5.0.0] - 2026-05-09
 
 ### Breaking
