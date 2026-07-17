@@ -43,7 +43,7 @@ grep -q 'version: 3' "$PR/skills/spike/SKILL.md" || fail "spike SKILL.md not v3"
 grep -q 'version: 2' "$PR/skills/implement/SKILL.md" || fail "implement SKILL.md not v2"
 
 # 7. Plugin meta
-grep -q '"version": "5.0.0"' "$PR/.claude-plugin/plugin.json" || fail "plugin.json not 5.0.0"
+grep -q '"version": "5.0.1"' "$PR/.claude-plugin/plugin.json" || fail "plugin.json not 5.0.1"
 
 # 8. Run all v5 task tests
 for t in "$PR/tests/v5/"*.test.sh; do
