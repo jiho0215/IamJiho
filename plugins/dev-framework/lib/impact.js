@@ -80,16 +80,29 @@ function decisionViolations(coreDir, config, base, head) {
   return out;
 }
 
-function leaseViolations(coreDir, config, pr, base, head, files) {
+// The lease is judged against the LIVE tip of origin/<plan.branch> (fetched fresh), not the PR's base sha.
+function fetchTip(coreDir, config) {
+  const b = config.plan.branch || 'main';
+  try { git(coreDir, ['fetch', '-q', 'origin', `+refs/heads/${b}:refs/remotes/origin/${b}`]); } catch (e) {
+    throw new PlanError(`cannot fetch origin ${b} (the lease must be read fresh): ${String(e.stderr || e.message).trim()}`);
+  }
+  return `origin/${b}`;
+}
+
+function leaseViolations(coreDir, config, pr, base, head, files, tip) {
   const file = `${config.plan.path}/START-HERE.md`;
   const line1 = (ref) => String(gitShow(coreDir, ref, file) || '').split('\n')[0];
-  const touched = files.some((f) => f === file);
-  if (touched && line1(base) !== line1(head)) return []; // a handoff: the PR itself moves the lease
-  const held = parseLeaseLine(line1(base));
-  if (!held) return ['lease-unreadable-at-base'];
+  const live = parseLeaseLine(line1(tip));
+  if (!live) return ['lease-unreadable-on-live'];
+  // A handoff: the PR itself moves line 1 to a valid lease line with a NEW token.
+  if (files.some((f) => f === file) && line1(base) !== line1(head)) {
+    const next = parseLeaseLine(line1(head));
+    if (!next) return ['lease-line-invalid'];
+    if (next.token !== live.token) return [];
+  }
   const m = /^\s*lease:\s*([0-9a-f]{16})\s*$/m.exec(String(pr.body || '').replace(/\r/g, ''));
   if (!m) return ['lease-missing'];
-  return m[1] === held.token ? [] : ['lease-mismatch'];
+  return m[1] === live.token ? [] : ['lease-mismatch'];
 }
 
 const claimNo = (name) => { const m = /^t\/(\d+)-/.exec(name); return m ? Number(m[1]) : null; };
@@ -126,21 +139,23 @@ function findAffected(gh, config, changed) {
   return [...issues, ...prs, ...branches];
 }
 
+// issue number -> normalized "(ID@hash, ...)" text of every ticked line
 function ticked(commentBody) {
-  const set = new Set();
+  const map = new Map();
   for (const line of String(commentBody || '').replace(/\r/g, '').split('\n')) {
-    const m = /^- \[[xX]\] #(\d+)\b/.exec(line);
-    if (m) set.add(Number(m[1]));
+    const m = /^- \[[xX]\] #(\d+) \((.*)\)\s*$/.exec(line);
+    if (m) map.set(Number(m[1]), m[2].split(',').map((s) => s.trim()).filter(Boolean).sort().join(', '));
   }
-  return set;
+  return map;
 }
+const setKey = (a, hashes) => a.ids.map((id) => `${id}@${hashes.get(id) || 'removed'}`).sort().join(', ');
 
-function renderComment(changed, affected, done, violations) {
+function renderComment(changed, affected, isDone, violations, hashes) {
   const lines = [MARKER, '## Plan impact', '', `Changed items: ${changed.length ? changed.join(', ') : 'none'}`, ''];
   const issues = affected.filter((a) => a.kind === 'issue');
   if (issues.length) {
     lines.push('Tick each box once the ticket has been acked or updated for this change:');
-    for (const a of issues) lines.push(`- [${done.has(a.issue) ? 'x' : ' '}] #${a.issue} (${a.ids.join(', ')})`);
+    for (const a of issues) lines.push(`- [${isDone(a) ? 'x' : ' '}] #${a.issue} (${setKey(a, hashes)})`);
     lines.push('');
   }
   const prs = affected.filter((a) => a.kind === 'pr');
@@ -166,20 +181,21 @@ function impact(o, config, gh) {
 
   const violations = [
     ...decisionViolations(o.coreDir, config, base, head),
-    ...leaseViolations(o.coreDir, config, pr, base, head, files),
+    ...leaseViolations(o.coreDir, config, pr, base, head, files, fetchTip(o.coreDir, config)),
   ];
   const affected = findAffected(gh, config, changed);
 
   const comments = gh.paginate(`repos/${planRepo}/issues/${o.pr}/comments`);
   const existing = comments.find((c) => String(c.body || '').replace(/\r/g, '').split('\n')[0] === MARKER);
-  const done = existing ? ticked(existing.body) : new Set();
-  const pending = affected.filter((a) => a.kind === 'issue' && !done.has(a.issue)).length;
+  const done = existing ? ticked(existing.body) : new Map();
+  const isDone = (a) => done.get(a.issue) === setKey(a, after);
+  const pending = affected.filter((a) => a.kind === 'issue' && !isDone(a)).length;
   const result = { changed, affected, violations, pending };
 
   if (o.apply) {
     let writes = 0;
     const w = (method, p, body) => { if (writes++ > 0) sleepMs(config.github.writeDelayMs); return gh.api(method, p, body); };
-    const text = renderComment(changed, affected, done, violations);
+    const text = renderComment(changed, affected, isDone, violations, after);
     if (existing) w('PATCH', `repos/${planRepo}/issues/comments/${existing.id}`, { body: text });
     else w('POST', `repos/${planRepo}/issues/${o.pr}/comments`, { body: text });
     const bad = pending > 0 || violations.length > 0;

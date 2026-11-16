@@ -41,13 +41,22 @@ function coreRepo() {
   g('init', '-q', '-b', 'main'); g('config', 'user.email', 'a@acme.test'); g('config', 'user.name', 'a');
   g('add', '-A'); g('commit', '-qm', 'base');
   const base = g('rev-parse', 'HEAD').trim();
+  const bare = mkdtempSync(join(tmpdir(), 'devfw-imp-origin-'));
+  execFileSync('git', ['init', '-q', '--bare', bare]);
+  g('remote', 'add', 'origin', bare); g('push', '-q', 'origin', 'main');
+  g('checkout', '-q', '-b', 'pr');
   const edit = (file, from, to) => {
     const t = readFileSync(p(file), 'utf8');
     assert.ok(t.includes(from), `seed text missing: ${from}`);
     writeFileSync(p(file), t.replace(from, to));
   };
   const commit = () => { g('add', '-A'); g('commit', '-qm', 'head'); return g('rev-parse', 'HEAD').trim(); };
-  return { dir, base, edit, commit };
+  // The plan branch moves on after the PR was opened (e.g. a handoff commit on main).
+  const advanceMain = (file, from, to) => {
+    g('checkout', '-q', 'main'); edit(file, from, to);
+    g('add', '-A'); g('commit', '-qm', 'main moves'); g('push', '-q', 'origin', 'main'); g('checkout', '-q', 'pr');
+  };
+  return { dir, base, edit, commit, advanceMain };
 }
 
 const issue = (number, id, cites, state = 'open') => ({
@@ -179,8 +188,8 @@ test('--apply twice: one POST then one PATCH, ticked box survives, status follow
   assert.equal(posts.length, 1);
   const text = posts[0].body.body;
   assert.equal(text.split('\n')[0], '<!-- devfw:impact -->');
-  assert.match(text, /- \[ \] #11 \(P-0-3\)/);
-  assert.match(text, /- \[ \] #12 \(P-0-4\)/);
+  assert.match(text, /- \[ \] #11 \(P-0-3@[0-9a-f]{12}\)/);
+  assert.match(text, /- \[ \] #12 \(P-0-4@[0-9a-f]{12}\)/);
   const st = writes(first.calls).find((c) => c.path === `repos/acme/core/statuses/${head}`);
   assert.equal(st.body.state, 'failure');
   assert.equal(st.body.context, 'devfw/plan-impact');
@@ -196,7 +205,7 @@ test('--apply twice: one POST then one PATCH, ticked box survives, status follow
   assert.equal(patch.length, 1);
   assert.equal(patch[0].path, 'repos/acme/core/issues/comments/901');
   assert.match(patch[0].body.body, /- \[x\] #11/);
-  assert.match(patch[0].body.body, /- \[ \] #12/);
+  assert.match(patch[0].body.body, /- \[ \] #12 \(P-0-4@/);
   assert.equal(second.result.pending, 1);
   assert.equal(w2.find((c) => c.path.includes('/statuses/')).body.state, 'failure');
 });
@@ -205,7 +214,9 @@ test('commit status: success when every box is ticked and nothing violates', () 
   const core = coreRepo();
   core.edit('PLAN.md', 'Disable Swagger in production builds.', 'Disable Swagger everywhere.');
   const head = core.commit();
-  const existing = [{ id: 901, body: '<!-- devfw:impact -->\n- [x] #12 (P-0-4)\n' }];
+  const first = go(core, world(core, head), ['--apply']);
+  const body = writes(first.calls).find((c) => c.path.endsWith('/comments')).body.body;
+  const existing = [{ id: 901, body: body.replace('- [ ]', '- [x]') }];
   const { exitCode, result, calls } = go(core, world(core, head, { comments: existing }), ['--apply']);
   assert.equal(result.pending, 0);
   assert.equal(exitCode, 0);
@@ -217,4 +228,47 @@ test('dry run writes nothing', () => {
   core.edit('PLAN.md', 'Disable Swagger in production builds.', 'Disable Swagger everywhere.');
   const head = core.commit();
   assert.deepEqual(writes(go(core, world(core, head)).calls), []);
+});
+
+test('fix1: lease is checked against the LIVE tip of the plan branch, not the PR base', () => {
+  const core = coreRepo();
+  core.edit('PLAN.md', 'Disable Swagger in production builds.', 'Disable Swagger everywhere.');
+  const head = core.commit();
+  core.advanceMain('START-HERE.md', LEASE, 'orchestrator: 00000000000000bb · box2 · since 2026-11-17T00:00:00Z');
+  assert.deepEqual(go(core, world(core, head, { body: `lease: ${TOKEN}` })).result.violations, ['lease-mismatch']);
+  assert.deepEqual(go(core, world(core, head, { body: 'lease: 00000000000000bb' })).result.violations, []);
+});
+
+test('fix2: a tick holds only for the exact (ID, hash) set it was made for', () => {
+  const core = coreRepo();
+  core.edit('PLAN.md', 'Disable Swagger in production builds.', 'Disable Swagger everywhere.');
+  const head1 = core.commit();
+  const first = go(core, world(core, head1), ['--apply']);
+  const text = writes(first.calls).find((c) => c.path.endsWith('/comments')).body.body;
+  const ticked = text.replace('- [ ]', '- [x]');
+  const same = go(core, world(core, head1, { comments: [{ id: 901, body: ticked }] }));
+  assert.equal(same.result.pending, 0);
+
+  core.edit('DECISIONS.md', 'rule: b\n', 'rule: b\n- superseded-by: D-12\n');
+  const head2 = core.commit();
+  const second = go(core, world(core, head2, { comments: [{ id: 901, body: ticked }] }), ['--apply']);
+  assert.deepEqual(second.result.violations, []);
+  assert.deepEqual(second.result.affected[0].ids, ['D-8', 'P-0-4']);
+  assert.equal(second.result.pending, 1);
+  const w = writes(second.calls);
+  assert.match(w.find((c) => c.method === 'PATCH').body.body, /- \[ \] #12 \(D-8@[0-9a-f]{12}, P-0-4@[0-9a-f]{12}\)/);
+  assert.equal(w.find((c) => c.path.includes('/statuses/')).body.state, 'failure');
+});
+
+test('fix3: a handoff must leave a valid lease line with a new token', () => {
+  const core = coreRepo();
+  core.edit('START-HERE.md', LEASE, 'orchestrator: whatever');
+  const head = core.commit();
+  const r = go(core, world(core, head, { body: 'no lease', files: ['docs/plan/START-HERE.md'] })).result;
+  assert.deepEqual(r.violations, ['lease-line-invalid']);
+  // A valid line carrying the SAME token as live is not a handoff either.
+  const same = coreRepo();
+  same.edit('START-HERE.md', 'box1', 'box9');
+  const hs = same.commit();
+  assert.deepEqual(go(same, world(same, hs, { body: 'no lease', files: ['docs/plan/START-HERE.md'] })).result.violations, ['lease-missing']);
 });
