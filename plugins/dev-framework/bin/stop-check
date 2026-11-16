@@ -1,0 +1,81 @@
+#!/bin/bash
+# stop-check --ledger <file.jsonl> --stage <name>
+# Decides whether a fix/review loop should continue, judged on PROGRESS, never on a round count.
+# Prints {"code","reason","round"[,"checkIn":true]}.
+# Codes, in precedence order: failed, continue (no rounds), gate_required, env, solved,
+#   stalled (a) tree unchanged by a fix round, (b) tree returned A->B->A,
+#           (c) one failing test signature in 3 consecutive rounds,
+#           (d) a blocking finding returned after it was fixed,
+#           (e) blocking set did not shrink for 2 rounds,
+#   exhausted (>= 2x budget AND no progress over the last 2 rounds), else continue.
+# checkIn:true from round 5 on while continuing: an owner check-in, not a stop.
+# Exit: 0 continue, 10 any stop code, 1 failed, 2 usage.
+set -euo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_lib.sh"
+devfw_require jq
+
+LEDGER=""; STAGE=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --ledger) LEDGER="${2:-}"; shift 2 || shift ;;
+    --stage) STAGE="${2:-}"; shift 2 || shift ;;
+    *) devfw_die 2 "unknown argument: $1" ;;
+  esac
+done
+[ -n "$LEDGER" ] && [ -n "$STAGE" ] || devfw_die 2 "usage: stop-check --ledger <file> --stage <name>"
+[ -f "$LEDGER" ] || devfw_die 2 "no such ledger: $LEDGER"
+
+if ! OUT=$(jq -cs --arg st "$STAGE" '
+  def has_all: (.round != null) and (.tree != null) and (.blocking != null);
+  def fl: (.failing // []);
+  def inarr($x): any(.[]; . == $x);
+
+  [ .[] | select(.stage == $st) ] | sort_by(.round) as $r
+  | ($r | length) as $n
+  | (if $n > 0 then $r[-1].round else 0 end) as $rn
+  | def out($c; $why): {code: $c, reason: $why, round: $rn};
+
+  if any($r[]; has_all | not) then out("failed"; "a ledger round lacks round, tree or blocking")
+  elif $n == 0 then out("continue"; "no rounds yet")
+  else
+    $r[-1] as $last
+    | if ($last.gate // false) then out("gate_required"; "drift check requires owner re-approval")
+      elif ($last.env // false) then out("env"; "environment failure")
+      elif ($last.blocking | length) == 0 and ($last | fl | length) == 0 then out("solved"; "no blocking findings, no failing tests")
+      elif $n >= 2 and $last.tree == $r[-2].tree then out("stalled"; "stalled(a): fix round left tree \($last.tree) unchanged")
+      elif $n >= 3 and any($r[0:$n-2][]; .tree == $last.tree) then out("stalled"; "stalled(b): tree \($last.tree) returned")
+      elif $n >= 3 and ([ $last | fl | .[] as $s | select(($r[-2] | fl | inarr($s)) and ($r[-3] | fl | inarr($s))) ] | length) > 0
+        then ([ $last | fl | .[] as $s | select(($r[-2] | fl | inarr($s)) and ($r[-3] | fl | inarr($s))) ][0]) as $s
+             | out("stalled"; "stalled(c): \"\($s)\" failed 3 rounds")
+      elif ([ $last.blocking[] as $id
+              | ([ range(0; $n - 1) | select($r[.].blocking | inarr($id)) ] | first) as $j
+              | select($j != null and any(range($j + 1; $n - 1); ($r[.].blocking | inarr($id)) | not))
+              | $id ] | length) > 0
+        then ([ $last.blocking[] as $id
+                | ([ range(0; $n - 1) | select($r[.].blocking | inarr($id)) ] | first) as $j
+                | select($j != null and any(range($j + 1; $n - 1); ($r[.].blocking | inarr($id)) | not))
+                | $id ][0]) as $id
+             | out("stalled"; "stalled(d): finding \($id) returned after it was fixed")
+      elif $n >= 3 and ($last.blocking | length) >= ($r[-2].blocking | length)
+                   and ($r[-2].blocking | length) >= ($r[-3].blocking | length)
+        then out("stalled"; "stalled(e): blocking set did not shrink for 2 rounds (\($r[-3].blocking | length)->\($r[-2].blocking | length)->\($last.blocking | length))")
+      elif $n >= 3
+           and ((($last.toolCalls // 0) >= 2 * ($last.budget.toolCalls // infinite))
+                or (($last.tokens // 0) >= 2 * ($last.budget.tokens // infinite)))
+           and (($last.blocking | length) + ($last | fl | length))
+               >= (($r[-3].blocking | length) + ($r[-3] | fl | length))
+        then out("exhausted"; "over 2x budget with no progress in the last 2 rounds")
+      else out("continue"; "progressing") + (if $n >= 5 then {checkIn: true} else {} end)
+      end
+  end
+' "$(devfw_path "$LEDGER")" 2>/dev/null | tr -d '\r'); then
+  jq -cn '{code:"failed", reason:"ledger is not valid JSON lines", round:0}'
+  exit 1
+fi
+
+echo "$OUT"
+case "$(jq -r .code <<<"$OUT" | tr -d '\r')" in
+  continue) exit 0 ;;
+  failed) exit 1 ;;
+  *) exit 10 ;;
+esac
