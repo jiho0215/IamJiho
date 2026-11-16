@@ -1,0 +1,28 @@
+#!/bin/bash
+# plan-hash <file>...  Print "<ID> <hash12>" for every "### <ID> · title" item, sorted by ID.
+# The hash ignores CR, the ticket: line, and whitespace layout, so it moves only on real content edits.
+set -euo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_lib.sh"
+devfw_require awk sha256sum
+[ $# -ge 1 ] || devfw_die 2 "usage: plan-hash <file>..."
+for f in "$@"; do [ -f "$f" ] || devfw_die 2 "no such file: $f"; done
+
+awk '
+  function flush() { if (id != "") printf "%s\t%s%c", id, text, 0; id = ""; text = "" }
+  { sub(/\r$/, "") }
+  /^## / { flush(); next }
+  /^### / {
+    flush()
+    if ($2 ~ /^[A-Z]+(-[a-z0-9]+)*-[0-9]+$/) id = $2
+  }
+  id == "" { next }
+  /^[ \t]*ticket:/ { next }
+  {
+    line = $0
+    gsub(/[ \t]+/, " ", line); sub(/^ /, "", line); sub(/ $/, "", line)
+    if (line != "") text = text line "\n"
+  }
+  END { flush() }
+' "$@" | while IFS=$'\t' read -r -d '' id text; do
+  printf '%s %s\n' "$id" "$(printf '%s' "$text" | sha256sum | cut -c1-12)"
+done | LC_ALL=C sort
