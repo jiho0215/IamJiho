@@ -1,9 +1,11 @@
 #!/bin/bash
-# pr-size --planned <file.json> | --diff <base>..<head> --repo-dir <path>
+# pr-size --planned <file.json> | --files <file.json> | --diff <base>..<head> --repo-dir <path>
 # Estimates human read time of a PR from weighted changed lines and prints one JSON object:
 #   {"files","weightedLines","seconds","budget","limit","verdict":"ok|over"}
 # Weights: added logic 1.0, added test 0.3, added config 0.3, deleted 0.3; risk paths x3;
 # generated files and pure renames score 0 and are not counted as files.
+# --files takes the planned shape or the GitHub pulls/<n>/files shape (filename, additions, deletions, status;
+# a renamed file with 0/0 scores nothing) and compares against the full budget.
 # Planned mode compares against budget x planTarget; diff mode against the full budget.
 # Exit: 0 ok, 5 over, 2 usage.
 set -euo pipefail
@@ -15,13 +17,14 @@ MODE=""; ARG=""; REPO="."
 while [ $# -gt 0 ]; do
   case "$1" in
     --planned) MODE=planned; ARG="${2:-}"; shift 2 || shift ;;
+    --files) MODE=files; ARG="${2:-}"; shift 2 || shift ;;
     --diff) MODE=diff; ARG="${2:-}"; shift 2 || shift ;;
     --repo-dir) REPO="${2:-}"; shift 2 || shift ;;
     --core-dir) export DEVFW_CORE="$(devfw_path "${2:-}")"; shift 2 || shift ;;
     *) devfw_die 2 "unknown argument: $1" ;;
   esac
 done
-[ -n "$MODE" ] && [ -n "$ARG" ] || devfw_die 2 "usage: pr-size --planned <file.json> | --diff <base>..<head> --repo-dir <path> [--core-dir <path>]"
+[ -n "$MODE" ] && [ -n "$ARG" ] || devfw_die 2 "usage: pr-size --planned <file.json> | --files <file.json> | --diff <base>..<head> --repo-dir <path> [--core-dir <path>]"
 
 SPF=$(devfw_config '.prSize.secondsPerFile' 20)
 SPL=$(devfw_config '.prSize.secondsPerLine' 1.5)
@@ -60,7 +63,7 @@ kind_of() {
 ROWS=""  # path<TAB>kind<TAB>added<TAB>deleted<TAB>risk(0|1)
 add_row() { local r=0; matches "$1" "${RISK_G[@]}" && r=1; ROWS+="$1"$'\t'"$2"$'\t'"$3"$'\t'"$4"$'\t'"$r"$'\n'; }
 
-if [ "$MODE" = planned ]; then
+if [ "$MODE" = planned ] || [ "$MODE" = files ]; then
   [ -f "$ARG" ] || devfw_die 2 "no such file: $ARG"
   # Unit separator, not tab: tab is whitespace to `read`, so an empty kind would collapse and
   # shift "added" into the kind column.
@@ -72,9 +75,11 @@ if [ "$MODE" = planned ]; then
       *) devfw_die 2 "unknown kind \"$k\" for $p (logic|test|config|generated)" ;;
     esac
     add_row "$p" "$k" "$a" "$d"
-  done < <(jq -r '.[] | [.path, (.kind // ""), (.added // 0), (.deleted // 0)] | map(tostring) | join("\u001f")' \
+  done < <(jq -r '.[] | select((.status // "") != "renamed" or ((.additions // .added // 0) + (.deletions // .deleted // 0)) > 0)
+             | [(.path // .filename), (.kind // ""), (.added // .additions // 0), (.deleted // .deletions // 0)] | map(tostring) | join("\u001f")' \
              "$(devfw_path "$ARG")" | tr -d '\r')
-  LIMIT=$(awk -v b="$BUDGET" -v t="$TARGET" 'BEGIN { printf "%g", b * t }')
+  if [ "$MODE" = files ]; then LIMIT="$BUDGET"
+  else LIMIT=$(awk -v b="$BUDGET" -v t="$TARGET" 'BEGIN { printf "%g", b * t }'); fi
 else
   REPO=$(devfw_path "$REPO")
   while IFS=$'\t' read -r a d p; do

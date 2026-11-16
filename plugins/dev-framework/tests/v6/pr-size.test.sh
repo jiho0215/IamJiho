@@ -78,4 +78,17 @@ set +e; OUT=$(cd "$TMP/cwd" && env -u DEVFW_CONFIG "$PS" --planned "$TMP/p.json"
 expect cwd-ignored "$OUT" .weightedLines 100
 set +e; OUT=$(env -u DEVFW_CONFIG "$PS" --planned "$TMP/p.json" --core-dir "$TMP/core"); RC=$?; set -e
 expect core-dir "$OUT" .weightedLines 300
+
+# --files: planned shape or GitHub pulls/<n>/files shape; limit is the full budget, not budget x planTarget
+echo '[{"filename":"src/a.cs","additions":250,"deletions":0,"status":"modified"}]' > "$TMP/f.json"
+set +e; OUT=$("$PS" --files "$TMP/f.json"); RC=$?; set -e
+expect files-gh "$OUT" .seconds 395; expect files-gh "$OUT" .limit 300; expect files-gh "$OUT" .verdict over
+[ $RC -eq 5 ] || { echo "FAIL: --files over rc $RC, want 5"; exit 1; }
+echo '[{"path":"src/a.cs","kind":"logic","added":100,"deleted":0}]' > "$TMP/f.json"
+OUT=$("$PS" --files "$TMP/f.json"); expect files-planned "$OUT" .limit 300; expect files-planned "$OUT" .seconds 170
+# a renamed file with 0/0 scores nothing and is not counted; a renamed file with edits does count
+echo '[{"filename":"src/a.cs","additions":100,"deletions":0,"status":"modified"},{"filename":"src/b.cs","additions":0,"deletions":0,"status":"renamed"}]' > "$TMP/f.json"
+OUT=$("$PS" --files "$TMP/f.json"); expect files-rename "$OUT" .files 1
+echo '[{"filename":"src/b.cs","additions":3,"deletions":1,"status":"renamed"}]' > "$TMP/f.json"
+OUT=$("$PS" --files "$TMP/f.json"); expect files-rename-edit "$OUT" .files 1
 echo ok
