@@ -191,19 +191,30 @@ function postMerge(o, config, gh) {
   }
 
   const created = [];
-  if (o.apply && staleMerges.length) {
+  const NL = String.fromCharCode(10);
+  const todo = [
+    ...staleMerges.map((s) => ({
+      title: `merged-stale: ${s.repo}#${s.pr}`,
+      body: ['PR ' + s.repo + '#' + s.pr + ' was merged against a plan it did not satisfy, judged at its merge time.', '', ...s.reasons.map((x) => `- ${x}`), ''].join(NL),
+    })),
+    ...unverifiable.map((u) => ({
+      title: `merged-unverifiable: ${u.repo}#${u.pr}`,
+      body: ['PR ' + u.repo + '#' + u.pr + ' was merged but could not be judged against the plan at its merge time.', '', `Reason: ${u.reason}`, ''].join(NL),
+    })),
+  ];
+
+  if (o.apply && todo.length) {
     const open = new Set(gh.paginate(`repos/${planRepo}/issues?state=open&labels=merged-stale`).filter((i) => !i.pull_request).map((i) => i.title));
     let writes = 0;
-    for (const s of staleMerges) {
-      const title = `merged-stale: ${s.repo}#${s.pr}`;
-      if (open.has(title)) continue;
+    for (const t of todo) {
+      if (open.has(t.title)) continue;
       if (writes++ > 0) sleepMs(config.github.writeDelayMs);
-      const text = `PR ${s.repo}#${s.pr} was merged against a plan it did not satisfy, judged at its merge time.\n\n${s.reasons.map((x) => `- ${x}`).join('\n')}\n`;
-      gh.api('POST', `repos/${planRepo}/issues`, { title, body: text, labels: ['merged-stale'] });
-      open.add(title); created.push(title);
+      gh.api('POST', `repos/${planRepo}/issues`, { title: t.title, body: t.body, labels: ['merged-stale'] });
+      open.add(t.title); created.push(t.title);
     }
   }
-  return { exitCode: 0, result: { staleMerges, unverifiable, created } };
+  // 9 = something merged that is stale or could not be verified; 0 only when both lists are empty.
+  return { exitCode: staleMerges.length || unverifiable.length ? 9 : 0, result: { staleMerges, unverifiable, created } };
 }
 
 function run({ argv, gh, env = process.env }) {

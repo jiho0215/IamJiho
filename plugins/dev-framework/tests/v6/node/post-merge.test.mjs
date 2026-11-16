@@ -169,3 +169,42 @@ test('dry run (no --apply) never writes', () => {
   assert.equal(result.staleMerges.length, 1);
   assert.deepEqual(calls.filter((x) => x.method !== 'GET'), []);
 });
+
+test('exit codes: clean run 0; one stale PR 9 (dry run and apply alike)', () => {
+  const c = core();
+  assert.equal(go(c, routes(c, [pr(50, 12, c.hashes1.get('P-0-4'))])).exitCode, 0);
+  assert.equal(go(c, routes(c, [pr(50, 12, 'cccccccccccc')])).exitCode, 9);
+  assert.equal(go(c, routes(c, [pr(50, 12, 'cccccccccccc')]), ['--apply']).exitCode, 9);
+});
+
+test('unverifiable (origin unreachable): --apply opens one merged-unverifiable issue per PR, exit 9, idempotent', () => {
+  const c = core();
+  execFileSync('git', ['-C', c.dir, 'remote', 'set-url', 'origin', join(tmpdir(), 'devfw-no-such-origin')]);
+  const prs = [pr(50, 12, c.hashes1.get('P-0-4')), pr(51, 5, c.hashes1.get('P-0-4'))];
+  const dry = go(c, routes(c, prs));
+  assert.equal(dry.exitCode, 9);
+  assert.equal(dry.result.unverifiable.length, 2);
+  assert.deepEqual(dry.calls.filter((x) => x.method !== 'GET'), []);
+  const first = go(c, routes(c, prs), ['--apply']);
+  assert.equal(first.exitCode, 9);
+  const posts = first.calls.filter((x) => x.method === 'POST');
+  assert.deepEqual(posts.map((p) => p.body.title).sort(), ['merged-unverifiable: acme/api#50', 'merged-unverifiable: acme/api#51']);
+  for (const p of posts) { assert.deepEqual(p.body.labels, ['merged-stale']); assert.match(p.body.body, /cannot fetch origin main/); }
+  const existing = posts.map((p, i) => ({ number: 90 + i, title: p.body.title, state: 'open', labels: [{ name: 'merged-stale' }] }));
+  const second = go(c, routes(c, prs, { issues: existing }), ['--apply']);
+  assert.equal(second.calls.filter((x) => x.method === 'POST').length, 0);
+  assert.equal(second.exitCode, 9);
+});
+
+test('ack cutoff: an ack dated before merged_at clears a stale cite; the same ack dated after does not', () => {
+  const c = core();
+  // The plan at merge time is day 3; the PR cites the day-1 hash, so it is stale unless acked.
+  const p = pr(50, 12, c.hashes1.get('P-0-4'));
+  const ack = (when) => [{ body: `ack 12 ${c.day3}: P-0-4 text only`, created_at: when, issue_url: 'https://api.github.com/repos/acme/core/issues/12' }];
+  const mk = (when) => { const r = routes(c, [p], { sha: c.day3 }); r['GET repos/acme/core/issues/12/comments'] = ack(when); return r; };
+  const before = go(c, mk(iso(13)));
+  assert.deepEqual(before.result.staleMerges, [], 'ack predating the merge covers it');
+  const after = go(c, mk(iso(2)));
+  assert.equal(after.result.staleMerges.length, 1, 'ack added after the merge must not count');
+  assert.match(after.result.staleMerges[0].reasons.join('|'), /no covering ack/);
+});
