@@ -45,4 +45,12 @@ check five-productive continue 0
 
 { STAGE=verify R 1 v1 '["z"]'; R 1 t1 '["a","b"]'; STAGE=verify R 2 v1 '["z"]'; R 2 t2 '["a"]'; } > "$L"
 check other-stage-ignored continue 0
+
+# Important 1: lines without a top-level stage (e.g. an emit-event envelope) must fail, not continue
+{ echo '{"seq":1,"type":"loop.round","data":{"stage":"review","round":1,"tree":"t1","blocking":["F1"]}}'
+  echo '{"seq":2,"type":"loop.round","data":{"stage":"review","round":2,"tree":"t1","blocking":["F1"]}}'; } > "$L"
+check envelope failed 1
+# Important 2: an empty blocking set is not "did not shrink"; a test-fix loop that is progressing continues
+{ R 1 t1 '[]' '["a|1","b|1","c|1","d|1"]'; R 2 t2 '[]' '["e|2","f|2"]'; R 3 t3 '[]' '["g|3"]'; } > "$L"
+check verify-progressing continue 0
 echo ok

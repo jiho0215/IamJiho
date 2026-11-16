@@ -24,9 +24,18 @@ devfw_require() {  # devfw_require <tool>...
   done
 }
 
-devfw_config() {  # devfw_config <jq-path> <default>; reads $DEVFW_CONFIG or ./orchestrator.json
-  local file="${DEVFW_CONFIG:-./orchestrator.json}" v
-  if [ -f "$file" ]; then
+devfw_branch_ok() {  # devfw_branch_ok <name> <what>; refuses option-shaped or invalid branch names
+  case "$1" in -*|"") devfw_die 2 "invalid $2: '$1'" ;; esac
+  git check-ref-format --branch "$1" >/dev/null 2>&1 || devfw_die 2 "invalid $2: '$1'"
+}
+
+# Config lives in the project's core repo: $DEVFW_CONFIG if set, else $DEVFW_CORE/orchestrator.json
+# (scripts set DEVFW_CORE from --core-dir). It is never read from the current directory, so
+# running a script from an unrelated folder cannot silently pick up, or silently miss, a config.
+devfw_config() {  # devfw_config <jq-path> <default>
+  local file="${DEVFW_CONFIG:-}" v
+  [ -n "$file" ] || { [ -n "${DEVFW_CORE:-}" ] && file="$DEVFW_CORE/orchestrator.json"; }
+  if [ -n "$file" ] && [ -f "$file" ]; then
     # Native jq.exe on Windows ends lines with CRLF; strip CR so values compare and match cleanly.
     v=$(jq -c "$1 // empty" "$(devfw_path "$file")" 2>/dev/null | tr -d '\r') || devfw_die 2 "unreadable config: $file"
     if [ -n "$v" ]; then

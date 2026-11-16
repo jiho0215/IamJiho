@@ -58,13 +58,13 @@ for round in 1 2 3; do
   rm -f "$TMP"/race.*
   for i in 1 2 3 4 5 6 7 8; do
     if [ $((i % 2)) -eq 0 ]; then r=a; c=ca; else r=b; c=cb; fi
-    ( set +e; "$CLAIM" 43 "race$round" --repo-dir "$TMP/$r" --base main --core-dir "$TMP/$c" > "$TMP/race.$i.out" 2>/dev/null; echo $? > "$TMP/race.$i.rc" ) &
+    ( set +e; "$CLAIM" "$((round * 100 + 43))" "race$round" --repo-dir "$TMP/$r" --base main --core-dir "$TMP/$c" > "$TMP/race.$i.out" 2>/dev/null; echo $? > "$TMP/race.$i.rc" ) &
   done
   wait
-  WIN=$(grep -l '^0$' "$TMP"/race.*.rc | wc -l); LOSE=$(grep -l '^3$' "$TMP"/race.*.rc | wc -l)
+  WIN=$(cat "$TMP"/race.*.rc | grep -c "^0$" || true); LOSE=$(cat "$TMP"/race.*.rc | grep -c "^3$" || true)
   [ "$WIN" -eq 1 ] && [ "$LOSE" -eq 7 ] || { echo "FAIL: race$round win=$WIN lose=$LOSE (rcs: $(cat "$TMP"/race.*.rc | tr '\n' ' '))"; exit 1; }
   WSHA=$(jq -r .sha "$(grep -l '^0$' "$TMP"/race.*.rc | sed 's/\.rc$/.out/')")
-  [ "$(git -C "$TMP/a" ls-remote origin "refs/heads/t/43-race$round" | cut -f1)" = "$WSHA" ] || { echo "FAIL: race$round remote sha != winner"; exit 1; }
+  [ "$(git -C "$TMP/a" ls-remote origin "refs/heads/t/$((round * 100 + 43))-race$round" | cut -f1)" = "$WSHA" ] || { echo "FAIL: race$round remote sha != winner"; exit 1; }
 done
 
 # bad slug
@@ -74,4 +74,32 @@ set +e; "$CLAIM" 44 Bad_Slug --repo-dir "$TMP/a" --base main >/dev/null 2>&1; rc
 # checkout untouched
 [ "$(git -C "$TMP/a" rev-parse HEAD)" = "$HEAD_A" ] || { echo "FAIL: HEAD moved"; exit 1; }
 [ "$(git -C "$TMP/a" status --porcelain)" = "$ST_A" ] || { echo "FAIL: working tree changed"; exit 1; }
+
+# Important 7: leading zeros rejected; a second slug for the same issue loses
+set +e; "$CLAIM" 052 x --repo-dir "$TMP/a" --base main >/dev/null 2>&1; rc=$?; set -e
+[ "$rc" -eq 2 ] || { echo "FAIL: leading-zero issue exit $rc, want 2"; exit 1; }
+"$CLAIM" 52 x --repo-dir "$TMP/a" --base main >/dev/null
+set +e; OUT=$("$CLAIM" 52 y --repo-dir "$TMP/b" --base main); rc=$?; set -e
+[ "$rc" -eq 3 ] || { echo "FAIL: second slug for issue 52 exit $rc, want 3: $OUT"; exit 1; }
+
+# Important 8: an option-shaped --base must be refused before it reaches git
+set +e; "$CLAIM" 53 inj --repo-dir "$TMP/a" --base '--upload-pack=touch PWNED;git-upload-pack' >/dev/null 2>&1; rc=$?; set -e
+[ "$rc" -eq 2 ] || { echo "FAIL: injected base exit $rc, want 2"; exit 1; }
+[ ! -e "$TMP/a/PWNED" ] && [ ! -e PWNED ] || { echo "FAIL: --base executed a command"; exit 1; }
+
+# Important 9: no git identity configured (a CI runner's default) still claims with JSON, exit 0
+set +e
+OUT=$(env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL \
+  HOME="$TMP/nohome" GIT_CONFIG_GLOBAL="$TMP/nohome/none" GIT_CONFIG_NOSYSTEM=1 \
+  "$CLAIM" 54 noid --repo-dir "$TMP/a" --base main 2>/dev/null); rc=$?
+set -e
+[ "$rc" -eq 0 ] && [ "$(jq -r .result <<<"$OUT")" = claimed ] || { echo "FAIL: no-identity claim exit $rc: $OUT"; exit 1; }
+
+# Important 3: a server-side refusal with no ref on origin is a failure (1), not "lost" (3)
+g init -q --bare "$TMP/hooked.git"
+printf '#!/bin/sh\nexit 1\n' > "$TMP/hooked.git/hooks/pre-receive"; chmod +x "$TMP/hooked.git/hooks/pre-receive"
+g clone -q "$TMP/origin.git" "$TMP/h" 2>/dev/null; g -C "$TMP/h" remote set-url origin "$TMP/hooked.git"
+g -C "$TMP/h" push -q --no-verify "$TMP/hooked.git" main 2>/dev/null || { rm "$TMP/hooked.git/hooks/pre-receive"; g -C "$TMP/h" push -q origin main; printf '#!/bin/sh\nexit 1\n' > "$TMP/hooked.git/hooks/pre-receive"; chmod +x "$TMP/hooked.git/hooks/pre-receive"; }
+set +e; OUT=$("$CLAIM" 55 refused --repo-dir "$TMP/h" --base main 2>/dev/null); rc=$?; set -e
+[ "$rc" -eq 1 ] || { echo "FAIL: server refusal exit $rc, want 1: $OUT"; exit 1; }
 echo ok

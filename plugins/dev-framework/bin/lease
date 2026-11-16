@@ -18,9 +18,11 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$CORE" ] && [ -d "$CORE" ] || devfw_die 2 "usage: lease <show|mine|check|take> --core-dir <path>"
 CORE=$(devfw_path "$CORE")
+export DEVFW_CORE="$CORE"
 
 PLAN_PATH=$(devfw_config '.plan.path' 'docs/plan')
 BRANCH=$(devfw_config '.plan.branch' 'main')
+devfw_branch_ok "$BRANCH" "plan.branch"
 LOCAL="$CORE/.orchestrator/lease"
 LINE_RE='^orchestrator: ([0-9a-f]{16}) · (.+) · since ([0-9TZ:-]{20})$'
 

@@ -49,4 +49,15 @@ OUT=$(DEVFW_CONFIG="$TMP/cfg.json" "$LEASE" show --core-dir "$TMP/core") || { ec
 g -C "$TMP/core" rm -qf docs/plan/START-HERE.md; g -C "$TMP/core" commit -qm rm; g -C "$TMP/core" push -q origin main
 set +e; "$LEASE" show --core-dir "$TMP/core" >/dev/null 2>&1; rc=$?; set -e
 [ "$rc" -eq 3 ] || { echo "FAIL: show without file exit $rc, want 3"; exit 1; }
+
+# Important 6: lease reads <core-dir>/orchestrator.json without DEVFW_CONFIG
+g -C "$TMP/core" checkout -q -- . 2>/dev/null || true
+echo '{"plan":{"path":".plan"}}' > "$TMP/core/orchestrator.json"
+OUT=$(env -u DEVFW_CONFIG "$LEASE" show --core-dir "$TMP/core") || { echo "FAIL: lease ignored core-dir config"; exit 1; }
+[ "$(jq -r .token <<<"$OUT")" = "00000000000000cc" ] || { echo "FAIL: core-dir config show: $OUT"; exit 1; }
+# Important 8: an option-shaped plan.branch is refused before it reaches git
+echo '{"plan":{"branch":"--upload-pack=touch PWNED;git-upload-pack"}}' > "$TMP/core/orchestrator.json"
+set +e; env -u DEVFW_CONFIG "$LEASE" show --core-dir "$TMP/core" >/dev/null 2>&1; rc=$?; set -e
+[ "$rc" -eq 2 ] || { echo "FAIL: injected plan.branch exit $rc, want 2"; exit 1; }
+[ ! -e "$TMP/core/PWNED" ] && [ ! -e PWNED ] || { echo "FAIL: plan.branch executed a command"; exit 1; }
 echo ok

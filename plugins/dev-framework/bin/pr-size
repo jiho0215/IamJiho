@@ -17,20 +17,29 @@ while [ $# -gt 0 ]; do
     --planned) MODE=planned; ARG="${2:-}"; shift 2 || shift ;;
     --diff) MODE=diff; ARG="${2:-}"; shift 2 || shift ;;
     --repo-dir) REPO="${2:-}"; shift 2 || shift ;;
+    --core-dir) export DEVFW_CORE="$(devfw_path "${2:-}")"; shift 2 || shift ;;
     *) devfw_die 2 "unknown argument: $1" ;;
   esac
 done
-[ -n "$MODE" ] && [ -n "$ARG" ] || devfw_die 2 "usage: pr-size --planned <file.json> | --diff <base>..<head> --repo-dir <path>"
+[ -n "$MODE" ] && [ -n "$ARG" ] || devfw_die 2 "usage: pr-size --planned <file.json> | --diff <base>..<head> --repo-dir <path> [--core-dir <path>]"
 
 SPF=$(devfw_config '.prSize.secondsPerFile' 20)
 SPL=$(devfw_config '.prSize.secondsPerLine' 1.5)
 BUDGET=$(devfw_config '.prSize.budgetSeconds' 300)
 TARGET=$(devfw_config '.prSize.planTarget' 0.8)
-globs() { jq -r '.[]' <<<"$(devfw_config ".prSize.$1" "$2")" | tr -d '\r'; }
-mapfile -t TEST_G < <(globs testGlobs '["**/*Tests/**","**/*.test.*","**/*.spec.*","**/tests/**","**/__tests__/**"]')
-mapfile -t CONF_G < <(globs configGlobs '["**/*.json","**/*.yml","**/*.yaml","**/*.csproj","**/*.config","**/*.props"]')
-mapfile -t RISK_G < <(globs riskGlobs '[]')
-mapfile -t GEN_G < <(globs generatedGlobs '["**/*.lock","**/package-lock.json","**/Migrations/*.Designer.cs","**/__snapshots__/**"]')
+globs() {  # globs <key> <default-json>: one glob per line; a non-array config value is refused
+  local v; v=$(devfw_config ".prSize.$1" "$2")
+  jq -e 'type == "array" and all(.[]; type == "string")' <<<"$v" >/dev/null 2>&1 \
+    || devfw_die 2 "prSize.$1 must be an array of glob strings"
+  jq -r '.[]' <<<"$v" | tr -d '\r'
+}
+# Read through a variable, not "< <(...)", so a refused config stops the script (set -e
+# does not see a failure inside process substitution).
+load() { local out; out=$(globs "$2" "$3") || exit $?; mapfile -t "$1" <<<"$out"; }
+load TEST_G testGlobs '["**/*Tests/**","**/*.test.*","**/*.spec.*","**/tests/**","**/__tests__/**"]'
+load CONF_G configGlobs '["**/*.json","**/*.yml","**/*.yaml","**/*.csproj","**/*.config","**/*.props"]'
+load RISK_G riskGlobs '[]'
+load GEN_G generatedGlobs '["**/*.lock","**/package-lock.json","**/Migrations/*.Designer.cs","**/__snapshots__/**"]'
 
 matches() {  # matches <path> <glob>...; "**/" also matches at the root
   local p="$1" g; shift
@@ -53,10 +62,18 @@ add_row() { local r=0; matches "$1" "${RISK_G[@]}" && r=1; ROWS+="$1"$'\t'"$2"$'
 
 if [ "$MODE" = planned ]; then
   [ -f "$ARG" ] || devfw_die 2 "no such file: $ARG"
-  while IFS=$'\t' read -r p k a d; do
+  # Unit separator, not tab: tab is whitespace to `read`, so an empty kind would collapse and
+  # shift "added" into the kind column.
+  while IFS=$'\x1f' read -r p k a d; do
     [ -n "$p" ] || continue
+    case "$k" in
+      "") k=$(kind_of "$p") ;;                      # no kind given: detect from globs
+      logic|test|config|generated) ;;
+      *) devfw_die 2 "unknown kind \"$k\" for $p (logic|test|config|generated)" ;;
+    esac
     add_row "$p" "$k" "$a" "$d"
-  done < <(jq -r '.[] | [.path, .kind, (.added // 0), (.deleted // 0)] | @tsv' "$(devfw_path "$ARG")" | tr -d '\r')
+  done < <(jq -r '.[] | [.path, (.kind // ""), (.added // 0), (.deleted // 0)] | map(tostring) | join("\u001f")' \
+             "$(devfw_path "$ARG")" | tr -d '\r')
   LIMIT=$(awk -v b="$BUDGET" -v t="$TARGET" 'BEGIN { printf "%g", b * t }')
 else
   REPO=$(devfw_path "$REPO")

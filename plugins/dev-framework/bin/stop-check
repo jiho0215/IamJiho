@@ -30,12 +30,14 @@ if ! OUT=$(jq -cs --arg st "$STAGE" '
   def fl: (.failing // []);
   def inarr($x): any(.[]; . == $x);
 
-  [ .[] | select(.stage == $st) ] | sort_by(.round) as $r
+  (all(.[]; type == "object" and (.stage | type) == "string")) as $flat
+  | [ .[] | select(.stage == $st) ] | sort_by(.round) as $r
   | ($r | length) as $n
   | (if $n > 0 then $r[-1].round else 0 end) as $rn
   | def out($c; $why): {code: $c, reason: $why, round: $rn};
 
-  if any($r[]; has_all | not) then out("failed"; "a ledger round lacks round, tree or blocking")
+  if ($flat | not) then out("failed"; "a ledger line has no top-level stage (an emit-event envelope?); the ledger must be flat round lines")
+  elif any($r[]; has_all | not) then out("failed"; "a ledger round lacks round, tree or blocking")
   elif $n == 0 then out("continue"; "no rounds yet")
   else
     $r[-1] as $last
@@ -56,7 +58,8 @@ if ! OUT=$(jq -cs --arg st "$STAGE" '
                 | select($j != null and any(range($j + 1; $n - 1); ($r[.].blocking | inarr($id)) | not))
                 | $id ][0]) as $id
              | out("stalled"; "stalled(d): finding \($id) returned after it was fixed")
-      elif $n >= 3 and ($last.blocking | length) >= ($r[-2].blocking | length)
+      elif $n >= 3 and ($last.blocking | length) > 0
+                   and ($last.blocking | length) >= ($r[-2].blocking | length)
                    and ($r[-2].blocking | length) >= ($r[-3].blocking | length)
         then out("stalled"; "stalled(e): blocking set did not shrink for 2 rounds (\($r[-3].blocking | length)->\($r[-2].blocking | length)->\($last.blocking | length))")
       elif $n >= 3

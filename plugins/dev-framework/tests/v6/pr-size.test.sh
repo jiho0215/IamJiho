@@ -55,4 +55,27 @@ expect difftest "$OUT" .weightedLines 3
 
 set +e; "$PS" --bogus >/dev/null 2>&1; RC=$?; set -e
 [ $RC -eq 2 ] || { echo "FAIL: bad args rc $RC"; exit 1; }
+
+# Important 4: a missing or empty kind falls back to glob detection; an unknown kind is refused
+planned '[{"path":"src/a.cs","added":100}]'
+expect nokind "$OUT" .weightedLines 100
+planned '[{"path":"src/a.cs","kind":"","added":100}]'
+expect emptykind "$OUT" .weightedLines 100
+planned '[{"path":"src/a.cs","kind":"Logic","added":100}]'
+[ $RC -eq 2 ] || { echo "FAIL: unknown kind exit $RC, want 2"; exit 1; }
+
+# Important 5: a glob list that is not an array is refused, not ignored
+echo '{"prSize":{"riskGlobs":"src/auth/**"}}' > "$TMP/badrisk.json"
+echo '[{"path":"src/auth/x.cs","kind":"logic","added":100,"deleted":0}]' > "$TMP/p.json"
+set +e; DEVFW_CONFIG="$TMP/badrisk.json" "$PS" --planned "$TMP/p.json" >/dev/null 2>&1; RC=$?; set -e
+[ $RC -eq 2 ] || { echo "FAIL: string riskGlobs exit $RC, want 2"; exit 1; }
+
+# Important 6: config comes from --core-dir, never from the current directory
+mkdir -p "$TMP/core" "$TMP/cwd"
+echo '{"prSize":{"riskGlobs":["src/auth/**"]}}' > "$TMP/core/orchestrator.json"
+echo '{"prSize":{"riskGlobs":["src/auth/**"]}}' > "$TMP/cwd/orchestrator.json"
+set +e; OUT=$(cd "$TMP/cwd" && env -u DEVFW_CONFIG "$PS" --planned "$TMP/p.json"); set -e
+expect cwd-ignored "$OUT" .weightedLines 100
+set +e; OUT=$(env -u DEVFW_CONFIG "$PS" --planned "$TMP/p.json" --core-dir "$TMP/core"); RC=$?; set -e
+expect core-dir "$OUT" .weightedLines 300
 echo ok
