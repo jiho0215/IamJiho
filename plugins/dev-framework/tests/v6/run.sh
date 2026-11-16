@@ -6,4 +6,5 @@ for t in "$DIR"/*.test.sh; do
   name=$(basename "$t")
   if out=$(bash "$t" 2>&1); then echo "PASS $name"; else echo "FAIL $name"; echo "$out" | tail -5 | sed 's/^/    /'; fail=1; fi
 done
+if out=$(cd "$DIR/node" && node --test *.test.mjs 2>&1); then echo "PASS node"; else echo "FAIL node"; echo "$out" | tail -5 | sed 's/^/    /'; fail=1; fi
 exit $fail
