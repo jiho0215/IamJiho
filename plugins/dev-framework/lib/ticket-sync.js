@@ -6,6 +6,7 @@ const { execFileSync } = require('node:child_process');
 const { loadConfig, ConfigError } = require('./config');
 const { parsePlan, planHashes, PlanError } = require('./plan');
 const { renderBody } = require('./ticket-body');
+const { readIssues, sleepMs } = require('./plan-issues');
 
 const COLORS = { plan: 'ededed', epic: 'c5def5', stage: '0e8a16', kind: 'fbca04', state: 'd93f0b', repo: '5319e7' };
 const EXTRA_LABELS = [
@@ -30,10 +31,6 @@ function parseArgs(argv) {
 
 function gitOut(coreDir, args) {
   return execFileSync('git', ['-C', coreDir, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-}
-
-function sleepMs(ms) {
-  if (ms > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
 // Unified-style line diff: "-" = on GitHub now, "+" = what the plan renders. Unchanged lines are omitted.
@@ -69,22 +66,6 @@ function repoLabel(item, config) {
   return (r && r.label) || item.repo;
 }
 const labelColor = (name) => COLORS[name.split(':')[0]] || COLORS.plan;
-
-function readIssues(gh, planRepo) {
-  const byId = new Map();
-  const all = gh.paginate(`repos/${planRepo}/issues?state=all`).filter((i) => !i.pull_request);
-  const planIds = [];
-  for (const iss of all) {
-    const l = (iss.labels || []).map((x) => (typeof x === 'string' ? x : x.name)).find((n) => n && n.startsWith('plan:'));
-    if (!l) continue;
-    planIds.push([l.slice(5), iss]);
-  }
-  for (const [id, iss] of planIds) {
-    const cur = byId.get(id);
-    if (!cur || (cur.state !== 'open' && iss.state === 'open')) byId.set(id, iss);
-  }
-  return { byId, planIds };
-}
 
 function readProject(gh, config) {
   const { owner, number } = config.project;
