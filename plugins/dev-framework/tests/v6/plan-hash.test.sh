@@ -33,6 +33,20 @@ NEW=$("$PH" "$TMP/word.md")
 [ "$(echo "$NEW" | grep -v '^P-core-1 ')" = "$(echo "$BASE" | grep -v '^P-core-1 ')" ] \
   || { echo "FAIL: body edit moved other items"; exit 1; }
 
+# list-form "- ticket:" churn does not move any hash; "- kind:" edit moves only its item
+LF="$DIR/fixtures/PLAN-list.md"
+LBASE=$("$PH" "$LF")
+[ "$(echo "$LBASE" | wc -l)" -eq 3 ] || { echo "FAIL: list fixture expected 3 items, got: $LBASE"; exit 1; }
+sed '0,/^- ticket: —$/s||- ticket: acme/core#12|' "$LF" > "$TMP/lticket.md"
+grep -q '^- ticket: acme/core#12$' "$TMP/lticket.md" || { echo "FAIL: list ticket sed did not apply"; exit 1; }
+[ "$("$PH" "$TMP/lticket.md")" = "$LBASE" ] || { echo "FAIL: list-form ticket: change moved a hash"; exit 1; }
+sed '0,/^- kind: code$/s||- kind: doc|' "$LF" > "$TMP/lkind.md"
+LNEW=$("$PH" "$TMP/lkind.md")
+[ "$(echo "$LNEW" | grep '^P-0-3 ')" != "$(echo "$LBASE" | grep '^P-0-3 ')" ] \
+  || { echo "FAIL: kind edit did not move P-0-3"; exit 1; }
+[ "$(echo "$LNEW" | grep -v '^P-0-3 ')" = "$(echo "$LBASE" | grep -v '^P-0-3 ')" ] \
+  || { echo "FAIL: kind edit moved other items"; exit 1; }
+
 # missing file
 set +e; "$PH" "$TMP/missing.md" 2>/dev/null; rc=$?; set -e
 [ "$rc" -eq 2 ] || { echo "FAIL: missing file exit $rc, want 2"; exit 1; }
