@@ -1,0 +1,72 @@
+#!/bin/bash
+# lease <show|mine|check|take> --core-dir <path>
+# The orchestrator lease is line 1 of <plan.path>/START-HERE.md on origin/<plan.branch>:
+#   orchestrator: <16 hex> · <machine> · since <UTC ISO>
+# The local holder's token lives in <core-dir>/.orchestrator/lease (never committed).
+# Exit: 0 ok, 2 usage, 3 missing lease line or local token, 4 token mismatch (check).
+set -euo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_lib.sh"
+devfw_require git jq
+
+SUB="${1:-}"; shift || true
+CORE=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --core-dir) CORE="$2"; shift 2 ;;
+    *) devfw_die 2 "unknown argument: $1" ;;
+  esac
+done
+[ -n "$CORE" ] && [ -d "$CORE" ] || devfw_die 2 "usage: lease <show|mine|check|take> --core-dir <path>"
+CORE=$(devfw_path "$CORE")
+
+PLAN_PATH=$(devfw_config '.plan.path' 'docs/plan')
+BRANCH=$(devfw_config '.plan.branch' 'main')
+LOCAL="$CORE/.orchestrator/lease"
+LINE_RE='^orchestrator: ([0-9a-f]{16}) · (.+) · since ([0-9TZ:-]{20})$'
+
+remote_line() {  # prints line 1 of origin's START-HERE.md, or exits 3
+  git -C "$CORE" fetch -q origin "$BRANCH" || devfw_die 1 "fetch failed"
+  local l
+  l=$(git -C "$CORE" show "origin/$BRANCH:$PLAN_PATH/START-HERE.md" 2>/dev/null | head -1 | tr -d '\r') \
+    || devfw_die 3 "no $PLAN_PATH/START-HERE.md on origin/$BRANCH"
+  [[ "$l" =~ $LINE_RE ]] || devfw_die 3 "line 1 of START-HERE.md is not a lease line"
+  echo "$l"
+}
+
+local_token() {
+  [ -s "$LOCAL" ] || devfw_die 3 "no local lease token at $LOCAL"
+  tr -d '\r\n ' < "$LOCAL"
+}
+
+case "$SUB" in
+  show)
+    l=$(remote_line); [[ "$l" =~ $LINE_RE ]]
+    jq -cn --arg t "${BASH_REMATCH[1]}" --arg m "${BASH_REMATCH[2]}" --arg s "${BASH_REMATCH[3]}" \
+      --arg sha "$(git -C "$CORE" rev-parse "origin/$BRANCH")" \
+      '{token:$t, machine:$m, since:$s, sha:$sha}'
+    ;;
+  mine)
+    local_token; echo
+    ;;
+  check)
+    l=$(remote_line); [[ "$l" =~ $LINE_RE ]]; remote="${BASH_REMATCH[1]}"
+    mine=$(local_token)
+    [ "$mine" = "$remote" ] || devfw_die 4 "lease mismatch: local $mine, origin/$BRANCH holds $remote"
+    ;;
+  take)
+    file="$CORE/$PLAN_PATH/START-HERE.md"
+    [ -f "$file" ] || devfw_die 3 "no working-tree $file"
+    tok=$(od -An -tx1 -N8 /dev/urandom | tr -d ' \n')
+    line="orchestrator: $tok · $(hostname) · since $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    mkdir -p "$CORE/.orchestrator"
+    echo "$tok" > "$LOCAL"
+    if head -1 "$file" | tr -d '\r' | grep -Eq "$LINE_RE"; then
+      { echo "$line"; tail -n +2 "$file"; } > "$file.tmp"
+    else
+      { echo "$line"; echo; cat "$file"; } > "$file.tmp"
+    fi
+    mv "$file.tmp" "$file"
+    echo "$tok"
+    ;;
+  *) devfw_die 2 "usage: lease <show|mine|check|take> --core-dir <path>" ;;
+esac

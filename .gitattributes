@@ -1,0 +1,2 @@
+plugins/dev-framework/bin/** text eol=lf
+plugins/dev-framework/tests/v6/** text eol=lf
