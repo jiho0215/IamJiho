@@ -7,12 +7,14 @@ const { parseCites } = require('./ticket-body');
 const { readIssues, sleepMs, labelNames } = require('./plan-issues');
 const { ackCovers } = require('./acks');
 const { deriveState, staleCites } = require('./state');
+const gate = require('./gate');
 
 function parseArgs(argv) {
-  const o = { apply: false, ref: '', coreDir: '' };
+  const o = { apply: false, ref: '', coreDir: '', postMerge: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--apply') o.apply = true;
+    else if (a === '--post-merge') o.postMerge = true;
     else if (a === '--core-dir') o.coreDir = argv[++i];
     else if (a === '--ref') o.ref = argv[++i];
     else throw new ConfigError(`unknown argument: ${a}`);
@@ -134,12 +136,82 @@ function reconcile(o, config, gh) {
   return { exitCode: 0, result: { items: out, changes } };
 }
 
+// --post-merge: judge each merged t/* PR against the plan AS IT WAS at merged_at (never today's plan), so a later
+// plan edit cannot turn old merges stale. Anything that cannot be judged is `unverifiable`, never silently fine.
+function postMerge(o, config, gh) {
+  const planRepo = config.plan.repo;
+  const branch = config.plan.branch || 'main';
+  const days = (config.reconcile && config.reconcile.lookbackDays) || 14;
+  const cutoff = Date.now() - days * 86400000;
+  let fetchError = null;
+  try { gitOut(o.coreDir, ['fetch', '-q', 'origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`]); } catch (e) {
+    fetchError = `cannot fetch origin ${branch}: ${String(e.stderr || e.message).trim()}`;
+  }
+  const hashCache = new Map();
+  const hashesAtMerge = (mergedAt) => {
+    if (fetchError) throw new Error(fetchError);
+    const rows = gh.api('GET', `repos/${planRepo}/commits?sha=${encodeURIComponent(branch)}&until=${mergedAt}&per_page=1`);
+    const sha = Array.isArray(rows) && rows[0] && rows[0].sha;
+    if (!sha) throw new Error(`no ${branch} commit at or before ${mergedAt}`);
+    try { gitOut(o.coreDir, ['cat-file', '-e', `${sha}^{commit}`]); } catch { throw new Error(`plan commit ${sha} is not in the core clone`); }
+    if (!hashCache.has(sha)) hashCache.set(sha, planHashes(o.coreDir, sha, config));
+    return hashCache.get(sha);
+  };
+
+  const staleMerges = []; const unverifiable = [];
+  for (const repoKey of Object.keys(config.repos || {})) {
+    const r = config.repos[repoKey];
+    const prs = gh.paginate(`repos/${r.github}/pulls?state=closed`).filter((p) =>
+      p.merged_at && Date.parse(p.merged_at) >= cutoff && p.base && p.base.ref === r.default &&
+      p.head && String(p.head.ref || '').startsWith('t/'));
+    for (const p of prs) {
+      try {
+        const hashes = hashesAtMerge(p.merged_at);
+        const body = p.body || '';
+        const evidence = gate.evidenceBlock(body);
+        const reasons = [
+          ...gate.checkCites({
+            body, planRepo, hashes, coreDir: o.coreDir, config,
+            // Only acks that existed when the PR merged count.
+            loadComments: (n) => gh.paginate(`repos/${planRepo}/issues/${n}/comments`).filter((c) => !c.created_at || Date.parse(c.created_at) <= Date.parse(p.merged_at)),
+          }),
+          ...gate.checkEvidence({ evidence }),
+        ];
+        if (r.ci === 'required') {
+          const runs = gh.paginate(`repos/${r.github}/commits/${p.head.sha}/check-runs`, { key: 'check_runs' });
+          const st = gh.api('GET', `repos/${r.github}/commits/${p.head.sha}/status`);
+          const statuses = (st && Array.isArray(st.statuses)) ? st.statuses : [];
+          reasons.push(...gate.checkCi({ repoConfig: r, runs, statuses, evidence }));
+        }
+        if (reasons.length) staleMerges.push({ repo: r.github, pr: p.number, reasons });
+      } catch (e) {
+        unverifiable.push({ repo: r.github, pr: p.number, reason: e.message });
+      }
+    }
+  }
+
+  const created = [];
+  if (o.apply && staleMerges.length) {
+    const open = new Set(gh.paginate(`repos/${planRepo}/issues?state=open&labels=merged-stale`).filter((i) => !i.pull_request).map((i) => i.title));
+    let writes = 0;
+    for (const s of staleMerges) {
+      const title = `merged-stale: ${s.repo}#${s.pr}`;
+      if (open.has(title)) continue;
+      if (writes++ > 0) sleepMs(config.github.writeDelayMs);
+      const text = `PR ${s.repo}#${s.pr} was merged against a plan it did not satisfy, judged at its merge time.\n\n${s.reasons.map((x) => `- ${x}`).join('\n')}\n`;
+      gh.api('POST', `repos/${planRepo}/issues`, { title, body: text, labels: ['merged-stale'] });
+      open.add(title); created.push(title);
+    }
+  }
+  return { exitCode: 0, result: { staleMerges, unverifiable, created } };
+}
+
 function run({ argv, gh, env = process.env }) {
   try {
     const o = parseArgs(argv);
     const config = loadConfig({ coreDir: o.coreDir, env });
     if (!config.plan.repo) throw new ConfigError('plan.repo is not configured');
-    return reconcile(o, config, gh);
+    return o.postMerge ? postMerge(o, config, gh) : reconcile(o, config, gh);
   } catch (e) {
     if (e instanceof ConfigError || e instanceof PlanError) return { exitCode: 2, result: { error: e.message } };
     throw e;
