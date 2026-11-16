@@ -1,0 +1,13 @@
+#!/usr/bin/env node
+'use strict';
+const path = require('node:path');
+const { createGh } = require(path.join(__dirname, '..', 'lib', 'gh.js'));
+const { run } = require(path.join(__dirname, '..', 'lib', 'ticket-sync.js'));
+try {
+  const { exitCode, result } = run({ argv: process.argv.slice(2), gh: createGh(), env: process.env });
+  process.stdout.write(JSON.stringify(result) + '\n');
+  process.exitCode = exitCode;
+} catch (e) {
+  process.stdout.write(JSON.stringify({ error: e.message }) + '\n');
+  process.exitCode = 1;
+}
