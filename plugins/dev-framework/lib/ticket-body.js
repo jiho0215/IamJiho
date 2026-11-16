@@ -4,15 +4,16 @@ const { PlanError } = require('./plan');
 
 const NOTE = 'Acks are issue comments of the form `ack <issue#> <plan-sha>: <impact>`.';
 
-function renderBody(item, { hashes, issueNumbers, planSha, config }) {
+// keepCites: Map(id -> hash) already on the issue; those hashes are written back as-is, others use the current plan.
+function renderBody(item, { hashes, issueNumbers, planSha, config, keepCites }) {
   const planPath = (config && config.plan && config.plan.path) || 'docs/plan';
-  const own = hashes.get(item.id);
-  if (!own) throw new PlanError(`${item.id}: no plan hash`);
+  const keep = keepCites || new Map();
+  if (!hashes.get(item.id)) throw new PlanError(`${item.id}: no plan hash`);
+  const own = keep.get(item.id) || hashes.get(item.id);
   const cites = [`${item.id}@${own}`];
   for (const d of item.decisions) {
-    const h = hashes.get(d);
-    if (!h) throw new PlanError(`${item.id}: decision ${d} not found in DECISIONS.md / RULINGS.md`);
-    cites.push(`${d}@${h}`);
+    if (!hashes.get(d)) throw new PlanError(`${item.id}: decision ${d} not found in DECISIONS.md / RULINGS.md`);
+    cites.push(`${d}@${keep.get(d) || hashes.get(d)}`);
   }
   const nums = issueNumbers || new Map();
   const deps = item.deps.length ? item.deps.map((d) => (nums.get(d) ? `${d} (#${nums.get(d)})` : d)).join(', ') : '—';

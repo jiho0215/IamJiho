@@ -5,7 +5,7 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { loadConfig, ConfigError } = require('./config');
 const { parsePlan, planHashes, PlanError } = require('./plan');
-const { renderBody } = require('./ticket-body');
+const { renderBody, parseCites } = require('./ticket-body');
 const { readIssues, sleepMs } = require('./plan-issues');
 
 const COLORS = { plan: 'ededed', epic: 'c5def5', stage: '0e8a16', kind: 'fbca04', state: 'd93f0b', repo: '5319e7' };
@@ -15,7 +15,7 @@ const EXTRA_LABELS = [
 ];
 
 function parseArgs(argv) {
-  const o = { apply: false, writeback: false, ref: 'origin/main', coreDir: '', only: '' };
+  const o = { apply: false, writeback: false, ref: 'origin/main', coreDir: '', only: '', refresh: new Set() };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--apply') o.apply = true;
@@ -23,6 +23,7 @@ function parseArgs(argv) {
     else if (a === '--core-dir') o.coreDir = argv[++i];
     else if (a === '--ref') o.ref = argv[++i];
     else if (a === '--only') o.only = argv[++i];
+    else if (a === '--refresh-cites') for (const id of String(argv[++i] || '').split(',')) { if (id.trim()) o.refresh.add(id.trim()); }
     else throw new ConfigError(`unknown argument: ${a}`);
   }
   if (!o.coreDir) throw new ConfigError('--core-dir is required');
@@ -144,7 +145,13 @@ function sync(o, config, gh) {
   const extra = planIds.filter(([id, iss]) => iss.state === 'open' && !itemIds.has(id)).map(([, iss]) => iss.number);
   const missing = items.filter((i) => !byId.has(i.id)).map((i) => i.id);
 
-  const render = (item) => renderBody(item, { hashes, issueNumbers: numbers, planSha, config });
+  // An existing issue keeps the Cites hashes it already carries (reconcile reads them to raise needs-ack);
+  // only --refresh-cites <ID> re-renders that issue's Cites with the current plan.
+  const render = (item) => {
+    const iss = byId.get(item.id);
+    const keepCites = iss && !o.refresh.has(item.id) ? parseCites(iss.body) : undefined;
+    return renderBody(item, { hashes, issueNumbers: numbers, planSha, config, keepCites });
+  };
   const computeDrift = () => {
     const d = [];
     for (const item of items) {

@@ -42,7 +42,14 @@ function coreRepo(planText = fixture) {
     writeFileSync(join(dir, 'docs/plan/PLAN.md'), text); g('add', '-A'); g('commit', '-qm', msg);
     return g('rev-parse', 'HEAD').trim();
   };
-  return { dir, sha: g('rev-parse', 'HEAD').trim(), commit };
+  const edit = (file, from, to, msg = 'edit') => {
+    const p = join(dir, 'docs/plan', file);
+    const t = readFileSync(p, 'utf8');
+    assert.ok(t.includes(from), `seed text missing: ${from}`);
+    writeFileSync(p, t.replace(from, to)); g('add', '-A'); g('commit', '-qm', msg);
+    return g('rev-parse', 'HEAD').trim();
+  };
+  return { dir, sha: g('rev-parse', 'HEAD').trim(), commit, edit };
 }
 
 // Body of the issue as ticket-sync wrote it at the plan's HEAD.
@@ -65,7 +72,7 @@ const quiet = { 'GET repos/acme/api/git/matching-refs/heads/t/': [], 'GET repos/
 
 // ---- deriveState: one row each, with seeds where only that row applies ----
 const item = (deps = [], state = 'ready') => ({ id: 'P-0-4', deps, fields: { state } });
-const stale = { citedHash: 'aaaaaaaaaaaa', currentHash: 'bbbbbbbbbbbb', ackedHashes: new Set() };
+const stale = { cites: new Map([['P-0-4', 'aaaaaaaaaaaa']]), current: new Map([['P-0-4', 'bbbbbbbbbbbb']]), acked: new Set() };
 
 test('deriveState: each row alone', () => {
   assert.equal(deriveState(item(), { mergedPr: { number: 1 } }).state, 'done');
@@ -85,10 +92,14 @@ test('deriveState: precedence', () => {
   assert.equal(deriveState(item(['P-0-3']), { branch: 't/41-x', depStates: new Map() }).state, 'in-progress');
 });
 
-test('deriveState: only the acked CURRENT hash clears needs-ack; equal hashes are not stale', () => {
-  assert.equal(deriveState(item(), { ...stale, ackedHashes: new Set(['bbbbbbbbbbbb']) }).state, 'ready');
-  assert.equal(deriveState(item(), { ...stale, ackedHashes: new Set(['aaaaaaaaaaaa']) }).state, 'needs-ack');
-  assert.equal(deriveState(item(), { citedHash: 'bbbbbbbbbbbb', currentHash: 'bbbbbbbbbbbb' }).state, 'ready');
+test('deriveState: a cited hash is stale only while its ID is unacked; every cited ID counts', () => {
+  assert.equal(deriveState(item(), { ...stale, acked: new Set(['P-0-4']) }).state, 'ready');
+  assert.equal(deriveState(item(), { cites: new Map([['P-0-4', 'bbbbbbbbbbbb']]), current: new Map([['P-0-4', 'bbbbbbbbbbbb']]) }).state, 'ready');
+  const dec = { cites: new Map([['P-0-4', 'a1'], ['D-8', 'd1']]), current: new Map([['P-0-4', 'a1'], ['D-8', 'd2']]), acked: new Set() };
+  const r = deriveState(item(), dec);
+  assert.equal(r.state, 'needs-ack');
+  assert.match(r.why, /D-8/);
+  assert.equal(deriveState(item(), { ...dec, acked: new Set(['D-8']) }).state, 'ready');
 });
 
 // ---- reconcile end to end ----
@@ -210,4 +221,55 @@ test('comments paginate: an ack on page 2 (after 100 other comments) still clear
     [SINCE]: { pages: [filler, [comment(41, `ack 41 ${newSha}: fine`)]] }, ...quiet,
   });
   assert.equal(stateOf(run({ argv: argv(c.dir), gh, env: {} }), 'P-0-3'), 'ready');
+});
+
+test('C: only decision D-8 edited on the plan: the issue citing D-8@old is needs-ack; an ack that resolves D-8 to current clears it', () => {
+  const c = coreRepo();
+  const oldBody = bodyOf(c.dir, 'P-0-4');
+  const body3 = bodyOf(c.dir, 'P-0-3');
+  const newSha = c.edit('DECISIONS.md', '- rule: b', '- rule: b changed', 'decision edit');
+  const go = (comments) => run({
+    argv: argv(c.dir),
+    gh: fakeGh({ 'GET repos/acme/core/issues?state=all': [issue(41, 'P-0-3', body3, ['state:ready']), issue(42, 'P-0-4', oldBody, ['state:ready'])], [SINCE]: comments, ...quiet }).gh,
+    env: {},
+  });
+  const r = go([]);
+  assert.equal(stateOf(r, 'P-0-4'), 'needs-ack');
+  assert.match(r.result.items.find((i) => i.id === 'P-0-4').why, /D-8/);
+  assert.equal(stateOf(r, 'P-0-3'), 'ready'); // cites D-1 only, untouched
+  assert.equal(stateOf(go([comment(42, `ack 42 ${c.sha}: old`)]), 'P-0-4'), 'needs-ack');
+  assert.equal(stateOf(go([comment(42, `ack 42 ${newSha}: no impact`)]), 'P-0-4'), 'blocked'); // falls to the next row: P-0-3 is not done
+});
+
+test('D: an ack whose sha resolves to an INTERMEDIATE hash (cited aaaa, ack bbbb, current cccc) does not clear needs-ack', () => {
+  const c = coreRepo();
+  const oldBody = bodyOf(c.dir, 'P-0-3'); // cites the first hash
+  const midSha = c.commit(fixture.replace('Expose a health endpoint.', 'Expose a health endpoint, v2.'), 'second');
+  const curSha = c.commit(fixture.replace('Expose a health endpoint.', 'Expose a health endpoint, v3.'), 'third');
+  const go = (comments) => run({
+    argv: argv(c.dir),
+    gh: fakeGh({ 'GET repos/acme/core/issues?state=all': [issue(41, 'P-0-3', oldBody, ['state:ready'])], [SINCE]: comments, ...quiet }).gh,
+    env: {},
+  });
+  assert.equal(stateOf(go([comment(41, `ack 41 ${midSha}: v2 ok`)]), 'P-0-3'), 'needs-ack');
+  assert.equal(stateOf(go([comment(41, 'ack 41 deadbee: unknown sha')]), 'P-0-3'), 'needs-ack');
+  assert.equal(stateOf(go([comment(41, `ack 41 ${curSha}: ok`)]), 'P-0-3'), 'ready');
+});
+
+test('A: reconcile fetches origin before reading the plan, so a plan edit pushed after the clone is seen', () => {
+  const c = coreRepo();
+  const oldBody = bodyOf(c.dir, 'P-0-3');
+  const sh = (cwd, ...a) => execFileSync('git', ['-C', cwd, ...a], { encoding: 'utf8' });
+  const root = mkdtempSync(join(tmpdir(), 'devfw-fetch-'));
+  const bare = join(root, 'origin.git'); const clone = join(root, 'core'); const other = join(root, 'other');
+  execFileSync('git', ['clone', '-q', '--bare', c.dir, bare]);
+  execFileSync('git', ['clone', '-q', bare, clone]);
+  execFileSync('git', ['clone', '-q', bare, other]);
+  sh(other, 'config', 'user.email', 'a@acme.test'); sh(other, 'config', 'user.name', 'a');
+  const pf = join(other, 'docs/plan/PLAN.md');
+  writeFileSync(pf, readFileSync(pf, 'utf8').replace('Expose a health endpoint.', 'Expose a health endpoint, edited upstream.'));
+  sh(other, 'commit', '-qam', 'upstream edit'); sh(other, 'push', '-q', 'origin', 'main');
+  const { gh } = fakeGh({ 'GET repos/acme/core/issues?state=all': [issue(41, 'P-0-3', oldBody, ['state:ready'])], [SINCE]: [], ...quiet });
+  const r = run({ argv: ['--core-dir', clone], gh, env: {} }); // no --ref: default origin/<plan.branch>
+  assert.equal(stateOf(r, 'P-0-3'), 'needs-ack');
 });

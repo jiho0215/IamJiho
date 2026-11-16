@@ -225,3 +225,63 @@ test('unknown stage is a config error: exit 2', () => {
   assert.equal(r.exitCode, 2);
   assert.match(r.result.error, /stage/);
 });
+
+// ---- review round 1, item B: a rewrite keeps the issue's existing Cites hashes ----
+function seedThree(dir) {
+  const nums = new Map([['P-0-3', 1], ['P-0-4', 2], ['P-0-5', 3]]);
+  const bodies = Object.fromEntries([...nums.keys()].map((id) => [id, bodyOf(dir, id, nums)]));
+  return { nums, bodies, issues: () => [...nums].map(([id, n]) => issue(n, id, bodies[id])) };
+}
+function edit(dir, file, from, to) {
+  const p = join(dir, 'docs/plan', file);
+  const t = readFileSync(p, 'utf8');
+  assert.ok(t.includes(from), `seed text missing: ${from}`);
+  writeFileSync(p, t.replace(from, to));
+  execFileSync('git', ['-C', dir, 'commit', '-qam', 'edit']);
+}
+const citesLine = (b) => b.split('\n').find((l) => l.startsWith('- **Cites:**'));
+
+test('B1: a decision hash change alone is not drift, and --apply writes nothing', () => {
+  const { dir } = coreRepo();
+  const s = seedThree(dir);
+  edit(dir, 'DECISIONS.md', '- rule: b', '- rule: b changed');
+  const { gh, calls } = fakeGh({ ...base, 'GET repos/acme/core/issues?state=all': s.issues(), 'GRAPHQL ProjectInfo': PROJ, 'POST graphql': POSTG });
+  const dry = run({ argv: argv(dir), gh, env: {} });
+  assert.deepEqual(dry.result.drift, []);
+  assert.equal(dry.exitCode, 0);
+  run({ argv: argv(dir, '--apply'), gh, env: {} });
+  assert.deepEqual(calls.filter((c) => c.method === 'PATCH'), []);
+});
+
+test('B2: a real body edit is rewritten but keeps the OLD Cites hashes', () => {
+  const { dir } = coreRepo();
+  const s = seedThree(dir);
+  const oldCites = citesLine(s.bodies['P-0-4']);
+  edit(dir, 'PLAN.md', 'Disable Swagger in production builds.', 'Disable Swagger in production builds, always.');
+  edit(dir, 'DECISIONS.md', '- rule: b', '- rule: b changed');
+  assert.notEqual(citesLine(bodyOf(dir, 'P-0-4', s.nums)), oldCites); // the current render WOULD move them
+  const { gh, calls } = fakeGh({ ...base, 'GET repos/acme/core/issues?state=all': s.issues(), 'GRAPHQL ProjectInfo': PROJ, 'POST graphql': POSTG });
+  run({ argv: argv(dir, '--apply'), gh, env: {} });
+  const patches = calls.filter((c) => c.method === 'PATCH');
+  assert.equal(patches.length, 1);
+  assert.equal(patches[0].path, 'repos/acme/core/issues/2');
+  assert.match(patches[0].body.body, /always\./);
+  assert.equal(citesLine(patches[0].body.body), oldCites);
+});
+
+test('B3: --refresh-cites <ID> --apply re-renders Cites with current hashes for exactly that ID', () => {
+  const { dir } = coreRepo();
+  const s = seedThree(dir);
+  edit(dir, 'DECISIONS.md', '- rule: b', '- rule: b changed');
+  edit(dir, 'DECISIONS.md', '- rule: a', '- rule: a changed');
+  const cur = bodyOf(dir, 'P-0-4', s.nums);
+  const { gh, calls } = fakeGh({ ...base, 'GET repos/acme/core/issues?state=all': s.issues(), 'GRAPHQL ProjectInfo': PROJ, 'POST graphql': POSTG });
+  const dry = run({ argv: argv(dir, '--refresh-cites', 'P-0-4'), gh, env: {} });
+  assert.deepEqual(dry.result.drift.map((d) => d.id), ['P-0-4']);
+  run({ argv: argv(dir, '--apply', '--refresh-cites', 'P-0-4'), gh, env: {} });
+  const patches = calls.filter((c) => c.method === 'PATCH');
+  assert.equal(patches.length, 1);
+  assert.equal(patches[0].path, 'repos/acme/core/issues/2');
+  assert.equal(citesLine(patches[0].body.body), citesLine(cur));
+  assert.notEqual(citesLine(patches[0].body.body), citesLine(s.bodies['P-0-4']));
+});

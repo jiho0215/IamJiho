@@ -6,10 +6,10 @@ const { parsePlan, planHashes, PlanError } = require('./plan');
 const { parseCites } = require('./ticket-body');
 const { readIssues, sleepMs, labelNames } = require('./plan-issues');
 const { ackCovers } = require('./acks');
-const { deriveState } = require('./state');
+const { deriveState, staleCites } = require('./state');
 
 function parseArgs(argv) {
-  const o = { apply: false, ref: 'origin/main', coreDir: '' };
+  const o = { apply: false, ref: '', coreDir: '' };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--apply') o.apply = true;
@@ -51,8 +51,19 @@ function readComments(gh, planRepo, openIssues) {
   return gh.paginate(`repos/${planRepo}/issues/comments${since ? `?since=${since}` : ''}`);
 }
 
+// Read fresh, never a cache: unless the caller named a ref explicitly, fetch the plan branch first.
+function resolveRef(o, config) {
+  if (o.ref) return;
+  const b = config.plan.branch || 'main';
+  try { gitOut(o.coreDir, ['fetch', '-q', 'origin', `+refs/heads/${b}:refs/remotes/origin/${b}`]); } catch (e) {
+    throw new PlanError(`cannot fetch origin ${b} (the plan must be read fresh): ${String(e.stderr || e.message).trim()}`);
+  }
+  o.ref = `origin/${b}`;
+}
+
 function reconcile(o, config, gh) {
   const planRepo = config.plan.repo;
+  resolveRef(o, config);
   let text;
   try { text = gitOut(o.coreDir, ['show', `${o.ref}:${config.plan.path}/PLAN.md`]); } catch { throw new PlanError(`${config.plan.path}/PLAN.md not found at ${o.ref}`); }
   const items = parsePlan(text, config);
@@ -81,12 +92,12 @@ function reconcile(o, config, gh) {
         facts.mergedPr = rf.merged.get(iss.number);
         facts.openPr = rf.open.get(iss.number);
         facts.branch = rf.branches.get(iss.number);
-        facts.citedHash = parseCites(iss.body).get(item.id);
-        facts.currentHash = hashes.get(item.id);
-        facts.ackedHashes = new Set();
-        if (facts.citedHash && facts.currentHash && facts.citedHash !== facts.currentHash
-            && ackCovers({ coreDir: o.coreDir, config, comments, issue: iss.number, id: item.id, hash: facts.currentHash })) {
-          facts.ackedHashes.add(facts.currentHash);
+        facts.cites = parseCites(iss.body);
+        facts.current = hashes;
+        facts.acked = new Set();
+        // Every cited ID (the item and each decision) is checked on its own.
+        for (const { id, cur } of staleCites(facts)) {
+          if (ackCovers({ coreDir: o.coreDir, config, comments, issue: iss.number, id, hash: cur })) facts.acked.add(id);
         }
       }
       res = deriveState(item, facts);
