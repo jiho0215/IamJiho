@@ -1,0 +1,70 @@
+#!/bin/bash
+# claim <issue#> <slug> --repo-dir <path> --base <branch> [--core-dir <path>]
+# Claims ticket branch t/<issue#>-<slug> on origin with a create-only push of a fresh empty
+# commit on origin/<base>. The push carries --force-with-lease=<ref>: (expect "does not exist"),
+# so it is rejected whenever the ref exists, including a ref sitting at the base tip.
+# The user's checkout (HEAD, index, working tree) is never touched.
+# Exit: 0 claimed, 3 lost (someone holds it), 2 usage, 1 git/network failure.
+set -euo pipefail
+BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$BIN/_lib.sh"
+devfw_require git jq
+
+[ $# -ge 2 ] || devfw_die 2 "usage: claim <issue#> <slug> --repo-dir <path> --base <branch> [--core-dir <path>]"
+ISSUE="$1"; SLUG="$2"; shift 2
+REPO=""; BASE=""; CORE=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --repo-dir) REPO="$2"; shift 2 ;;
+    --base) BASE="$2"; shift 2 ;;
+    --core-dir) CORE="$2"; shift 2 ;;
+    *) devfw_die 2 "unknown argument: $1" ;;
+  esac
+done
+[[ "$ISSUE" =~ ^[0-9]+$ ]] || devfw_die 2 "issue must be a number: $ISSUE"
+[[ "$SLUG" =~ ^[a-z0-9-]{1,40}$ ]] || devfw_die 2 "slug must match ^[a-z0-9-]{1,40}\$: $SLUG"
+[ -n "$REPO" ] && [ -d "$REPO" ] && [ -n "$BASE" ] || devfw_die 2 "--repo-dir and --base are required"
+REPO=$(devfw_path "$REPO")
+
+BRANCH="t/$ISSUE-$SLUG"
+REF="refs/heads/$BRANCH"
+TOKEN=none
+if [ -n "$CORE" ]; then TOKEN=$("$BIN/lease" mine --core-dir "$CORE" 2>/dev/null) || TOKEN=none; fi
+MACHINE=$(hostname)
+
+git -C "$REPO" fetch -q origin "$BASE" || devfw_die 1 "fetch of $BASE failed"
+PARENT=$(git -C "$REPO" rev-parse "origin/$BASE")
+# The nonce makes every claim commit unique. Without it, two claims from one machine with one
+# lease in the same second are byte-identical, and the second push reports "[up to date]".
+NONCE=$(od -An -tx1 -N8 /dev/urandom | tr -d ' \n')
+MSG=$(printf 'claim %s\n\nClaim-Issue: %s\nClaim-Lease: %s\nClaim-Machine: %s\nClaim-At: %s\nClaim-Nonce: %s\n' \
+  "$BRANCH" "$ISSUE" "$TOKEN" "$MACHINE" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$NONCE")
+SHA=$(git -C "$REPO" commit-tree "$PARENT^{tree}" -p "$PARENT" -m "$MSG")
+
+set +e
+OUT=$(git -C "$REPO" push --porcelain "--force-with-lease=$REF:" origin "$SHA:$REF" 2>&1)
+RC=$?
+set -e
+
+# Porcelain flags: "*" new ref = we created it. "!" rejected, or "=" already there = we did not.
+if [ $RC -eq 0 ] && grep -q "^\*	[^	]*:$REF	" <<<"$OUT"; then
+  jq -cn --arg b "$BRANCH" --arg s "$SHA" '{result:"claimed", branch:$b, sha:$s}'
+  exit 0
+fi
+
+if grep -q "^[!=]	[^	]*:$REF	" <<<"$OUT"; then
+  held() { sed -n "s/^$1: //p" <<<"$BODY" | head -1; }
+  BODY=""
+  # ls-remote + --no-write-fetch-head: concurrent claims in one repo must not race on FETCH_HEAD.
+  HELD=$(git -C "$REPO" ls-remote origin "$REF" 2>/dev/null | cut -f1)
+  if [ -n "$HELD" ] && git -C "$REPO" fetch -q --no-write-fetch-head origin "$REF" 2>/dev/null; then
+    BODY=$(git -C "$REPO" log -1 --format=%B "$HELD" 2>/dev/null | tr -d '\r')
+  fi
+  L=$(held Claim-Lease); M=$(held Claim-Machine); A=$(held Claim-At)
+  jq -cn --arg b "$BRANCH" --arg l "${L:-unknown}" --arg m "${M:-unknown}" --arg a "${A:-unknown}" \
+    '{result:"lost", branch:$b, heldBy:{lease:$l, machine:$m, at:$a}}'
+  exit 3
+fi
+
+echo "$OUT" >&2
+devfw_die 1 "push failed for $REF"
