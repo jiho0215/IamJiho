@@ -7,8 +7,9 @@ function defaultExec(args, input) {
 }
 
 function createGh({ exec = defaultExec } = {}) {
+  // Only the search API itself is forbidden; a label such as kind:research is fine.
   const guard = (path) => {
-    if (/search/i.test(path)) throw new Error('search API forbidden');
+    if (String(path).replace(/^\//, "").split(/[/?]/)[0] === "search") throw new Error("search API forbidden");
   };
   const api = (method, path, body) => {
     guard(path);
@@ -18,21 +19,21 @@ function createGh({ exec = defaultExec } = {}) {
     const out = exec(args, input);
     return out && String(out).trim() ? JSON.parse(out) : {};
   };
-  const paginate = (path) => {
+  const paginate = (path, { key } = {}) => {
     guard(path);
     const all = [];
     for (let page = 1; ; page++) {
       const sep = path.includes('?') ? '&' : '?';
-      const rows = api('GET', `${path}${sep}per_page=100&page=${page}`);
-      if (!Array.isArray(rows)) throw new Error(`paginate: expected array from ${path}`);
+      const res = api("GET", `${path}${sep}per_page=100&page=${page}`);
+      const rows = key ? res && res[key] : res;
+      if (!Array.isArray(rows)) throw new Error(`paginate: expected array${key ? " at ." + key : ""} from ${path}`);
       all.push(...rows);
       if (rows.length < 100) return all;
     }
   };
+  // Whole request goes as JSON so Int/Boolean/object variables keep their types.
   const graphql = (query, vars = {}) => {
-    const args = ['api', 'graphql', '-f', `query=${query}`];
-    for (const [k, v] of Object.entries(vars)) args.push(typeof v === 'number' ? '-F' : '-f', `${k}=${v}`);
-    const out = exec(args);
+    const out = exec(["api", "graphql", "--input", "-"], JSON.stringify({ query, variables: vars }));
     const parsed = JSON.parse(out);
     if (parsed.errors) throw new Error(`graphql: ${JSON.stringify(parsed.errors)}`);
     return parsed.data;

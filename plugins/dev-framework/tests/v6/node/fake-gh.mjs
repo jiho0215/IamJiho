@@ -1,11 +1,29 @@
-// fakeGh(routes) -> { gh, calls }. routes: "METHOD path-without-pagination" -> response, or array of pages (GET).
+// fakeGh(routes) -> { gh, calls }.
+// routes: "METHOD path-without-pagination" -> response.
+//   A flat array (or any value) is ONE page. Multi-page is explicit: { pages: [page1, page2, ...] }
+//   where each page is an array, or an object such as { check_runs: [...] } for wrapped endpoints.
+// GraphQL: "GRAPHQL <operationName or first field>" or "POST graphql" -> response data. Recorded in calls
+//   as { method: 'POST', path: 'graphql', body: { query, variables } }. An unrouted graphql call throws.
+// Writes are recorded in calls; unrouted writes default to {}; an unrouted GET throws.
 import { createRequire } from 'node:module';
 const { createGh } = createRequire(import.meta.url)('../../../lib/gh.js');
+
+function graphqlKeys(query) {
+  const op = /^\s*(?:query|mutation)\s+(\w+)/.exec(query);
+  const first = /\{\s*(\w+)/.exec(query);
+  return [op && op[1], first && first[1]].filter(Boolean).map((k) => `GRAPHQL ${k}`).concat('POST graphql');
+}
 
 export function fakeGh(routes = {}) {
   const calls = [];
   const exec = (args, input) => {
-    // createGh builds ['api', '-X', METHOD, path, ...] for API calls; anything else is a raw gh call.
+    if (args[0] === 'api' && args[1] === 'graphql') {
+      const body = JSON.parse(input);
+      calls.push({ method: 'POST', path: 'graphql', body });
+      const key = graphqlKeys(body.query).find((k) => k in routes);
+      if (!key) throw new Error(`fakeGh: unrouted graphql ${graphqlKeys(body.query)[0]}`);
+      return JSON.stringify({ data: routes[key] });
+    }
     if (args[0] !== 'api') {
       calls.push({ method: 'RAW', path: args.join(' '), body: input });
       return routes['RAW ' + args.join(' ')] ?? '';
@@ -22,7 +40,12 @@ export function fakeGh(routes = {}) {
     }
     if (!(key in routes)) throw new Error(`fakeGh: unrouted ${key}`);
     const r = routes[key];
-    return JSON.stringify(m && Array.isArray(r) && Array.isArray(r[0]) ? (r[page - 1] ?? []) : r);
+    if (r && typeof r === 'object' && !Array.isArray(r) && Array.isArray(r.pages)) {
+      const empty = Array.isArray(r.pages[0]) ? [] : Object.fromEntries(Object.keys(r.pages[0] || {}).map((k) => [k, Array.isArray(r.pages[0][k]) ? [] : r.pages[0][k]]));
+      return JSON.stringify(r.pages[page - 1] ?? empty);
+    }
+    // Flat value: one page. Later pages are empty so a flat array of >= 100 rows terminates.
+    return JSON.stringify(m && page > 1 && Array.isArray(r) ? [] : r);
   };
   return { gh: createGh({ exec }), calls };
 }

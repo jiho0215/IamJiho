@@ -23,13 +23,16 @@ function parsePlan(text, config) {
     if (/^## /.test(line) || /^### /.test(line)) {
       cur = null;
       const m = ID_RE.exec(line);
-      if (m) { cur = { id: m[1], title: m[2].trim(), fields: {}, bodyLines: [] }; raw.push(cur); }
+      if (m) { cur = { id: m[1], title: m[2].trim(), fields: {}, bodyLines: [], inFields: true }; raw.push(cur); }
       continue;
     }
     if (!cur) continue;
     const f = FIELD_RE.exec(line);
-    if (f && !cur.sawBody) cur.fields[f[1]] = f[2].trim();
-    else { if (line.trim()) cur.sawBody = true; cur.bodyLines.push(line); }
+    // Field block: from the heading to the first blank line after a field. Known fields are read anywhere in it;
+    // an unknown bullet or stray line inside it is body text but does not end field parsing.
+    if (cur.inFields && f) { cur.fields[f[1]] = f[2].trim(); continue; }
+    if (cur.inFields && !line.trim() && Object.keys(cur.fields).length) cur.inFields = false;
+    cur.bodyLines.push(line);
   }
 
   const ids = new Set();

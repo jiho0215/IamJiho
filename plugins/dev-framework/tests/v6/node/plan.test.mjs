@@ -73,7 +73,7 @@ test('planHashes: only the edited item changes; D- IDs included; missing RULINGS
 
 test('fakeGh paginates 150 issues as pages of 100 and 50', () => {
   const issues = Array.from({ length: 150 }, (_, i) => ({ number: i + 1 }));
-  const { gh } = fakeGh({ 'GET repos/acme/core/issues?labels=x': [issues.slice(0, 100), issues.slice(100)] });
+  const { gh } = fakeGh({ 'GET repos/acme/core/issues?labels=x': { pages: [issues.slice(0, 100), issues.slice(100)] } });
   assert.equal(gh.paginate('repos/acme/core/issues?labels=x').length, 150);
 });
 
