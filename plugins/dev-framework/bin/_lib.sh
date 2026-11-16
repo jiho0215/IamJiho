@@ -27,9 +27,10 @@ devfw_require() {  # devfw_require <tool>...
 devfw_config() {  # devfw_config <jq-path> <default>; reads $DEVFW_CONFIG or ./orchestrator.json
   local file="${DEVFW_CONFIG:-./orchestrator.json}" v
   if [ -f "$file" ]; then
-    v=$(jq -c "$1 // empty" "$(devfw_path "$file")" 2>/dev/null) || devfw_die 2 "unreadable config: $file"
+    # Native jq.exe on Windows ends lines with CRLF; strip CR so values compare and match cleanly.
+    v=$(jq -c "$1 // empty" "$(devfw_path "$file")" 2>/dev/null | tr -d '\r') || devfw_die 2 "unreadable config: $file"
     if [ -n "$v" ]; then
-      case "$v" in \"*\") jq -r . <<<"$v" ;; *) echo "$v" ;; esac
+      case "$v" in \"*\") jq -r . <<<"$v" | tr -d '\r' ;; *) echo "$v" ;; esac
       return 0
     fi
   fi

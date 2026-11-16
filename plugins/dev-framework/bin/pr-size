@@ -1,0 +1,89 @@
+#!/bin/bash
+# pr-size --planned <file.json> | --diff <base>..<head> --repo-dir <path>
+# Estimates human read time of a PR from weighted changed lines and prints one JSON object:
+#   {"files","weightedLines","seconds","budget","limit","verdict":"ok|over"}
+# Weights: added logic 1.0, added test 0.3, added config 0.3, deleted 0.3; risk paths x3;
+# generated files and pure renames score 0 and are not counted as files.
+# Planned mode compares against budget x planTarget; diff mode against the full budget.
+# Exit: 0 ok, 5 over, 2 usage.
+set -euo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_lib.sh"
+devfw_require git jq awk
+shopt -s extglob
+
+MODE=""; ARG=""; REPO="."
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --planned) MODE=planned; ARG="${2:-}"; shift 2 || shift ;;
+    --diff) MODE=diff; ARG="${2:-}"; shift 2 || shift ;;
+    --repo-dir) REPO="${2:-}"; shift 2 || shift ;;
+    *) devfw_die 2 "unknown argument: $1" ;;
+  esac
+done
+[ -n "$MODE" ] && [ -n "$ARG" ] || devfw_die 2 "usage: pr-size --planned <file.json> | --diff <base>..<head> --repo-dir <path>"
+
+SPF=$(devfw_config '.prSize.secondsPerFile' 20)
+SPL=$(devfw_config '.prSize.secondsPerLine' 1.5)
+BUDGET=$(devfw_config '.prSize.budgetSeconds' 300)
+TARGET=$(devfw_config '.prSize.planTarget' 0.8)
+globs() { jq -r '.[]' <<<"$(devfw_config ".prSize.$1" "$2")" | tr -d '\r'; }
+mapfile -t TEST_G < <(globs testGlobs '["**/*Tests/**","**/*.test.*","**/*.spec.*","**/tests/**","**/__tests__/**"]')
+mapfile -t CONF_G < <(globs configGlobs '["**/*.json","**/*.yml","**/*.yaml","**/*.csproj","**/*.config","**/*.props"]')
+mapfile -t RISK_G < <(globs riskGlobs '[]')
+mapfile -t GEN_G < <(globs generatedGlobs '["**/*.lock","**/package-lock.json","**/Migrations/*.Designer.cs","**/__snapshots__/**"]')
+
+matches() {  # matches <path> <glob>...; "**/" also matches at the root
+  local p="$1" g; shift
+  for g in "$@"; do
+    [ -n "$g" ] || continue
+    # shellcheck disable=SC2053
+    if [[ "$p" == $g ]] || { [[ "$g" == '**/'* ]] && [[ "$p" == ${g#\*\*/} ]]; }; then return 0; fi
+  done
+  return 1
+}
+kind_of() {
+  if matches "$1" "${GEN_G[@]}"; then echo generated
+  elif matches "$1" "${TEST_G[@]}"; then echo test
+  elif matches "$1" "${CONF_G[@]}"; then echo config
+  else echo logic; fi
+}
+
+ROWS=""  # path<TAB>kind<TAB>added<TAB>deleted<TAB>risk(0|1)
+add_row() { local r=0; matches "$1" "${RISK_G[@]}" && r=1; ROWS+="$1"$'\t'"$2"$'\t'"$3"$'\t'"$4"$'\t'"$r"$'\n'; }
+
+if [ "$MODE" = planned ]; then
+  [ -f "$ARG" ] || devfw_die 2 "no such file: $ARG"
+  while IFS=$'\t' read -r p k a d; do
+    [ -n "$p" ] || continue
+    add_row "$p" "$k" "$a" "$d"
+  done < <(jq -r '.[] | [.path, .kind, (.added // 0), (.deleted // 0)] | @tsv' "$(devfw_path "$ARG")" | tr -d '\r')
+  LIMIT=$(awk -v b="$BUDGET" -v t="$TARGET" 'BEGIN { printf "%g", b * t }')
+else
+  REPO=$(devfw_path "$REPO")
+  while IFS=$'\t' read -r a d p; do
+    [ -n "$p" ] || continue
+    p=$(sed -e 's/{[^}]* => \([^}]*\)}/\1/' -e 's/^.* => //' -e 's#//#/#g' <<<"$p")
+    if [ "$a" = "-" ]; then add_row "$p" "$(kind_of "$p")" 0 0; continue; fi   # binary: a file, no lines
+    [ "$a" = 0 ] && [ "$d" = 0 ] && continue          # pure rename / mode change
+    add_row "$p" "$(kind_of "$p")" "$a" "$d"
+  done < <(git -C "$REPO" diff -M -w --numstat "$ARG" | tr -d '\r')
+  LIMIT="$BUDGET"
+fi
+
+RESULT=$(printf '%s' "$ROWS" | awk -F'\t' -v spf="$SPF" -v spl="$SPL" '
+  $2 == "generated" { next }
+  {
+    files++
+    kw = ($2 == "logic") ? 1.0 : 0.3
+    m = ($5 == 1) ? 3 : 1
+    w += ($3 * kw + $4 * 0.3) * m
+  }
+  END { printf "%d\t%g\t%g", files, w, files * spf + w * spl }')
+IFS=$'\t' read -r FILES WL SECS <<<"$RESULT"
+SECS=$(awk -v s="$SECS" 'BEGIN { printf "%g", int(s * 10 + 0.5) / 10 }')
+VERDICT=$(awk -v s="$SECS" -v l="$LIMIT" 'BEGIN { print (s > l) ? "over" : "ok" }')
+
+jq -cn --argjson f "$FILES" --argjson w "$WL" --argjson s "$SECS" --argjson b "$BUDGET" \
+  --argjson l "$LIMIT" --arg v "$VERDICT" \
+  '{files:$f, weightedLines:$w, seconds:$s, budget:$b, limit:$l, verdict:$v}'
+[ "$VERDICT" = ok ] || exit 5
