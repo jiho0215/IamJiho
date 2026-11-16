@@ -8,3 +8,6 @@ node_modules/
 
 # testbuilder skill-creator eval artifacts (ephemeral, per-iteration)
 plugins/dev-framework/skills/testbuilder-workspace/
+
+# superpowers SDD local workspace (ledgers, briefs, reports)
+.superpowers/
