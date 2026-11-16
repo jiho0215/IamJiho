@@ -51,4 +51,20 @@ function parseCites(text) {
   return map;
 }
 
-module.exports = { renderBody, parseCites };
+// Strict reader for the merge gate: every comma-separated entry of a Cites line must be ID@12hex.
+// Returns { cites: Map, malformed: [raw entries] } so a damaged entry cannot be dropped unchecked.
+function parseCitesStrict(text) {
+  const cites = new Map();
+  const malformed = [];
+  for (const line of String(text || '').replace(/\r/g, '').split('\n')) {
+    const m = /^\s*(?:[-*]\s*)?\*{0,2}Cites:\*{0,2}\s*(.*)$/.exec(line);
+    if (!m) continue;
+    for (const raw of m[1].split(',').map((s) => s.trim()).filter(Boolean)) {
+      const e = /^([A-Za-z][A-Za-z0-9-]*)@([0-9a-f]{12})$/.exec(raw);
+      if (e) cites.set(e[1], e[2]); else malformed.push(raw);
+    }
+  }
+  return { cites, malformed };
+}
+
+module.exports = { renderBody, parseCites, parseCitesStrict };

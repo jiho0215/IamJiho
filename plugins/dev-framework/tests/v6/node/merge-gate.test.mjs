@@ -201,3 +201,37 @@ test('the plan branch is read fresh: a hash that changed on origin/main after th
   const { result } = go(c, routes({ prBody: body(c) }));
   assert.equal(result.checks.cites, false);
 });
+
+// ---- fix round 1: the gate fails closed ----
+test('fix1: a failed plan fetch refuses, even though the cites match the cached ref', () => {
+  const c = core();
+  const g = (...a) => execFileSync('git', ['-C', c.dir, ...a], { encoding: 'utf8' });
+  g('remote', 'set-url', 'origin', join(tmpdir(), 'devfw-no-such-origin-xyz'));
+  const { exitCode, result } = go(c, routes({ prBody: body(c) }));
+  assert.equal(result.pass, false);
+  assert.equal(exitCode, 6);
+  assert.equal(result.checks.cites, false);
+  assert.ok(result.reasons.includes('cites: plan fetch failed'), result.reasons.join(' | '));
+});
+
+test('fix2: a ci:none repo with an empty or missing tests list refuses on zero runs', () => {
+  for (const tests of [[], undefined]) {
+    const repos = { ...BASE.repos, 'acme-mobile': { github: 'acme/mobile', default: 'master', label: 'mobile', ci: 'none', ...(tests ? { tests } : {}) } };
+    const c = core({ ...BASE, repos });
+    const r = routes({ repo: 'acme/mobile', runs: [], prBody: body(c, { evidence: 'Evidence:\nnpm test: 40 passed\n' }) });
+    const { result } = go(c, r, { repo: 'acme/mobile' });
+    assert.equal(result.checks.ci, false);
+    assert.ok(result.reasons.includes('ci: no test commands configured for ci:none repo'), result.reasons.join(' | '));
+  }
+});
+
+test('fix3: a malformed cite entry refuses and is named; parseCites keeps its lenient behaviour', () => {
+  const c = core();
+  for (const bad of ['P-0-4@abc', 'P-0-4@' + 'G'.repeat(12), 'P-0-4']) {
+    const { result } = go(c, routes({ prBody: body(c, { cites: `${bad}, D-8@${c.hashes.get('D-8')}` }) }));
+    assert.equal(result.checks.cites, false, bad);
+    assert.ok(result.reasons.includes(`cites: malformed entry ${bad}`), result.reasons.join(' | '));
+  }
+  const { parseCites } = require('../../../lib/ticket-body.js');
+  assert.deepEqual([...parseCites(`Cites: P-0-4@abc, D-8@${'a'.repeat(12)}`)], [['D-8', 'a'.repeat(12)]]);
+});

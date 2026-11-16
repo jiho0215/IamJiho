@@ -6,7 +6,7 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { loadConfig, ConfigError } = require('./config');
 const { planHashes, PlanError } = require('./plan');
-const { parseCites } = require('./ticket-body');
+const { parseCitesStrict } = require('./ticket-body');
 const { ackCovers } = require('./acks');
 
 const OK_CONCLUSIONS = new Set(['success', 'skipped', 'neutral']);
@@ -35,7 +35,8 @@ function linkedIssue(body, planRepo) {
 function checkCi({ repoConfig, runs, statuses, evidence }) {
   if (runs.length + statuses.length === 0) {
     if (repoConfig.ci === 'required') return ['ci: no checks attached'];
-    const missing = (repoConfig.tests || []).filter((t) => !String(evidence).includes(t));
+    if (!Array.isArray(repoConfig.tests) || repoConfig.tests.length === 0) return ['ci: no test commands configured for ci:none repo'];
+    const missing = repoConfig.tests.filter((t) => !String(evidence).includes(t));
     return missing.length ? [`ci: none configured and Evidence lacks test command(s): ${missing.join(', ')}`] : [];
   }
   const reasons = [];
@@ -51,8 +52,10 @@ function checkCi({ repoConfig, runs, statuses, evidence }) {
 
 // (b) cites. hashes: Map of the plan to judge against; loadComments(issue): the linked issue's comments.
 function checkCites({ body, planRepo, hashes, coreDir, config, loadComments }) {
-  const cites = parseCites(body);
-  if (!cites.size) return ['cites: PR body has no Cites: line'];
+  if (!hashes) return ['cites: plan fetch failed'];
+  const { cites, malformed } = parseCitesStrict(body);
+  if (!cites.size && !malformed.length) return ['cites: PR body has no Cites: line'];
+  if (malformed.length) return malformed.map((raw) => `cites: malformed entry ${raw}`);
   const issue = linkedIssue(body, planRepo);
   if (issue === null) return [`cites: PR body has no "Fixes ${planRepo}#<n>" line`];
   const reasons = [];
@@ -107,10 +110,11 @@ function checkCoverage({ config, evidence }) {
   return Number(m[1]) >= cov.min ? [] : [`coverage: ${m[1]}% is below the required ${cov.min}%`];
 }
 
-// Fresh reads (O6): fetch the plan branch before hashing it. A clone with no remote is read as-is.
+// Fresh reads (O6): fetch the plan branch before hashing it; null when the fetch fails.
 function currentPlanHashes(coreDir, config) {
   const b = config.plan.branch;
-  try { git(coreDir, ['fetch', '-q', 'origin', b]); } catch { /* planHashes reports a missing ref */ }
+  // Fail closed: a failed fetch means origin/<branch> may be stale, so no hashes at all (null).
+  try { git(coreDir, ['fetch', '-q', 'origin', b]); } catch { return null; }
   return planHashes(coreDir, `origin/${b}`, config);
 }
 
@@ -125,7 +129,7 @@ function evaluate({ gh, config, coreDir, repo, pr, env = process.env, hashes }) 
   const st = gh.api('GET', `repos/${repo}/commits/${head}/status`);
   const statuses = (st && Array.isArray(st.statuses)) ? st.statuses : [];
   const files = gh.paginate(`repos/${repo}/pulls/${pr}/files`);
-  const current = hashes || currentPlanHashes(coreDir, config);
+  const current = hashes === undefined ? currentPlanHashes(coreDir, config) : hashes;
   const loadComments = (n) => gh.paginate(`repos/${config.plan.repo}/issues/${n}/comments`);
 
   const parts = {
