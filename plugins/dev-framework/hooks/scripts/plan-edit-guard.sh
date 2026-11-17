@@ -8,7 +8,10 @@
 # (4) Subagents never edit the plan. NOTE: this clause is convention-backed until Q2 (does a subagent's
 # PreToolUse payload carry agent_id?) is measured with tests/v6/manual/hook-probe.sh; it is gated on
 # HOOK_AGENT_ID being non-empty. (5) `bin/lease check`: exit 4 -> lease mismatch, 3 -> no lease, other -> cannot
-# verify. (6) allow.
+# verify (a 124 timeout, DEVFW_HOOK_NET_TIMEOUT, default 20s, lands here). (6) allow.
+# Opaque scope (R9): an opaque segment mentioning commit is in scope if cwd is in core, the command text names
+# the core path, or a cd has a non-literal argument. RESIDUAL, accepted: an opaque command (e.g. eval) with no
+# core path in its text, run from a cwd outside core, is not seen; other projects must not be blocked.
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_v6-hook.sh"
 hook_init plan-edit-guard
 [ -n "$HOOK_CORE" ] || exit 0
@@ -20,9 +23,18 @@ PLAN_DIR="$HOOK_CORE/$PLAN"
 # _abs <path>: absolute against HOOK_CWD when relative.
 _abs() {
   case "$1" in
-    /*|[A-Za-z]:[/\]*|\*) printf '%s\n' "$1" ;;
+    /*|[A-Za-z]:*|\\*) printf '%s\n' "$1" ;;
     *) if [ -n "$HOOK_CWD" ]; then printf '%s/%s\n' "$HOOK_CWD" "$1"; else printf '%s\n' "$1"; fi ;;
   esac
+}
+
+# _text_names_core <text>: does the raw text contain the core path as C:/x, /c/x or with backslashes?
+_text_names_core() {
+  local t="${1//\\//}" c="$HOOK_CORE" alt=""
+  case "${OSTYPE:-}" in msys*|cygwin*) t="${t,,}"; c="${c,,}" ;; esac
+  [[ "$c" =~ ^([a-z]):/(.*)$ ]] && alt="/${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"
+  [[ "$t" == *"$c"* ]] && return 0
+  [ -n "$alt" ] && [[ "$t" == *"$alt"* ]]
 }
 
 # _commit_touches_plan <dir>: does a commit run from <dir> carry a plan file? A git failure counts as yes.
@@ -50,11 +62,16 @@ case "$HOOK_TOOL" in
     CMD=$(hook_field .tool_input.command)
     grep -q 'commit' <<<"$CMD" || exit 0
     PARSED=$(node "$(devfw_path "$HOOK_LIB_DIR/../../bin/hook-parse")" <<<"$CMD" | tr -d '\r') || PARSED=""
-    if [ -z "$PARSED" ]; then
+    if [ -z "$PARSED" ] || ! jq -e . >/dev/null 2>&1 <<<"$PARSED"; then
       IN_SCOPE=1   # the parser failed on a command that mentions commit: cannot tell, so check the lease
     else
-      if [ "$(jq -r '.opaque | length' <<<"$PARSED" | tr -d '\r')" -gt 0 ] && [ -n "$HOOK_CWD" ] \
-         && hook_under "$HOOK_CWD" "$HOOK_CORE"; then IN_SCOPE=1; fi
+      # R9: an opaque segment that mentions commit is in scope when cwd is in core, or the raw text names the
+      # core path (C:/..., /c/..., backslash forms), or a cd has a non-literal argument (unknowable dir).
+      if [ "$(jq -r '[.opaque[] | select(test("commit"))] | length' <<<"$PARSED" | tr -d '\r')" -gt 0 ]; then
+        if [ -n "$HOOK_CWD" ] && hook_under "$HOOK_CWD" "$HOOK_CORE"; then IN_SCOPE=1; fi
+        _text_names_core "$CMD" && IN_SCOPE=1
+        grep -Eq '(^|[;&|({[:space:]])cd[[:space:]]+[^;&|]*[$`(]' <<<"$CMD" && IN_SCOPE=1
+      fi
       while IFS= read -r d; do
         d=$(jq -r '.' <<<"$d" | tr -d '\r')
         [ "$d" != null ] || d=""
@@ -73,7 +90,7 @@ if [ -n "$HOOK_AGENT_ID" ]; then
   hook_block "subagents never edit the plan; return the change to the main session"
 fi
 rc=0
-OUT=$("$HOOK_LIB_DIR/../../bin/lease" check --core-dir "$(devfw_path "$HOOK_CORE")" 2>&1) || rc=$?
+OUT=$(timeout "${DEVFW_HOOK_NET_TIMEOUT:-20}" "${DEVFW_BIN_DIR:-$HOOK_LIB_DIR/../../bin}/lease" check --core-dir "$(devfw_path "$HOOK_CORE")" 2>&1) || rc=$?
 OUT="${OUT//$'\r'/}"
 case "$rc" in
   0) exit 0 ;;

@@ -55,6 +55,20 @@ grep -q lease <<<"$ERR" || fail "commit block message: $ERR"
 run "$(bash_ 'git status')"; expect 0 "non-commit command"
 run "$(bash_ 'git commit -m x' "$TMP")"; expect 0 "commit outside core"
 run "$(bash_ "cd '$CORE' && git commit -m x" "$TMP")"; expect 2 "cd into core then commit"
+run "$(bash_ "git -C '$CORE' commit -m x" "$TMP")"; expect 2 "git -C core commit from cwd outside core"
+g init -q "$TMP/other"; mkdir -p "$TMP/other/docs/plan"; echo o > "$TMP/other/docs/plan/f"; g -C "$TMP/other" add docs/plan/f
+run "$(bash_ "git -C '$TMP/other' commit -m x")"; expect 0 "cwd in core, -C outside repo"
+run "$(bash_ 'cd "$D" && git commit -m x' "$TMP")"; expect 2 "R9: non-literal cd, cwd outside core"
+CM=$(cygpath -m "$CORE" 2>/dev/null || echo "$CORE")
+run "$(bash_ "cd '$CM' && eval \"git commit -m x\"" "$TMP")"; expect 2 "R9: opaque naming core path (C:/ form)"
+if command -v cygpath >/dev/null 2>&1; then
+  CU="/${CM:0:1}${CM:2}"   # C:/x -> /C/x (compare is case-insensitive on Windows)
+  run "$(bash_ "cd '$CU' && eval \"git commit -m x\"" "$TMP")"; expect 2 "R9: /c/ form"
+  run "$(bash_ "cd '$(cygpath -w "$CM")' && eval \"git commit -m x\"" "$TMP")"; expect 2 "R9: backslash form"
+fi
+run "$(bash_ 'eval "git commit -m x"' "$TMP")"; expect 0 "R9 residual: eval, no core path, cwd outside core"
+run "$(printf '{"tool_name":"MultiEdit","cwd":"%s","tool_input":{"file_path":"%s","edits":[]}}' "$CORE" "$CORE/docs/plan/PLAN.md")"
+expect 2 "MultiEdit"
 run "$(bash_ 'eval "git commit -m x"')"; expect 2 "opaque in core"
 run "$(bash_ 'eval "git commit -m x"' "$TMP")"; expect 0 "opaque outside core"
 g -C "$CORE" reset -q; g -C "$CORE" checkout -q -- docs/plan/PLAN.md
@@ -79,4 +93,21 @@ g -C "$CORE" remote set-url origin "$TMP/gone.git"
 run "$(edit "$CORE/README.md")"; expect 0 "README with origin deleted"
 run "$(edit "$CORE/docs/plan/PLAN.md")"; expect 2 "plan edit with origin deleted"
 grep -q 'cannot verify' <<<"$ERR" || fail "cannot-verify message: $ERR"
+
+# Lease-call outcomes through a stub bin dir (DEVFW_BIN_DIR): 3, 1, and a hang cut by DEVFW_HOOK_NET_TIMEOUT.
+STUB="$TMP/stub"; mkdir -p "$STUB"
+stub() { printf '#!/bin/bash\n%s\n' "$1" > "$STUB/lease"; chmod +x "$STUB/lease"; }
+export DEVFW_BIN_DIR="$STUB"
+g -C "$CORE" remote set-url origin "$TMP/origin.git"
+stub 'echo "lease: no lease line" >&2; exit 3'
+run "$(edit "$CORE/docs/plan/PLAN.md")"; expect 2 "stub exit 3"
+grep -q '^devfw plan-edit-guard: no lease' <<<"$ERR" || fail "exit 3 message: $ERR"
+stub 'exit 1'
+run "$(edit "$CORE/docs/plan/PLAN.md")"; expect 2 "stub exit 1"
+grep -q 'cannot verify' <<<"$ERR" || fail "exit 1 message: $ERR"
+stub 'exec sleep 10'
+S=$SECONDS; DEVFW_HOOK_NET_TIMEOUT=1 run "$(edit "$CORE/docs/plan/PLAN.md")"
+expect 2 "hung lease check"; [ $((SECONDS - S)) -lt 8 ] || fail "timeout not applied"
+grep -q 'cannot verify' <<<"$ERR" || fail "timeout message: $ERR"
+unset DEVFW_BIN_DIR
 echo ok
