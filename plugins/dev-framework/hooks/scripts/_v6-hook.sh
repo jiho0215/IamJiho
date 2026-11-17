@@ -36,11 +36,21 @@ hook_field() {
 # hook_block <reason> [more lines...]: stderr line 1 is "devfw <hook>: <reason>"; exit 2 (blocks the tool call).
 hook_block() {
   trap - ERR EXIT
+  _hook_cleanup
   echo "devfw ${HOOK_NAME:-hook}: $1" >&2
   shift
   local l
   for l in "$@"; do echo "$l" >&2; done
   exit 2
+}
+
+# HOOK_CLEANUP: optional name of a function (e.g. one removing temp files) run once on the way out: from
+# hook_block, and from the EXIT trap hook_fail_closed sets (so a plain `exit 0` after it runs it too). Its output
+# and failure are ignored.
+_hook_cleanup() {
+  local f="${HOOK_CLEANUP:-}"
+  HOOK_CLEANUP=""
+  [ -z "$f" ] || "$f" >/dev/null 2>&1 || true
 }
 
 # hook_fail_closed: from here on, any failing command, and any exit other than 0 or 2 (an unbound variable,
@@ -51,6 +61,7 @@ hook_fail_closed() {
   trap '_hook_exit_guard $?' EXIT
 }
 _hook_exit_guard() {
+  _hook_cleanup
   case "$1" in
     0|2) ;;
     *) trap - EXIT; echo "devfw ${HOOK_NAME:-hook}: internal error (exit $1)" >&2; exit 2 ;;

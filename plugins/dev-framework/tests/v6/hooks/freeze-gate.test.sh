@@ -5,6 +5,7 @@ set -uo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HOOK="${FG_HOOK:-$DIR/../../../hooks/scripts/freeze-gate.sh}"
 HASH="$DIR/../../../hooks/scripts/freeze-doc-hash.sh"
+CHASH="$DIR/../../../hooks/scripts/freeze-content-hash.sh"
 [ -f "$HOOK" ] || { echo "FAIL: hooks/scripts/freeze-gate.sh missing"; exit 1; }
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
@@ -13,7 +14,7 @@ fail() { echo "FAIL: $*"; exit 1; }
 unset DEVFW_CONFIG DEVFW_CORE_DIR DEVFW_HOOK_NET_TIMEOUT
 P() { if command -v cygpath >/dev/null 2>&1; then cygpath -m "$1"; else echo "$1"; fi; }
 
-CORE="$TMP/core"; mkdir -p "$CORE" "$TMP/fakebin"
+CORE="$TMP/core"; mkdir -p "$CORE" "$TMP/fakebin" "$TMP/hooktmp"
 echo '{"plan":{"repo":"acme/core"},"repos":{"api":{"github":"acme/api"}}}' > "$CORE/orchestrator.json"
 
 W="$(P "$TMP")/W"
@@ -39,19 +40,20 @@ mkdoc() {
 }
 commit_doc() { g -C "$W" add -A docs; g -C "$W" commit -qm "${1:-doc}"; }
 
-# fake gh: GH_MODE = ok | fail | slow | ack | none | n410 | otherissue | login
+# fake gh: GH_MODE = ok | fail | slow | ack | none | n410 | otherissue | login | nocite; GH_CITE = <path>@<hash> cited
 cat > "$TMP/fakebin/gh" <<'STUB'
 #!/bin/bash
 echo "$*" >> "${GH_LOG:-/dev/null}"
 [ "$*" = "api repos/acme/core/issues/comments/555" ] || exit 1
-body='owner-said 41 [2026-11-17T10:00Z] 「승인」\nsecond line'; assoc=OWNER; iurl='https://api.github.com/repos/acme/core/issues/41'
+body="owner-said 41 ${GH_CITE:-none} [2026-11-17T10:00Z] 「승인」\\nsecond line"; assoc=OWNER; iurl='https://api.github.com/repos/acme/core/issues/41'
 case "${GH_MODE:-ok}" in
   fail) exit 1 ;;
   slow) sleep 10 ;;
   ack) body='ack 41 abcdef1: ok' ;;
   none) assoc=NONE ;;
   login) assoc=NONE ;;
-  n410) body='owner-said 410 [2026-11-17T10:00Z] ok' ;;
+  n410) body="owner-said 410 ${GH_CITE:-none} ok" ;;
+  nocite) body='owner-said 41 [2026-11-17T10:00Z] ok' ;;
   otherissue) iurl='https://api.github.com/repos/acme/core/issues/42' ;;
 esac
 printf '{"id":555,"body":"%s","author_association":"%s","user":{"login":"trusty"},"issue_url":"%s"}\n' "$body" "$assoc" "$iurl"
@@ -62,8 +64,8 @@ export PATH="$TMP/fakebin:$PATH" DEVFW_CORE_DIR="$CORE" GH_LOG="$TMP/gh.log"
 # run <path> [tool] [cwd]: feed the hook one tool call.
 run() {
   local key=file_path; [ "${2:-Edit}" = NotebookEdit ] && key=notebook_path
-  ERR=$(jq -cn --arg t "${2:-Edit}" --arg k "$key" --arg p "$1" --arg cwd "${3:-$W}" \
-    '{tool_name:$t,cwd:$cwd,tool_input:{($k):$p}}' | bash "$HOOK" 2>&1 >/dev/null); RC=$?
+  ERR=$(jq -cn --arg t "${2:-Edit}" --arg k "$key" --arg p "$1" --arg cwd "${3-$W}" \
+    '{tool_name:$t,cwd:$cwd,tool_input:{($k):$p}}' | TMPDIR="$TMP/hooktmp" bash "$HOOK" 2>&1 >/dev/null); RC=$?
   ERR="${ERR//$'\r'/}"
 }
 expect() { [ "$RC" = "$1" ] || fail "$2: rc=$RC want $1 (stderr: $ERR)"; }
@@ -78,6 +80,14 @@ says 'no committed freeze doc' "uncommitted doc text"
 
 # --- approved, committed ---
 commit_doc approved; APPROVED_SHA=$(git -C "$W" rev-parse HEAD | tr -d '\r')
+# the content hash (R16) ignores the approval fields, so the DRAFT and the APPROVED doc hash the same; a body
+# change does not
+CH=$(bash "$CHASH" "$DOC" | tr -d '\r'); [[ "$CH" =~ ^[0-9a-f]{64}$ ]] || fail "content hash not 64 hex: $CH"
+cp "$DOC" "$TMP/approved.md"
+mkdoc DRAFT '' body; [ "$(bash "$CHASH" "$DOC" | tr -d '\r')" = "$CH" ] || fail "content hash changed with status/approvedBy/approvedHash"
+mkdoc APPROVED "$AB_OK" "other body"; [ "$(bash "$CHASH" "$DOC" | tr -d '\r')" != "$CH" ] || fail "content hash blind to the body"
+cp "$TMP/approved.md" "$DOC"; g -C "$W" diff --quiet -- docs || fail "setup: approved doc not restored"
+export GH_CITE="docs/plan/41-x/freeze.md@${CH:0:12}"
 rm -f "$CACHE"
 run "$W/src/a.js"; expect 0 "approved"
 [ "$(lines)" = 1 ] || fail "cache should hold one line, has $(lines)"
@@ -108,7 +118,7 @@ says 'timed out' "gh timeout text"
 run "$W/src/a.js"; expect 0 "re-prime cache"
 echo "sneaky scope change" >> "$DOC"; commit_doc sneaky
 run "$W/src/a.js"; expect 2 "recommitted without re-approval"
-says 'devfw freeze-gate: freeze doc changed after approval' "changed text"
+says 'devfw freeze-gate: freeze doc hash does not verify (edited after approval?): docs/plan/41-x/freeze.md' "changed text"
 g -C "$W" reset -q --hard "$APPROVED_SHA"
 
 # --- cache key is the blob: a re-hashed recommit with the same approvedBy is a NEW blob, read fresh ---
@@ -116,9 +126,25 @@ g -C "$W" reset -q --hard "$APPROVED_SHA"
 mkdoc APPROVED "$AB_OK" "body re-hashed by the worker"; commit_doc rehash
 GH_MODE=fail run "$W/src/a.js"; expect 2 "re-hashed doc must not ride the cache of another blob"
 says 'cannot read comment 555' "cache-key text"
-run "$W/src/a.js"; expect 0 "re-hashed doc, fresh read ok"
+# R16: the old owner-said cites the old content, so the re-hashed doc is not approved
+run "$W/src/a.js"; expect 2 "re-hashed doc under the old owner-said"
+says 'devfw freeze-gate: owner-said 555 does not approve this freeze doc version (path@hash mismatch); a changed plan needs a new owner-said' "R16 text"
+[ "$(lines)" = 1 ] || fail "a path@hash mismatch wrote the cache"
+# a new owner-said citing the new content approves it
+CH2=$(bash "$CHASH" "$DOC" | tr -d '\r')
+GH_CITE="docs/plan/41-x/freeze.md@${CH2:0:12}" run "$W/src/a.js"; expect 0 "new owner-said cites the new content"
 [ "$(lines)" = 2 ] || fail "second blob should add a second line, has $(lines)"
 g -C "$W" reset -q --hard "$APPROVED_SHA"
+# cite forms: full 64-hex upper case ok; 11 hex, a wrong path, no citation at all -> block
+rm -f "$CACHE"
+GH_CITE="docs/plan/41-x/freeze.md@${CH^^}" run "$W/src/a.js"; expect 0 "full upper-case hash"
+rm -f "$CACHE"
+GH_CITE="docs/plan/41-x/freeze.md@${CH:0:11}" run "$W/src/a.js"; expect 2 "11-hex hash is too short"
+GH_CITE="docs/plan/41-y/freeze.md@${CH:0:12}" run "$W/src/a.js"; expect 2 "wrong path"
+GH_CITE="docs/plan/41-x/freeze.md@${CH2:0:12}" run "$W/src/a.js"; expect 2 "hash of another version"
+GH_MODE=nocite run "$W/src/a.js"; expect 2 "owner-said without path@hash"
+says 'path@hash mismatch' "nocite text"
+[ "$(lines)" = 0 ] || fail "a citation mismatch wrote the cache"
 
 # --- status, approvedBy, comment rules (cache cleared so each reaches gh) ---
 rm -f "$CACHE"
@@ -135,6 +161,21 @@ DEVFW_CORE_DIR= run "$W/src/a.js"; expect 0 "DEVFW_CORE_DIR unset"
 run "$U/src/a.js"; expect 0 "unmanaged repo"
 g -C "$W" checkout -q -b feature/x; run "$W/src/a.js"; expect 0 "branch feature/x"; g -C "$W" checkout -q t/41-x
 run "$(P "$TMP")/nowhere/src/a.js"; expect 0 "not in a git repo"
+(cd "$W" && run 'src/a.js' Edit '' && echo "$RC" > "$TMP/rc") ; RC=$(cat "$TMP/rc"); expect 2 "relative path, no cwd: resolved against PWD"
+case "${OSTYPE:-}" in
+  msys*|cygwin*)
+    run "$W/SRC/a.js"; expect 2 "case variant SRC/ on Windows"
+    run "$W/Src/new.js" Write; expect 2 "case variant Src/ new file on Windows"
+    run "$W/SRC/a.TEST.js"; expect 0 "case variant test file on Windows"
+    ;;
+esac
+echo '{"plan":{"repo":"acme/core"},"repos":{"api":{"github":"acme/api","codePaths":["./src/"]}}}' > "$TMP/dot.json"
+DEVFW_CONFIG="$TMP/dot.json" run "$W/src/a.js"; expect 2 "codePaths ./src/ normalised"
+for bad in '"../x"' '""' '"."' '"/abs"'; do
+  echo "{\"plan\":{\"repo\":\"acme/core\"},\"repos\":{\"api\":{\"github\":\"acme/api\",\"codePaths\":[\"src/\",$bad]}}}" > "$TMP/bad.json"
+  DEVFW_CONFIG="$TMP/bad.json" run "$W/README.md"; expect 2 "bad codePaths entry $bad"
+  says 'bad codePaths entry' "bad codePaths text $bad"
+done
 # config: codePaths and cycle.freezeDir
 echo '{"plan":{"repo":"acme/core"},"repos":{"api":{"github":"ACME/API","codePaths":["pkg/"]}},"cycle":{"freezeDir":"plans"}}' > "$TMP/alt.json"
 DEVFW_CONFIG="$TMP/alt.json" run "$W/src/a.js"; expect 0 "codePaths override: src/ no longer code"
@@ -165,4 +206,6 @@ GH_MODE=otherissue run "$W/src/a.js"; expect 2 "comment belongs to issue 42"
 echo '{"plan":{"repo":"acme/core"},"repos":{"api":{"github":"acme/api"}},"github":{"trustedAuthors":["Trusty"]}}' > "$TMP/trust.json"
 DEVFW_CONFIG="$TMP/trust.json" GH_MODE=login run "$W/src/a.js"; expect 0 "NONE but listed in github.trustedAuthors"
 
+# HOOK_CLEANUP: no run (allowed, blocked, cached, gh failure, timeout) left its temp copy of the doc behind
+left=$(ls -A "$TMP/hooktmp"); [ -z "$left" ] || fail "temp files left behind: $left"
 echo "PASS freeze-gate"

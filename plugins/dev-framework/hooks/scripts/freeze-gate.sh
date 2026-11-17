@@ -10,10 +10,14 @@
 # Missing -> block. (5) front matter status APPROVED, and `freeze-doc-hash.sh verify` matches. (6) approvedBy is
 # https://github.com/<plan.repo>/issues/<n>#issuecomment-<id>, same <n> as the branch. (7) cache: if
 # "<blob sha> <id>" is a line of <git-dir>/devfw/freeze-ok -> allow. (8) `gh api` reads comment <id>: it must
-# belong to issue <n>, its first line must start with `owner-said <n>`, and its author must pass
-# lib/acks.js isTrustedAuthor. Then the cache line is appended. Any failure blocks and writes no cache.
-# What (8) proves: an owner-said record exists for this ticket and the approval cites it. It does not prove the
-# owner typed it (the worker posts it with the owner's token; v6-design C1): that part is convention.
+# belong to issue <n>, its first line must be `owner-said <n> <path>@<hash12+> …` (ruling R16) with <path> the
+# doc's repo-relative path and <hash> a prefix of freeze-content-hash.sh over the committed doc (so a doc edited,
+# re-hashed and recommitted under the same approvedBy is a new blob, is re-read, and fails), and its author must
+# pass lib/acks.js isTrustedAuthor. Then the cache line is appended. Any failure blocks and writes no cache.
+# What (8) proves: an owner-said record for this exact plan content exists for this ticket and the approval cites
+# it. It does not prove the owner typed it (the worker posts it with the owner's token; v6-design C1): convention.
+# Paths compare case-insensitively on Windows (msys/cygwin), like hook_under. codePaths entries are normalised
+# lexically; one that is empty, ".", absolute or climbs out with ".." blocks in-scope edits as a config error.
 # Removed from v5: the SESSION_DIR pointer, bypass.json, the §11 prerequisites check (order is now `depends:`
 # plus the claim). gh is bounded by DEVFW_HOOK_NET_TIMEOUT (default 20s); a timeout blocks.
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_v6-hook.sh"
@@ -27,7 +31,7 @@ TARGET=$(hook_field '.tool_input.file_path // .tool_input.notebook_path')
 _abs() {
   case "$1" in
     /*|[A-Za-z]:*|\\*) printf '%s\n' "$1" ;;
-    *) if [ -n "$HOOK_CWD" ]; then printf '%s/%s\n' "$HOOK_CWD" "$1"; else printf '%s\n' "$1"; fi ;;
+    *) printf '%s/%s\n' "${HOOK_CWD:-$PWD}" "$1" ;;
   esac
 }
 
@@ -46,7 +50,11 @@ BRANCH=$(git -C "$(devfw_path "$TOP")" symbolic-ref -q --short HEAD 2>/dev/null)
 BRANCH="${BRANCH//$'\r'/}"
 [[ "$BRANCH" =~ ^t/([1-9][0-9]*)-(.+)$ ]] || exit 0
 N="${BASH_REMATCH[1]}"; SLUG="${BASH_REMATCH[2]}"
-case "$REL" in
+# Windows file systems ignore case: compare the path (code paths and test patterns) case-insensitively there,
+# the same rule as hook_under.
+REL_CMP="$REL"; NOCASE=0
+case "${OSTYPE:-}" in msys*|cygwin*) REL_CMP="${REL,,}"; NOCASE=1 ;; esac
+case "$REL_CMP" in
     *.test.*|*.spec.*|*_test.*|*/tests/*|*/test/*|tests/*|test/*|*/__tests__/*) exit 0 ;;
 esac
 CFG_BAD=0
@@ -55,27 +63,34 @@ REPO="${REPO//$'\r'/}"
 if [ "$CFG_BAD" -eq 0 ]; then
   [ -n "$REPO" ] || exit 0
   # the slug reaches jq through the environment ($ENV), never spliced into the filter text
-  CODE=$(HOOK_SLUG="${REPO,,}" hook_cfg '([(.repos // {}) | .[] | select((.github // "") | ascii_downcase == $ENV.HOOK_SLUG)][0].codePaths // ["src/","lib/","app/"]) | .[]') || CFG_BAD=1
+  CODE=$(HOOK_SLUG="${REPO,,}" hook_cfg '([(.repos // {}) | .[] | select((.github // "") | ascii_downcase == $ENV.HOOK_SLUG)][0].codePaths // ["src/","lib/","app/"]) | .[] | tostring | if . == "" then "." else . end') || CFG_BAD=1
   FREEZE_DIR=$(hook_cfg '.cycle.freezeDir' 'docs/plan') || CFG_BAD=1
   PLAN_REPO=$(hook_cfg '.plan.repo') || CFG_BAD=1
 fi
+BAD_CP=""
 if [ "$CFG_BAD" -eq 0 ]; then
   hit=0
   while IFS= read -r c; do
-    c="${c%/}"; [ -n "$c" ] || continue
-    if [ "$REL" = "$c" ] || [[ "$REL" == "$c/"* ]]; then hit=1; fi
+    [ -n "$c" ] || continue
+    raw="$c"; c=$(_hook_lex "$c")
+    case "$c" in
+      .|..|../*|/*|[A-Za-z]:*) BAD_CP="$raw"; continue ;;
+    esac
+    [ "$NOCASE" -eq 0 ] || c="${c,,}"
+    if [ "$REL_CMP" = "$c" ] || [[ "$REL_CMP" == "$c/"* ]]; then hit=1; fi
   done <<<"$CODE"
-  [ "$hit" -eq 1 ] || exit 0
+  [ "$hit" -eq 1 ] || [ -n "$BAD_CP" ] || exit 0
 fi
 
 # ---- in scope: every failure blocks ----
 hook_fail_closed
 [ "$CFG_BAD" -eq 0 ] || hook_block "cannot read the config; not allowing a code edit on $BRANCH"
+[ -z "$BAD_CP" ] || hook_block "bad codePaths entry \"$BAD_CP\" for $REPO (must name a directory inside the repo)"
 TOPW=$(devfw_path "$TOP")
 FREEZE_REL="$(_hook_lex "$FREEZE_DIR")/$N-$SLUG/freeze.md"
 TMPF=$(mktemp)
-eval "$(declare -f hook_block | sed '1s/hook_block/_hb_orig/')"
-hook_block() { rm -f "$TMPF"; _hb_orig "$@"; }
+_fg_cleanup() { rm -f "$TMPF"; }
+HOOK_CLEANUP=_fg_cleanup   # runs on every exit from here: hook_block and the EXIT trap
 
 git -C "$TOPW" cat-file -e "HEAD:$FREEZE_REL" 2>/dev/null \
   || hook_block "no committed freeze doc at $FREEZE_REL; plan approval comes first"
@@ -96,7 +111,7 @@ _fm() {
 STATUS=$(_fm status)
 [ "$STATUS" = APPROVED ] || hook_block "freeze doc status is ${STATUS:-missing}, not APPROVED ($FREEZE_REL)"
 bash "$HOOK_LIB_DIR/freeze-doc-hash.sh" verify "$TMPF" >/dev/null 2>&1 \
-  || hook_block "freeze doc changed after approval ($FREEZE_REL); it needs a new approval"
+  || hook_block "freeze doc hash does not verify (edited after approval?): $FREEZE_REL"
 
 [ -n "$PLAN_REPO" ] || hook_block "plan.repo is not set in the config; cannot check the approval"
 WANT="https://github.com/$PLAN_REPO/issues/$N#issuecomment-<id>"
@@ -110,7 +125,7 @@ ID="${BASH_REMATCH[3]}"
 GITDIR=$(git -C "$TOPW" rev-parse --absolute-git-dir | tr -d '\r')
 CACHE="$GITDIR/devfw/freeze-ok"
 if [ -f "$CACHE" ] && grep -qxF "$BLOB $ID" "$CACHE" 2>/dev/null; then
-  rm -f "$TMPF"; exit 0
+  exit 0
 fi
 
 rc=0
@@ -124,6 +139,17 @@ IURL=$(jq -r '.issue_url // ""' <<<"$OUT" | tr -d '\r')
   || hook_block "comment $ID is not on issue $N of $PLAN_REPO (issue_url: ${IURL:-none})"
 FIRST=$(jq -r '(.body // "") | gsub("\r"; "") | split("\n")[0]' <<<"$OUT" | tr -d '\r')
 [[ "$FIRST" =~ ^owner-said\ $N( |$) ]] || hook_block "comment $ID does not start with owner-said $N"
+# R16: the owner-said line binds the approval to this content: `owner-said <n> <path>@<hash12+> …`, where <hash>
+# is a prefix of freeze-content-hash.sh over the committed doc (approval fields removed) and <path> is the doc.
+CHASH=$(bash "$HOOK_LIB_DIR/freeze-content-hash.sh" "$TMPF" | tr -d '\r')
+[[ "$CHASH" =~ ^[0-9a-f]{64}$ ]] || hook_block "cannot compute the content hash of $FREEZE_REL"
+CITED_OK=0
+if [[ "$FIRST" =~ ^owner-said\ $N\ ([^[:space:]]+)@([0-9A-Fa-f]{12,64})([[:space:]]|$) ]]; then
+  cited="${BASH_REMATCH[2],,}"
+  if [ "${BASH_REMATCH[1]}" = "$FREEZE_REL" ] && [ "${CHASH:0:${#cited}}" = "$cited" ]; then CITED_OK=1; fi
+fi
+[ "$CITED_OK" -eq 1 ] || hook_block "owner-said $ID does not approve this freeze doc version (path@hash mismatch); a changed plan needs a new owner-said" \
+  "expected: owner-said $N $FREEZE_REL@${CHASH:0:12} …"
 rc=0
 node -e '
   const fs = require("fs");
@@ -137,6 +163,5 @@ node -e '
 [ "$rc" -ne 3 ] || hook_block "comment $ID is not by a trusted author (OWNER/MEMBER/COLLABORATOR or github.trustedAuthors)"
 [ "$rc" -eq 0 ] || hook_block "cannot check the author of comment $ID (node exit $rc)"
 
-rm -f "$TMPF"
 { mkdir -p "$GITDIR/devfw" && printf '%s %s\n' "$BLOB" "$ID" >> "$CACHE"; } 2>/dev/null || true
 exit 0
