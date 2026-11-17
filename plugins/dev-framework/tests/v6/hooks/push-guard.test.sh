@@ -96,6 +96,59 @@ run "$W" "git -C '$TMP/U' push --force origin main"; expect 0 "-C into an unmana
 git -C "$TMP/U" remote add up https://github.com/acme/api.git
 run "$TMP/U" 'git push up main'; expect 2 "another remote that is managed"
 
+# R15: an opaque push is in scope with a non-literal cd / -C, or when the text names a managed repo
+run "$TMP/U" 'cd $D && git push origin main'; expect 2 "non-literal cd, unmanaged cwd"
+says 'cannot read this push command exactly' "R15 cd text"
+run "$TMP/U" 'git -C "$D" push origin main'; expect 2 "non-literal -C, unmanaged cwd"
+run "$TMP/U" 'eval "git push https://github.com/acme/api.git main"'; expect 2 "opaque push naming a managed slug"
+run "$TMP/U" "cd '$TMP/U' && git push --force origin main"; expect 0 "literal cd to an unmanaged repo"
+run "$TMP/U" 'eval "git push other"'; expect 0 "opaque push, nothing managed named"
+
+# push.default decides what a bare push updates
+g -C "$W" checkout -q t/41-x
+git -C "$W" config branch.t/41-x.remote origin; git -C "$W" config branch.t/41-x.merge refs/heads/main
+run "$W" 'git push'; expect 0 "push.default unset: current branch t/41-x"
+git -C "$W" config push.default simple; run "$W" 'git push'; expect 0 "push.default simple"
+git -C "$W" config push.default upstream; run "$W" 'git push'; expect 2 "push.default upstream tracking origin/main"
+says 'merge to main goes through the merge gate' "upstream text"
+git -C "$W" config push.default tracking; run "$W" 'git push origin'; expect 2 "push.default tracking"
+run "$W" 'git push origin HEAD'; expect 0 "HEAD is the current branch even with push.default upstream"
+git -C "$W" config push.default matching; run "$W" 'git push'; expect 2 "push.default matching"
+says 'name the refspec' "matching text"
+git -C "$W" config push.default current; run "$W" 'git push'; expect 0 "push.default current"
+git -C "$W" config --unset push.default
+git -C "$W" config remote.origin.push 'refs/heads/*:refs/heads/*'; run "$W" 'git push'; expect 2 "remote.origin.push set"
+says 'name the refspec' "remote.push text"
+git -C "$W" config --unset remote.origin.push
+git -C "$W" config --unset branch.t/41-x.merge; git -C "$W" config push.default upstream
+run "$W" 'git push'; expect 2 "upstream with no branch.merge"
+git -C "$W" config --unset push.default; g -C "$W" checkout -q main
+
+# a URL remote is the repo's remote too; non-branch refs
+run "$W" 'git push https://github.com/acme/api.git main'; expect 2 "URL remote, default branch"
+run "$W" 'git push https://github.com/acme/api.git t/41-x'; expect 0 "URL remote, claimed branch"
+run "$W" 'git push https://github.com/acme/api.git t/42-y'; expect 2 "URL remote, unclaimed"
+says 'no claim for issue 42' "URL remote text"
+run "$W" 'git push origin HEAD:refs/for/main'; expect 2 "other refs/ destination"
+says 'unsupported destination' "unsupported text"
+
+# claim fetch failure (origin unreachable)
+ORIGP=$(cygpath -m "$TMP/origin.git" 2>/dev/null || echo "$TMP/origin.git")
+git -C "$W" config --remove-section url."$ORIGP"
+git -C "$W" config url."$TMP/nowhere.git".insteadOf https://github.com/acme/api.git
+run "$W" 'git push origin t/41-x'; expect 2 "claim check cannot reach origin"
+says 'cannot verify the claim (fetch failed)' "fetch-failed text"
+git -C "$W" config --remove-section url."$TMP/nowhere.git"
+git -C "$W" config url."$ORIGP".insteadOf https://github.com/acme/api.git
+run "$W" 'git push origin t/41-x'; expect 0 "origin restored"
+
+# the claim is checked on the push's own remote, not always origin: `up` is a managed remote with NO claims
+g init -q --bare "$TMP/origin2.git"; g -C "$W" push -q "$TMP/origin2.git" main
+git -C "$W" remote add up git@github.com:acme/api.git
+git -C "$W" config url."$(cygpath -m "$TMP/origin2.git" 2>/dev/null || echo "$TMP/origin2.git")".insteadOf git@github.com:acme/api.git
+run "$W" 'git push up t/41-x'; expect 2 "claim looked up on the push's remote"
+says 'no claim for issue 41' "remote-specific claim text"
+
 # allowForce
 echo '{"plan":{"repo":"acme/core"},"repos":{"api":{"github":"acme/api","default":"main"}},"hooks":{"pushGuard":{"allowForce":true}}}' > "$CORE/orchestrator.json"
 run "$W" 'git push --force-with-lease origin t/41-x'; expect 0 "allowForce lets a force push through"

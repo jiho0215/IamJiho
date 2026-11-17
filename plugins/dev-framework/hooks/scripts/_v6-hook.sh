@@ -159,24 +159,24 @@ hook_repo_of() {
   hook_repo_for_remote "$1" origin
 }
 
-# hook_claim_ok <repo-dir> <branch>: is <branch> (t/<n>-<slug>) claimed on origin right now? Fresh reads:
+# hook_claim_ok <repo-dir> <branch> [<remote>]: is <branch> (t/<n>-<slug>) claimed on <remote> (a name or URL; default origin) right now? Fresh reads:
 # ls-remote finds the default branch and whether <branch> exists, then one fetch into refs/devfw/claim-check/
 # (--no-write-fetch-head: no FETCH_HEAD race; --refmap=: no remote-tracking updates; --no-tags).
 # Exit 0 claimed (a commit in base..<branch> carries "Claim-Issue: <n>"), 3 not claimed (no issue number in
 # the name, branch missing, or no such trailer), 1 network/git error.
 hook_claim_ok() {
-  local dir branch="$2" n ls base body t="${HOOK_NET_TIMEOUT:-60}"
+  local dir branch="$2" remote="${3:-origin}" n ls base body t="${HOOK_NET_TIMEOUT:-60}"
   dir=$(devfw_path "$1")
   [[ "$branch" =~ ^t/([1-9][0-9]*)- ]] || return 3
   n="${BASH_REMATCH[1]}"
   git check-ref-format "refs/heads/$branch" || return 3
-  ls=$(timeout "$t" git -C "$dir" ls-remote --symref origin HEAD "refs/heads/$branch" 2>/dev/null) || return 1
+  ls=$(timeout "$t" git -C "$dir" ls-remote --symref "$remote" HEAD "refs/heads/$branch" 2>/dev/null) || return 1
   ls="${ls//$'\r'/}"
   base=$(sed -n 's#^ref: refs/heads/\([^[:space:]]*\)[[:space:]]HEAD$#\1#p' <<<"$ls" | head -1)
   [ -n "$base" ] || return 1
   awk -v r="refs/heads/$branch" '$2 == r { f = 1 } END { exit !f }' <<<"$ls" || return 3
   timeout "$t" git -C "$dir" -c gc.auto=0 -c maintenance.auto=false fetch -q --no-tags --no-write-fetch-head \
-    --refmap= --no-recurse-submodules origin \
+    --refmap= --no-recurse-submodules "$remote" \
     "+refs/heads/$branch:refs/devfw/claim-check/$branch" "+refs/heads/$base:refs/devfw/claim-check/base" \
     2>/dev/null || return 1
   body=$(git -C "$dir" log --format=%B "refs/devfw/claim-check/base..refs/devfw/claim-check/$branch" 2>/dev/null) \
