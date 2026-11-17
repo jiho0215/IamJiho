@@ -52,4 +52,12 @@ plan, decisions, lease line and `orchestrator.json`, and returns `{ runId, coreD
 `closeRun` closes every issue/PR labelled `epic:<runId>` or titled with the runId; branches stay in the run's namespace.
 `eventually(fn)` retries a read for up to 30 s; never pass it a write.
 
+## Sweep (orphans of killed runs)
+
+A run killed before `closeRun` leaves its issues and PRs open. `run.sh --sweep` closes, in both sandbox repos, every open
+issue or PR that names only runIds older than 1 hour (in an `epic:<runId>` label or in its title), and every open
+`merged-stale` / `merged-unverifiable` tracker whose PR's base ref starts with `run/`. A fresh run's items and a tracker of
+a PR on any other base are never touched. It is guarded like any write (env names, then the marker pair), and every suite
+run does it first; if it fails, no scenario runs.
+
 The run config leaves `project` unset, so `ticket-sync` skips its Project step and no GitHub Project is ever touched.

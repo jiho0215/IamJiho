@@ -58,8 +58,8 @@ const allowedRepos = (text) => String(text).replace(/\r/g, '').split('\n').map((
 // The record lives in a module-private WeakMap, so a hand-built run object has none. Re-verified after 10 minutes.
 const VERIFIED = new WeakMap();
 const REVERIFY_MS = 10 * 60 * 1000;
-function verifyPair(core, code) {
-  const text = readMarker(core);
+function verifyPair(core, code, read = readMarker) {
+  const text = read(core);
   if (text === null) throw new SandboxError(`${core} has no ${MARKER} file on its default branch (or gh could not read it): refusing to write`);
   if (!allowedRepos(text).includes(code)) throw new SandboxError(`${code} is not listed in the ${MARKER} file of ${core}: refusing to write`);
   return { core, code, at: Date.now() };
@@ -206,6 +206,64 @@ export async function closeRun(run) {
   return closed;
 }
 
+// ---- Sweep: orphans of killed runs (a run that died before closeRun leaves its issues and PRs open).
+const RUN_ID_RE = /r(\d{12})[a-z]{3}/g;
+const STALE_RUN_MS = 60 * 60 * 1000;
+const TRACKER_RE = /^(merged-stale|merged-unverifiable): ([\w.-]+\/[\w.-]+)#(\d+)$/;
+const runIdTime = (digits) => Date.UTC(+digits.slice(0, 4), +digits.slice(4, 6) - 1, +digits.slice(6, 8), +digits.slice(8, 10), +digits.slice(10, 12));
+
+// Pure. rows: open issues/PRs { repo, number, title, labels: [name], pull_request }. prBase(repo, n): the PR's base ref or null.
+// Picks (a) an item naming only runIds older than 1 hour (in an epic:<runId> label or its title), and (b) an open
+// merged-stale / merged-unverifiable tracker whose PR's base ref starts with run/. A fresh run's items, a tracker whose
+// PR is on another (or an unknown) base, and anything naming no runId are never picked.
+export function selectSweep({ rows, now = Date.now(), prBase }) {
+  const picked = [];
+  for (const r of rows) {
+    const t = TRACKER_RE.exec(String(r.title || ''));
+    if (t) {
+      const base = prBase(t[2], Number(t[3]));
+      if (typeof base === 'string' && base.startsWith('run/')) picked.push({ repo: r.repo, number: r.number, why: `${t[1]} tracker of a PR into ${base}` });
+      continue;
+    }
+    const texts = [String(r.title || ''), ...(r.labels || []).filter((l) => l.startsWith('epic:')).map((l) => l.slice(5))];
+    const ids = new Map();
+    for (const s of texts) for (const m of s.matchAll(RUN_ID_RE)) ids.set(m[0], runIdTime(m[1]));
+    if (!ids.size) continue;
+    if ([...ids.values()].every((ms) => now - ms > STALE_RUN_MS)) picked.push({ repo: r.repo, number: r.number, why: `run ${[...ids.keys()].join(',')} is older than 1 hour` });
+  }
+  return picked;
+}
+
+const ghSweepIo = {
+  readMarker: (repo) => ghIo.readMarker(repo),
+  listOpen(repo) {
+    const out = gh(['api', '--paginate', `repos/${repo}/issues?state=open&per_page=100`, '--jq', '.[] | {number, title, labels: [.labels[].name], pull_request: (.pull_request != null)}']).stdout;
+    return out.split('\n').map((s) => s.trim()).filter(Boolean).map((s) => ({ repo, ...JSON.parse(s) }));
+  },
+  prBase(repo, n) {
+    const r = gh(['api', `repos/${repo}/pulls/${n}`, '--jq', '.base.ref'], { allowFail: true });
+    return r.status === 0 ? r.stdout.trim() : null;
+  },
+  close(repo, n) { gh(['api', '-X', 'PATCH', `repos/${repo}/issues/${n}`, '-f', 'state=closed']); },
+};
+
+// Closes the orphans in both sandbox repos. Guarded like every write: env names, then the marker pair, before any read.
+export async function sweep({ env = process.env, io = ghSweepIo, now = Date.now(), delayMs = HARNESS_DELAY_MS } = {}) {
+  const { core, code } = resolveRepos({ coreRepo: env.DEVFW_SANDBOX_CORE, codeRepo: env.DEVFW_SANDBOX_CODE });
+  verifyPair(core, code, io.readMarker);
+  const pair = new Set([core, code]);
+  const rows = [...io.listOpen(core), ...io.listOpen(code)];
+  const prBase = (repo, n) => (pair.has(repo) ? io.prBase(repo, n) : null);
+  const picked = selectSweep({ rows, now, prBase });
+  const closed = [];
+  for (const p of picked) {
+    if (closed.length) await sleep(delayMs);
+    io.close(p.repo, p.number);
+    closed.push(p);
+  }
+  return { closed };
+}
+
 // GitHub access for --init. Injected in unit tests (harness.unit.test.mjs); this is the real one.
 const MAX_SANDBOX_COMMITS = 20;
 const ghIo = {
@@ -294,4 +352,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href &
   Promise.resolve().then(() => initSandbox(parseInitArgs(process.argv.slice(3))))
     .then((r) => { console.log(r.created ? 'marker committed to the sandbox core repo' : r.added ? 'code repo added to the marker' : 'marker already present'); })
     .catch(cliFail);
+}
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href && process.argv[2] === '--sweep') {
+  sweep().then((r) => {
+    for (const x of r.closed) console.log(`swept ${x.repo}#${x.number}: ${x.why}`);
+    console.log(`sweep: closed ${r.closed.length}`);
+  }).catch(cliFail);
 }

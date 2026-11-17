@@ -134,3 +134,67 @@ test('I1: run.sh --init without --confirm (or mismatched) exits 2 before touchin
     assert.match(r.stdout + r.stderr, /--confirm/);
   }
 });
+
+// ---------------------------------------------------------------- I3: sweep selection
+const NOW = Date.UTC(2026, 10, 17, 12, 0, 0);
+const OLD = 'r202611171030abc';   // 90 min before NOW
+const FRESH = 'r202611171130xyz'; // 30 min before NOW
+const iss = (repo, number, title, labels = [], pr = false) => ({ repo, number, title, labels, pull_request: pr });
+
+test('I3: the sweep picks exactly the stale run items and the run-branch trackers', () => {
+  const rows = [
+    iss(CORE, 1, `P-${OLD}-1 · Add a ping endpoint`, [`plan:P-${OLD}-1`, `epic:${OLD}`]), // stale: label + title
+    iss(CORE, 2, 'Some issue', [`epic:${OLD}`]),                                       // stale: label only
+    iss(CODE, 3, `ping ${OLD}`, [], true),                                              // stale: PR titled with the runId
+    iss(CORE, 4, `P-${FRESH}-1 · Add a ping endpoint`, [`epic:${FRESH}`]),               // fresh run: never
+    iss(CODE, 5, `ping ${FRESH}`, [], true),                                            // fresh run PR: never
+    iss(CORE, 6, 'A real issue with no run id', ['bug']),                               // not a run item
+    iss(CORE, 7, `merged-stale: ${CODE}#40`, ['merged-stale']),                          // tracker, PR base run/: swept
+    iss(CORE, 8, `merged-unverifiable: ${CODE}#41`, ['merged-stale']),                   // tracker, PR base run/: swept
+    iss(CORE, 9, `merged-stale: ${CODE}#42`, ['merged-stale']),                          // tracker, PR base main: never
+    iss(CORE, 10, `merged-stale: ${CODE}#43`, ['merged-stale']),                         // tracker, PR base unknown: never
+    iss(CORE, 11, `mixed ${OLD} ${FRESH}`, []),                                         // names a fresh run too: never
+  ];
+  const base = new Map([[`${CODE}#40`, `run/${OLD}`], [`${CODE}#41`, `run/${FRESH}`], [`${CODE}#42`, 'main']]);
+  const picked = H.selectSweep({ rows, now: NOW, prBase: (repo, n) => base.get(`${repo}#${n}`) ?? null });
+  assert.deepEqual(picked.map((x) => `${x.repo}#${x.number}`).sort(), [`${CODE}#3`, `${CORE}#1`, `${CORE}#2`, `${CORE}#7`, `${CORE}#8`].sort());
+  for (const x of picked) assert.ok(x.why, 'each pick says why');
+});
+
+test('I3: a runId exactly one hour old is not yet stale; one minute more is', () => {
+  const at = (id) => H.selectSweep({ rows: [iss(CORE, 1, `x ${id}`)], now: NOW, prBase: () => null }).length;
+  assert.equal(at('r202611171100abc'), 0);
+  assert.equal(at('r202611171059abc'), 1);
+});
+
+test('I3: run.sh --sweep refuses (exit 2) when env is missing, before any GitHub call', () => {
+  const env = { ...process.env, GH_HOST: 'devfw-no-such-host.invalid' };
+  delete env.DEVFW_SANDBOX_CORE; delete env.DEVFW_SANDBOX_CODE;
+  const r = spawnSync('bash', [path.join(HERE, 'run.sh'), '--sweep'], { encoding: 'utf8', env });
+  assert.equal(r.status, 2, r.stdout + r.stderr);
+});
+
+test('I3: sweep() verifies the sandbox pair before reading or closing anything', async () => {
+  const calls = [];
+  const io = {
+    readMarker: (r) => { calls.push(['marker', r]); return null; },
+    listOpen: (r) => { calls.push(['list', r]); return []; },
+    prBase: () => { calls.push(['base']); return null; },
+    close: (r, n) => { calls.push(['close', r, n]); },
+  };
+  await assert.rejects(() => H.sweep({ env: ENV, io, now: NOW }), SandboxError);
+  assert.deepEqual(calls, [['marker', CORE]]);
+});
+
+test('I3: sweep() closes exactly the selected items, in both repos', async () => {
+  const closed = [];
+  const io = {
+    readMarker: () => `# sandbox\n${CODE}\n`,
+    listOpen: (r) => (r === CORE ? [iss(CORE, 1, `x ${OLD}`), iss(CORE, 2, `x ${FRESH}`)] : [iss(CODE, 3, `y ${OLD}`, [], true)]),
+    prBase: () => null,
+    close: (r, n) => { closed.push(`${r}#${n}`); },
+  };
+  const r = await H.sweep({ env: ENV, io, now: NOW, delayMs: 0 });
+  assert.deepEqual(closed.sort(), [`${CODE}#3`, `${CORE}#1`]);
+  assert.equal(r.closed.length, 2);
+});

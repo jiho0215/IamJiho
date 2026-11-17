@@ -1,6 +1,7 @@
 #!/bin/bash
 # Acceptance runner (needs the network; writes only to the sandbox repos). Not part of tests/v6/run.sh.
 #   run.sh                                    run every acceptance/*.accept.mjs and compare with expected.json
+#   run.sh --sweep                            close orphans of killed runs (also run first by every suite run)
 #   run.sh --init --confirm <core> <code> [--force-sandbox]
 #                                             one-time: commit the DEVFW_SANDBOX marker (listing the code repo) to the
 #                                             sandbox core repo's default branch. <core> <code> must repeat the env names.
@@ -16,6 +17,15 @@ fi
 if [ "${1:-}" = "--init" ]; then
   shift
   node "$DIR/harness.mjs" --init "$@"; exit $?
+fi
+if [ "${1:-}" = "--sweep" ]; then
+  node "$DIR/harness.mjs" --sweep; exit $?
+fi
+
+# Every suite run first sweeps orphans of killed runs (guarded like any write). A test scenario dir
+# (DEVFW_ACCEPT_DIR, runner self-tests only) never touches GitHub, so it skips the sweep.
+if [ -z "${DEVFW_ACCEPT_DIR:-}" ]; then
+  node "$DIR/harness.mjs" --sweep || { rc=$?; echo "run.sh: sweep failed (exit $rc); no scenario was run" >&2; exit $rc; }
 fi
 
 TAP="$(mktemp)"; command -v cygpath >/dev/null 2>&1 && TAP="$(cygpath -m "$TAP")"; trap 'rm -f "$TAP"' EXIT
