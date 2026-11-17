@@ -69,6 +69,31 @@ run "$W" 'git worktree add -b t/4'"'"'1-x ../w'; expect 2 "unparseable, mentions
 run "$W" 'git "unterminated switch -c t/43-z'; expect 2 "parse failure mentioning t/"
 run "$W" 'git "unterminated branch'; expect 0 "parse failure, no t/"
 
+# R19: one deadline per hook run. A slow network must end the run by budget exhaustion before the hooks.json timeout,
+# never let two in-budget calls add up past it. The stub git sleeps on ls-remote/fetch until 600 ms before the run
+# deadline (HOOK_DEADLINE_MS, exported by _v6-hook.sh), else 3 s each: the ls-remote finishes, the fetch must find no
+# time left and block. Without the deadline the two sleeps add up and the claimed branch is allowed.
+REALGIT=$(command -v git)
+mkdir -p "$TMP/slowgit"
+cat > "$TMP/slowgit/git" <<STUB
+#!/bin/bash
+case " \$* " in
+  *" ls-remote "*|*" fetch "*)
+    if [ -n "\${HOOK_DEADLINE_MS:-}" ]; then
+      now=\${EPOCHREALTIME//[.,]/}; now=\$(( 10#\${now:0:\${#now}-3} ))
+      ms=\$(( HOOK_DEADLINE_MS - 600 - now ))
+      [ "\$ms" -le 0 ] || sleep "\$(printf '%d.%03d' \$((ms / 1000)) \$((ms % 1000)))"
+    else sleep 3; fi ;;
+esac
+exec "$REALGIT" "\$@"
+STUB
+chmod +x "$TMP/slowgit/git"
+T0=$SECONDS
+DEVFW_HOOK_BUDGET=4 PATH="$TMP/slowgit:$PATH" run "$W" 'git checkout -b t/41-x origin/t/41-x'
+expect 2 "run budget exhausted before the second network call"
+says 'devfw claim-guard: time budget ran out' "budget text"
+[ $((SECONDS - T0)) -le 6 ] || fail "budget run took $((SECONDS - T0))s (budget 4s)"
+
 # no core dir
 ERR=$(jq -cn --arg cwd "$W" '{tool_name:"Bash",cwd:$cwd,tool_input:{command:"git switch -c t/43-z"}}' | env -u DEVFW_CORE_DIR bash "$HOOK" 2>&1 >/dev/null); RC=$?
 expect 0 "DEVFW_CORE_DIR unset"

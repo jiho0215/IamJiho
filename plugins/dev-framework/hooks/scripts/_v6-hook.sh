@@ -9,10 +9,57 @@ HOOK_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # devfw_path, devfw_require; also exports MSYS_NO_PATHCONV for Git Bash.
 . "$HOOK_LIB_DIR/../../bin/_lib.sh"
 
-# hook_init <hook-name>: read the hook's stdin JSON once. Empty or non-JSON stdin leaves every field empty;
-# the caller decides what that means for scope.
+# ---- run deadline (ruling R19) ----
+# A hooks.json timeout does not block (fail-open), so each hook run has ONE budget, strictly below its hooks.json
+# timeout (>= 5 s margin for local node/jq/git work), counted from when this library is sourced. Every network call
+# goes through hook_net, which bounds it by min(its per-call bound, the time left). No time left before a call
+# blocks. DEVFW_HOOK_BUDGET overrides the budget (tests; user-controlled, like DEVFW_HOOK_NET_TIMEOUT).
+_hook_now_ms() {  # sets HOOK_NOW_MS (epoch milliseconds)
+  local r="${EPOCHREALTIME:-}"
+  if [ -n "$r" ]; then r="${r//[.,]/}"; HOOK_NOW_MS=$(( 10#${r:0:${#r}-3} ))
+  else HOOK_NOW_MS=$(( $(date +%s) * 1000 )); fi
+}
+_hook_set_budget() {  # _hook_set_budget <seconds>
+  HOOK_BUDGET="$1"
+  [[ "${DEVFW_HOOK_BUDGET:-}" =~ ^[0-9]+$ ]] && HOOK_BUDGET="$DEVFW_HOOK_BUDGET"
+  export HOOK_DEADLINE_MS=$(( HOOK_START_MS + HOOK_BUDGET * 1000 ))
+}
+_hook_now_ms; HOOK_START_MS=$HOOK_NOW_MS
+_hook_set_budget 25
+
+# hook_net <out-var> <stderr: null|merge|<file>> <per-call-seconds> <command> [args...]: run the command with its
+# stdout in <out-var>, bounded by min(per-call, time left in the run budget); returns the command's exit code
+# (124 on a timeout). When less than 1 s is left it does not run the command: it blocks (hook_block), or, with
+# HOOK_BUDGET_SOFT=1 (the digest, which must always exit 0), returns 124. Call it in the hook's own shell, never
+# inside $( ... ), and never redirect its stderr (that is where a block message goes).
+hook_net() {
+  local __hn_v="$1" __hn_e="$2" __hn_t="$3" __hn_left __hn_cap __hn_s __hn_o="" __hn_rc=0
+  shift 3
+  _hook_now_ms
+  __hn_left=$(( HOOK_DEADLINE_MS - HOOK_NOW_MS ))
+  if [ "$__hn_left" -lt 1000 ]; then
+    printf -v "$__hn_v" '%s' ""
+    [ -z "${HOOK_BUDGET_SOFT:-}" ] || return 124
+    hook_block "time budget ran out (${HOOK_BUDGET}s per run) before a network call; not allowing this (retry when the network is faster)"
+  fi
+  __hn_cap=$__hn_left
+  if [[ "$__hn_t" =~ ^[0-9]+$ ]] && [ $(( __hn_t * 1000 )) -lt "$__hn_cap" ]; then __hn_cap=$(( __hn_t * 1000 )); fi
+  printf -v __hn_s '%d.%03d' $(( __hn_cap / 1000 )) $(( __hn_cap % 1000 ))
+  case "$__hn_e" in
+    null)  __hn_o=$(timeout "$__hn_s" "$@" 2>/dev/null) || __hn_rc=$? ;;
+    merge) __hn_o=$(timeout "$__hn_s" "$@" 2>&1) || __hn_rc=$? ;;
+    *)     __hn_o=$(timeout "$__hn_s" "$@" 2>"$__hn_e") || __hn_rc=$? ;;
+  esac
+  printf -v "$__hn_v" '%s' "$__hn_o"
+  return "$__hn_rc"
+}
+
+# hook_init <hook-name> [<run-budget-seconds>]: read the hook's stdin JSON once and set the run budget (default
+# 25; every wired hook passes its own, fenced by tests/v6/hooks/hooks-json.test.sh). Empty or non-JSON stdin
+# leaves every field empty; the caller decides what that means for scope.
 hook_init() {
   HOOK_NAME="$1"
+  _hook_set_budget "${2:-25}"
   HOOK_JSON=""
   if [ ! -t 0 ]; then HOOK_JSON=$(cat 2>/dev/null) || HOOK_JSON=""; fi
   HOOK_CORE=""
@@ -181,15 +228,15 @@ hook_claim_ok() {
   [[ "$branch" =~ ^t/([1-9][0-9]*)- ]] || return 3
   n="${BASH_REMATCH[1]}"
   git check-ref-format "refs/heads/$branch" || return 3
-  ls=$(timeout "$t" git -C "$dir" ls-remote --symref "$remote" HEAD "refs/heads/$branch" 2>/dev/null) || return 1
+  hook_net ls null "$t" git -C "$dir" ls-remote --symref "$remote" HEAD "refs/heads/$branch" || return 1
   ls="${ls//$'\r'/}"
   base=$(sed -n 's#^ref: refs/heads/\([^[:space:]]*\)[[:space:]]HEAD$#\1#p' <<<"$ls" | head -1)
   [ -n "$base" ] || return 1
   awk -v r="refs/heads/$branch" '$2 == r { f = 1 } END { exit !f }' <<<"$ls" || return 3
-  timeout "$t" git -C "$dir" -c gc.auto=0 -c maintenance.auto=false fetch -q --no-tags --no-write-fetch-head \
+  hook_net body null "$t" git -C "$dir" -c gc.auto=0 -c maintenance.auto=false fetch -q --no-tags --no-write-fetch-head \
     --refmap= --no-recurse-submodules "$remote" \
     "+refs/heads/$branch:refs/devfw/claim-check/$branch" "+refs/heads/$base:refs/devfw/claim-check/base" \
-    2>/dev/null || return 1
+    || return 1
   body=$(git -C "$dir" log --format=%B "refs/devfw/claim-check/base..refs/devfw/claim-check/$branch" 2>/dev/null) \
     || return 1
   grep -q "^Claim-Issue: $n\$" <<<"${body//$'\r'/}" && return 0

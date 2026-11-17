@@ -123,4 +123,18 @@ g -C "$TMP/a" push -q origin "$SHA41:refs/heads/t/43-y"
 g clone -q "$TMP/origin.git" "$TMP/c" 2>/dev/null
 git -C "$TMP/c" remote set-url origin "$TMP/does-not-exist.git"
 [ "$(claim_ok "$TMP/c" t/41-x)" = 1 ] || fail "hook_claim_ok: missing origin must be 1"
+
+# ---- hook_net: one deadline per run (ruling R19)
+R=$(DEVFW_HOOK_BUDGET=0 run '{}' 'hook_init t 25; hook_net o null 5 echo hi; echo after')
+[ "$R" = "2||devfw t: time budget ran out (0s per run) before a network call; not allowing this (retry when the network is faster)" ] || fail "hook_net, no budget left: $R"
+R=$(DEVFW_HOOK_BUDGET=0 run '{}' 'HOOK_BUDGET_SOFT=1; hook_init t 25; hook_net o null 5 echo hi; echo "rc=$? [$o]"')
+[ "$R" = "0|rc=124 []|" ] || fail "hook_net soft, no budget left: $R"
+R=$(run '{}' 'hook_init t 25; hook_net o merge 5 sh -c "echo a; echo b >&2; exit 3"; echo "rc=$? [$o]"')
+[ "$R" = "0|rc=3 [a"$'\n'"b]|" ] || fail "hook_net merge + exit code: $R"
+R=$(run '{}' 'hook_init t 25; hook_net o null 1 sleep 3; echo "rc=$?"')
+[ "$R" = "0|rc=124|" ] || fail "hook_net per-call bound: $R"
+R=$(DEVFW_HOOK_BUDGET=3 run '{}' 'hook_init t 25; hook_net o null 20 sleep 5; echo "rc=$? $SECONDS"')
+[[ "$R" =~ ^0\|rc=124\ [0-3]\|$ ]] || fail "hook_net capped by the time left, not the per-call bound: $R"
+R=$(DEVFW_HOOK_BUDGET=x run '{}' 'hook_init t 7; echo "$HOOK_BUDGET"')
+[ "$R" = "0|7|" ] || fail "a non-numeric DEVFW_HOOK_BUDGET is ignored: $R"
 echo ok

@@ -11,7 +11,7 @@
 # (5) default branch blocks. (6) t/<n>-... needs `hook_claim_ok`. (7) the issue must not be `needs-ack`.
 # Network calls (claim fetch, gh) are bounded by DEVFW_HOOK_NET_TIMEOUT (20s); a timeout blocks.
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_v6-hook.sh"
-hook_init push-guard
+hook_init push-guard 25
 [ -n "$HOOK_CORE" ] || exit 0
 [ "$HOOK_TOOL" = Bash ] || exit 0
 CMD=$(hook_field .tool_input.command)
@@ -124,7 +124,7 @@ _check_dst() {  # _check_dst <dir> <repo> <dst-branch> <remote>
   [ "$rc" -eq 0 ] || hook_block "cannot verify the claim (fetch failed)"
   rc=0
   [ -n "$PLAN_REPO" ] || hook_block "cannot read issue $n"
-  out=$(timeout "$NET" gh api "repos/$PLAN_REPO/issues/$n" 2>/dev/null) || rc=$?
+  hook_net out null "$NET" gh api "repos/$PLAN_REPO/issues/$n" || rc=$?
   out="${out//$'\r'/}"
   [ "$rc" -eq 0 ] || hook_block "cannot read issue $n"
   lab=$(jq -r '[.labels[]?.name] | join("\n")' <<<"$out" 2>/dev/null | tr -d '\r') || hook_block "cannot read issue $n"

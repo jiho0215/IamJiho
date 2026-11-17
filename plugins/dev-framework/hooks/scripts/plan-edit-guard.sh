@@ -13,7 +13,7 @@
 # the core path, or a cd has a non-literal argument. RESIDUAL, accepted: an opaque command (e.g. eval) with no
 # core path in its text, run from a cwd outside core, is not seen; other projects must not be blocked.
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_v6-hook.sh"
-hook_init plan-edit-guard
+hook_init plan-edit-guard 25
 [ -n "$HOOK_CORE" ] || exit 0
 
 PLAN=$(hook_cfg '.plan.path' 'docs/plan') || hook_block "cannot read the config; not allowing a plan edit"
@@ -90,7 +90,7 @@ if [ -n "$HOOK_AGENT_ID" ]; then
   hook_block "subagents never edit the plan; return the change to the main session"
 fi
 rc=0
-OUT=$(timeout "${DEVFW_HOOK_NET_TIMEOUT:-20}" "${DEVFW_BIN_DIR:-$HOOK_LIB_DIR/../../bin}/lease" check --core-dir "$(devfw_path "$HOOK_CORE")" 2>&1) || rc=$?
+hook_net OUT merge "${DEVFW_HOOK_NET_TIMEOUT:-20}" "${DEVFW_BIN_DIR:-$HOOK_LIB_DIR/../../bin}/lease" check --core-dir "$(devfw_path "$HOOK_CORE")" || rc=$?
 OUT="${OUT//$'\r'/}"
 case "$rc" in
   0) exit 0 ;;

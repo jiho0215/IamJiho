@@ -5,11 +5,11 @@
 # - no PreToolUse entry or hook carries `if` (a blocking hook pre-filters itself; an `if` is a silent skip);
 # - every Edit matcher also names Write, MultiEdit and NotebookEdit;
 # - the v6 rows of the Task 10 table are present with their timeouts; no EnterWorktree matcher (ruling R5);
-# - every hook's timeout is greater than its script's largest inner `timeout` default (a hook timeout does not
-#   block, so the script's own bound must fire first). The bounds are written `timeout N`,
-#   `timeout "${VAR:-N}"`, or via a variable set from `${VAR:-N}`; hook_claim_ok's default (60) counts for a
-#   script that calls it unless the script exports HOOK_NET_TIMEOUT first. Every network-call line in a wired
-#   v6 script carries `timeout`.
+# - one deadline per hook run (ruling R19): every v6 script's run budget (`hook_init <name> <N>`, else the
+#   _v6-hook.sh default) plus a 5 s margin fits in its hooks.json timeout (a hook timeout does not block, so the
+#   run must end first);
+# - every network call (gh api/pr, git fetch/ls-remote, bin/lease, merge-gate, stop-check) in a wired script or
+#   _v6-hook.sh goes through hook_net, and no bare `timeout` exists outside hook_net's own body.
 # DEVFW_TEST_HOOKS_JSON overrides the file under test (used to show RED against an older hooks.json).
 set -uo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -68,43 +68,75 @@ row Stop '*' stop-backstop.sh 30
 n=$(J '[.hooks[][] | .matcher // "" | split("|")[] | select(. == "EnterWorktree")] | length')
 [ "$n" = 0 ] || fail "EnterWorktree is registered, but Q5 is unmeasured (ruling R5)"
 
-# 5. inner bounds below the hook timeout.
-bound() {  # bound <script path>: largest effective default bound in seconds (0 = none)
-  local f="$1" max=0 v
-  local nums
-  nums=$( { grep -oE 'timeout [0-9]+' "$f" | grep -oE '[0-9]+'
-            grep -E 'timeout ' "$f" | grep -oE '\$\{[A-Z_]*TIMEOUT[A-Z_]*:-[0-9]+\}' | grep -oE '[0-9]+'
-            grep -E '^[[:space:]]*(export[[:space:]]+)?[A-Z_]+=.*\$\{[A-Z_]*TIMEOUT:-[0-9]+\}' "$f" \
-              | grep -oE ':-[0-9]+\}' | grep -oE '[0-9]+'
-            if grep -q 'hook_claim_ok ' "$f" && ! grep -qE '^[[:space:]]*export HOOK_NET_TIMEOUT=' "$f"; then
-              grep -E 'HOOK_NET_TIMEOUT:-[0-9]+' "$SCRIPTS/_v6-hook.sh" | grep -oE 'HOOK_NET_TIMEOUT:-[0-9]+' | grep -oE '[0-9]+$'
-            fi; } | tr -d '\r')
-  for v in $nums; do [ "$v" -gt "$max" ] && max=$v; done
-  echo "$max"
+# 5. one deadline per run (ruling R19): each v6 script sets its run budget with `hook_init <name> <N>`, and N plus
+#    a 5 s margin for local work must fit in its hooks.json timeout. A script that sources _v6-hook.sh but passes
+#    no budget gets the library default, which must fit too.
+MARGIN=5
+LIBDEF=$(grep -oE '^_hook_set_budget [0-9]+' "$SCRIPTS/_v6-hook.sh" | grep -oE '[0-9]+$' | head -1)
+budget() {  # budget <script path>: its run budget in seconds; empty when it does not use _v6-hook.sh
+  local f="$1" b
+  grep -q '_v6-hook\.sh' "$f" || return 0
+  b=$(grep -E '^[[:space:]]*hook_init[[:space:]]+[A-Za-z0-9_-]+' "$f" | head -1 | awk '{print $3}' | tr -d '\r')
+  [[ "$b" =~ ^[0-9]+$ ]] || b="$LIBDEF"
+  echo "$b"
 }
+[[ "$LIBDEF" =~ ^[0-9]+$ ]] || fail "cannot read _v6-hook.sh's default run budget"
 while IFS=$'\t' read -r cmd to; do
   [ -n "$cmd" ] || continue
   name=${cmd#"$PREFIX"}; f="$SCRIPTS/$name"; [ -f "$f" ] || continue
-  b=$(bound "$f")
-  [ "$b" -lt "$to" ] || fail "$name: inner timeout bound ${b}s is not below its hook timeout ${to}s"
+  b=$(budget "$f")
+  [ -n "$b" ] || continue
+  [ $((b + MARGIN)) -le "$to" ] || fail "$name: run budget ${b}s + ${MARGIN}s margin exceeds its hook timeout ${to}s"
 done < <(J '.hooks[][].hooks[] | [.command, (.timeout|tostring)] | @tsv')
 
-# 6. every network call in a wired v6 script carries timeout (no unbounded call hides behind a small bound).
-for name in session-digest.sh plan-edit-guard.sh freeze-gate.sh merge-gate-hook.sh push-guard.sh claim-guard.sh stop-backstop.sh _v6-hook.sh; do
-  while IFS= read -r line; do
-    grep -q 'timeout' <<<"$line" || fail "$name: network call without timeout: $line"
-  done < <(grep -vE '^[[:space:]]*#' "$SCRIPTS/$name" \
-    | grep -E 'gh (api|pr) |[[:space:]]fetch[[:space:]]|ls-remote|/lease"? check|/merge-gate"? ' | grep -v 'hook_block' | tr -d '\r')
+# 6. every network call goes through the deadline helper. In each wired script and in _v6-hook.sh, outside the
+#    hook_net definition: (a) no `timeout` command at all; (b) every line that calls gh api / gh pr, git fetch /
+#    ls-remote, or bin/lease / merge-gate / stop-check carries hook_net. Quoted text is ignored for (b)'s gh/git
+#    words (a block message may name a command), never a whole line.
+offenders() {  # offenders <file>: prints "lineno: text" for each violation
+  awk '
+    /^[[:space:]]*#/ { next }
+    /^hook_net\(\)[[:space:]]*\{/ { inhn = 1 }
+    inhn { if ($0 ~ /^\}/) inhn = 0; next }
+    {
+      line = $0; sub(/[[:space:]]#[^"]*$/, "", line)
+      unq = line; gsub(/"[^"]*"/, "\"\"", unq)
+      bare = (unq ~ /(^|[^A-Za-z0-9_-])timeout[[:space:]]/)
+      net  = (unq ~ /(^|[^A-Za-z0-9_-])gh[[:space:]]+(api|pr)([[:space:]]|$)/ ||
+              unq ~ /(^|[[:space:]])(fetch|ls-remote)([[:space:]]|$)/ ||
+              line ~ /\/(lease|merge-gate|stop-check)"?([[:space:])]|$)/)
+      pure = (line ~ /^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*="[^"]*"[[:space:]]*$/)
+      if (bare) print NR ": bare timeout: " $0
+      else if (net && !pure && line !~ /(^|[^A-Za-z0-9_])hook_net[[:space:]]/) print NR ": network call outside hook_net: " $0
+    }' "$1" | tr -d '\r'
+}
+NETFILES=(_v6-hook.sh)
+while IFS= read -r cmd; do [ -n "$cmd" ] && NETFILES+=("${cmd#"$PREFIX"}"); done < <(J '.hooks[][].hooks[].command' | sort -u)
+for name in "${NETFILES[@]}"; do
+  [ -f "$SCRIPTS/$name" ] || continue
+  while IFS= read -r o; do [ -z "$o" ] || fail "$name:$o"; done < <(offenders "$SCRIPTS/$name")
 done
 
-# 7. self-check: the bound reader reads each form (so a reader regression cannot make section 5 vacuous).
+# 7. self-checks: each reader on samples, so a reader regression cannot make sections 5-6 vacuous.
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
-printf 'x=$(timeout 7 gh api a)\n' > "$T/a.sh";                                   [ "$(bound "$T/a.sh")" = 7 ] || fail "bound reader: 'timeout N'"
-printf 'x=$(timeout "${DEVFW_HOOK_NET_TIMEOUT:-21}" gh api a)\n' > "$T/b.sh";       [ "$(bound "$T/b.sh")" = 21 ] || fail "bound reader: timeout \"\${VAR:-N}\""
-printf 'NET="${DEVFW_HOOK_NET_TIMEOUT:-22}"\ntimeout "$NET" gh api a\n' > "$T/c.sh"; [ "$(bound "$T/c.sh")" = 22 ] || fail "bound reader: VAR=\${X:-N}"
-printf 'hook_claim_ok "$d" "$b" || rc=$?\n' > "$T/d.sh"
-want=$(grep -oE 'HOOK_NET_TIMEOUT:-[0-9]+' "$SCRIPTS/_v6-hook.sh" | grep -oE '[0-9]+$' | head -1)
-[ -n "$want" ] && [ "$(bound "$T/d.sh")" = "$want" ] || fail "bound reader: hook_claim_ok without export should read _v6-hook's default ($want)"
+x() { printf '%s\n' "$2" > "$T/s.sh"; local got; got=$(offenders "$T/s.sh"); if [ "$1" = flag ]; then [ -n "$got" ] || fail "offenders reader missed: $2"; else [ -z "$got" ] || fail "offenders reader flagged: $2 ($got)"; fi; }
+x flag 'x=$(timeout 7 gh api a)'
+x flag 'out=$(timeout "${DEVFW_HOOK_NET_TIMEOUT:-21}" "$BIN/lease" check)'
+x flag '  timeout "$t" git -C "$dir" fetch -q origin \'
+x flag 'out=$(gh api "repos/$R/issues/$n" 2>/dev/null)'
+x flag 'git -C "$d" ls-remote origin HEAD'
+x flag 'out=$("$BIN/merge-gate" --pr 1)'
+x flag '[ "$x" ] || hook_block "gh pr merge failed"; gh pr merge 1 --repo a/b'
+x flag 'OUT=$(bash "$(devfw_path "$DEVFW_BIN_DIR/stop-check")" --ledger l)'
+x ok   'hook_net out null 20 gh api "repos/$R/issues/$n" || rc=$?'
+x ok   'hook_net body null "$t" git -C "$dir" fetch -q --no-tags \'
+x ok   'hook_block "cannot read this merge command exactly; write it as: gh pr merge <n> --repo <owner/name> --squash"'
+x ok   'SC="${DEVFW_BIN_DIR:-$HOOK_LIB_DIR/../../bin}/stop-check"'
+x ok   '# timeout 20 gh api in a comment'
+printf 'hook_net() {\n  __o=$(timeout "$s" "$@")\n}\n' > "$T/s.sh"; [ -z "$(offenders "$T/s.sh")" ] || fail "offenders reader flagged the hook_net body"
+printf '#!/bin/bash\n. "$D/_v6-hook.sh"\nhook_init a 31\n' > "$T/b.sh";  [ "$(budget "$T/b.sh")" = 31 ] || fail "budget reader: hook_init <name> <N>"
+printf '#!/bin/bash\n. "$D/_v6-hook.sh"\nhook_init a\n' > "$T/c.sh";     [ "$(budget "$T/c.sh")" = "$LIBDEF" ] || fail "budget reader: library default"
+printf '#!/bin/bash\necho v5\n' > "$T/d.sh";                            [ -z "$(budget "$T/d.sh")" ] || fail "budget reader: a v5 script has no budget"
 
 [ "$fails" -eq 0 ] || { echo "$fails failure(s)"; exit 1; }
 echo "ok hooks.json wiring"

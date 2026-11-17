@@ -6,14 +6,15 @@ PLUGIN="$DIR/../.."
 unavailable() { echo "dev-framework v6: digest unavailable: $1"; exit 0; }
 # hook_init would hook_block (exit 2) without jq; this hook must always exit 0.
 if [ -n "${DEVFW_CORE_DIR:-}" ] && ! command -v jq >/dev/null 2>&1; then unavailable "jq not found"; fi
-hook_init session-digest
+HOOK_BUDGET_SOFT=1  # the digest always exits 0: an exhausted budget only marks it stale
+hook_init session-digest 10
 if [ -z "$HOOK_CORE" ]; then echo "dev-framework v6: inactive (DEVFW_CORE_DIR not set)"; exit 0; fi
 command -v node >/dev/null 2>&1 || unavailable "node not found"
 CORE=$(devfw_path "$HOOK_CORE")
 BRANCH=$(hook_cfg .plan.branch main) || unavailable "unreadable config"
 PPATH=$(hook_cfg .plan.path docs/plan) || unavailable "unreadable config"
 STALE=0
-timeout "${DEVFW_HOOK_NET_TIMEOUT:-8}" git -C "$CORE" fetch -q --no-write-fetch-head origin "$BRANCH:refs/remotes/origin/$BRANCH" >/dev/null 2>&1 || STALE=1
+hook_net _FETCH_OUT null "${DEVFW_HOOK_NET_TIMEOUT:-8}" git -C "$CORE" fetch -q --no-write-fetch-head origin "$BRANCH:refs/remotes/origin/$BRANCH" || STALE=1
 SHA=$(git -C "$CORE" rev-parse --verify -q "refs/remotes/origin/$BRANCH" 2>/dev/null | tr -d '\r')
 [ -n "$SHA" ] || unavailable "origin/$BRANCH not found"
 TMP=$(mktemp -d 2>/dev/null) || unavailable "no temp dir"

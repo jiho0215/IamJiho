@@ -21,7 +21,7 @@
 # Removed from v5: the SESSION_DIR pointer, bypass.json, the §11 prerequisites check (order is now `depends:`
 # plus the claim). gh is bounded by DEVFW_HOOK_NET_TIMEOUT (default 20s); a timeout blocks.
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_v6-hook.sh"
-hook_init freeze-gate
+hook_init freeze-gate 25
 [ -n "$HOOK_CORE" ] || exit 0
 case "$HOOK_TOOL" in Edit|Write|MultiEdit|NotebookEdit) ;; *) exit 0 ;; esac
 TARGET=$(hook_field '.tool_input.file_path // .tool_input.notebook_path')
@@ -129,7 +129,7 @@ if [ -f "$CACHE" ] && grep -qxF "$BLOB $ID" "$CACHE" 2>/dev/null; then
 fi
 
 rc=0
-OUT=$(timeout "${DEVFW_HOOK_NET_TIMEOUT:-20}" gh api "repos/$PLAN_REPO/issues/comments/$ID" 2>/dev/null) || rc=$?
+hook_net OUT null "${DEVFW_HOOK_NET_TIMEOUT:-20}" gh api "repos/$PLAN_REPO/issues/comments/$ID" || rc=$?
 OUT="${OUT//$'\r'/}"
 [ "$rc" -ne 124 ] || hook_block "cannot read comment $ID: gh timed out"
 [ "$rc" -eq 0 ] || hook_block "cannot read comment $ID (gh exit $rc)"

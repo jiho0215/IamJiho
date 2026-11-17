@@ -7,7 +7,7 @@
 # else block. (5) exit 1/2, unreadable output, or a malformed run.json -> block once with the error.
 # Not fail-closed: the worst it can do is make the session continue once.
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_v6-hook.sh"
-hook_init stop-backstop
+hook_init stop-backstop 25
 command -v jq >/dev/null 2>&1 || exit 0
 [ "$(hook_field .stop_hook_active)" != true ] || exit 0
 [ -n "$HOOK_CWD" ] || exit 0
@@ -23,11 +23,10 @@ if [ -z "$LEDGER" ] || [ -z "$STAGE" ]; then
   hook_block "stop-check failed: devfw/run.json is unreadable or lacks ledger/stage; record it as stopped ${ISSUE:-<issue>} failed"
 fi
 
-SC="$HOOK_LIB_DIR/../../bin/stop-check"
-[ -z "${DEVFW_BIN_DIR:-}" ] || SC="$DEVFW_BIN_DIR/stop-check"
+SC="${DEVFW_BIN_DIR:-$HOOK_LIB_DIR/../../bin}/stop-check"
 ERRF=$(mktemp 2>/dev/null) || ERRF=""
-OUT=$(timeout 20 bash "$(devfw_path "$SC")" --ledger "$(devfw_path "$LEDGER")" --stage "$STAGE" 2>"${ERRF:-/dev/null}")
-RC=$?
+RC=0
+hook_net OUT "${ERRF:-null}" 20 bash "$(devfw_path "$SC")" --ledger "$(devfw_path "$LEDGER")" --stage "$STAGE" || RC=$?
 SERR=""
 [ -z "$ERRF" ] || { SERR=$(tr -d '\r' <"$ERRF" | head -c 400 | tr '\n' ' '); rm -f "$ERRF"; }
 OUT="${OUT//$'\r'/}"

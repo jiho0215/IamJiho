@@ -7,7 +7,7 @@
 # reason leads the block message. Network bounds: lease DEVFW_HOOK_NET_TIMEOUT (20s), gate DEVFW_HOOK_GATE_TIMEOUT
 # (100s; the plan's inner 100 < hook 120).
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_v6-hook.sh"
-hook_init merge-gate-hook
+hook_init merge-gate-hook 115
 [ -n "$HOOK_CORE" ] || exit 0
 [ "$HOOK_TOOL" = Bash ] || exit 0
 CMD=$(hook_field .tool_input.command)
@@ -52,14 +52,14 @@ while IFS= read -r m; do
   [ "$managed" -eq 1 ] || continue
   if [ -n "$PLAN_REPO" ] && [ "${PLAN_REPO,,}" = "${repo,,}" ]; then
     rc=0
-    out=$(timeout "${DEVFW_HOOK_NET_TIMEOUT:-20}" "$BIN/lease" check --core-dir "$CORE_W" 2>&1) || rc=$?
+    hook_net out merge "${DEVFW_HOOK_NET_TIMEOUT:-20}" "$BIN/lease" check --core-dir "$CORE_W" || rc=$?
     out="${out//$'\r'/}"
     [ "$rc" -eq 0 ] || hook_block "only the lease holder merges plan PRs: ${out:-lease check failed (exit $rc)}"
   fi
   rc=0
   # bin/merge-gate is a `#!/usr/bin/env node` script: with MSYS_NO_PATHCONV (exported by _v6-hook.sh) Git Bash hands
   # node.exe its path as /c/..., which node cannot load. Let msys convert the script path for this one exec.
-  out=$(timeout "${DEVFW_HOOK_GATE_TIMEOUT:-100}" env -u MSYS_NO_PATHCONV -u MSYS2_ARG_CONV_EXCL "$BIN/merge-gate" --core-dir "$CORE_W" --repo "$repo" --pr "$pr" 2>"$ERRF") || rc=$?
+  hook_net out "$ERRF" "${DEVFW_HOOK_GATE_TIMEOUT:-100}" env -u MSYS_NO_PATHCONV -u MSYS2_ARG_CONV_EXCL "$BIN/merge-gate" --core-dir "$CORE_W" --repo "$repo" --pr "$pr" || rc=$?
   out="${out//$'\r'/}"
   [ "$rc" -ne 124 ] || hook_block "merge-gate could not run: timed out"
   if ! jq -e 'type == "object"' >/dev/null 2>&1 <<<"$out"; then

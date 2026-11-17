@@ -251,12 +251,14 @@ Each item is a path on which a rule above does NOT block. They are accepted resi
 
 1. **`DEVFW_CORE_DIR` unset**: every v6 hook exits 0 (`_v6-hook.sh` `hook_init`; the digest prints one "inactive"
    line). Exception: `stop-backstop.sh` is scoped by `run.json`'s presence alone (ruling R17).
-2. **A hook timeout does not block.** Each script bounds each network call below its hook timeout
-   (`DEVFW_HOOK_NET_TIMEOUT`, default 20 s; merge-gate `DEVFW_HOOK_GATE_TIMEOUT`, default 100 s; stop-check 20 s),
-   and an expired bound blocks. But the bounds are per call, not per hook run: a claim check is an `ls-remote` plus a
-   `fetch` (2 x 20 s > 30 s) in `claim-guard.sh` and `push-guard.sh` (which may add a 20 s `gh api`), and a command
-   with several in-scope segments runs several checks; a slow enough network can therefore reach the hook timeout
-   first. Raising either env var past the hook timeout is also a fail-open (user-controlled, ruling R10).
+2. **A hook timeout does not block**, so each hook run has one deadline (ruling R19, `_v6-hook.sh` `hook_net`): a run
+   budget set by `hook_init <name> <seconds>` (25 s for the 30 s hooks, 115 s for merge-gate-hook, 10 s for the
+   digest), at least 5 s under the hooks.json timeout. Every network call is bounded by min(its per-call bound:
+   `DEVFW_HOOK_NET_TIMEOUT` default 20 s, `DEVFW_HOOK_GATE_TIMEOUT` default 100 s; the time left), and a call with
+   under 1 s left blocks with "time budget ran out" (the digest only marks itself stale). `hooks-json.test.sh` fences
+   budget + 5 s <= timeout and that every network call goes through `hook_net`. What remains: local work after the
+   last network call (node/jq/git, normally well under the 5 s margin) is not bounded, and `DEVFW_HOOK_BUDGET` raised
+   past the hook timeout is a fail-open (user-controlled, like the per-call env vars, ruling R10).
 3. **`cd` and opaque commands.** A literal `cd <dir>` is tracked within one command (ruling R1); a non-literal `cd`
    or `-C` makes later git / `gh` segments opaque. An opaque segment is in scope only when the hook cwd is in core /
    managed, the text names the core path or a managed slug, or a `cd`/`-C` argument is non-literal (rulings R9, R15,

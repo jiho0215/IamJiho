@@ -14,7 +14,7 @@
 # existing branch is not a Branch entry, so it is not seen here. Network calls are bounded by
 # DEVFW_HOOK_NET_TIMEOUT (default 20s); a timeout blocks.
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_v6-hook.sh"
-hook_init claim-guard
+hook_init claim-guard 25
 [ -n "$HOOK_CORE" ] || exit 0
 [ "$HOOK_TOOL" = Bash ] || exit 0
 CMD=$(hook_field .tool_input.command)

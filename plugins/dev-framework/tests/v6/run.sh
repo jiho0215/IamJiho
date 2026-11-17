@@ -1,5 +1,6 @@
 #!/bin/bash
 # Run every tests/v6/*.test.sh and tests/v6/hooks/*.test.sh; print PASS/FAIL per file; exit non-zero on any failure.
+# Run it bounded: `timeout 25m bash tests/v6/run.sh` (ruling R18; a full run takes ~17 min on Windows Git Bash).
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 fail=0
 for t in "$DIR"/*.test.sh "$DIR"/hooks/*.test.sh; do
