@@ -27,13 +27,16 @@ a second attempt would use 9000200, a third 9000300.
 2. On both machines, from `plugins/dev-framework/tests/v6/acceptance/`, run the same command, saving the output to a file named for the machine:
    `node a9-two-machine.mjs --issue 9000100 --slug race-20261201 --at 14:05:00 --rounds 5 | tee machine-<name>.jsonl`
    It clones, sleeps until the start time, then runs one claim per round, 30 s apart (`--gap` changes it). Each round prints one JSON line with
-   `startedAt` (UTC ms when the claim was launched), `result` (`claimed` = this machine won, `lost`), `lostAt` and the hostname.
+   `startedAt` (UTC ms when the claim was launched), `result` (`claimed` = this machine won, `lost`), `lostAt`, `heldBy` (for a loser:
+   the hostname on the ref it lost to), `issue`, `branch` and the hostname.
    `lostAt` is `precheck` when the loser saw the winner's branch already on origin (it ran after the winner: no race), and `push`
    when the loser's create-only push was rejected (a real collision).
 3. Copy one machine's file to the other, then run on either machine:
    `node a9-two-machine.mjs --compare machine-a.jsonl machine-b.jsonl`
    It needs no network. Per round it prints the winner, the start skew in ms between the two machines, and whether the round `raced`
-   (the loser lost at the push). The last line is the verdict.
+   (the loser lost at the push AND the ref it lost to is held by the other machine, per the loser's `heldBy`). The last line is the verdict.
+   Both files must come from the same attempt: every round must name the same issue and the same branch in both, and no round may
+   appear twice in one file. Otherwise the verdict is ERROR.
 4. Optional: `node a9-two-machine.mjs --verify --issue 9000100 --slug race-20261201 --rounds 5` reads each round's ref from origin and prints the
    winner from the `Claim-Machine` trailer. Its winners must match the `--compare` winners.
 
@@ -42,8 +45,10 @@ a second attempt would use 9000200, a third 9000300.
 - **INCONCLUSIVE**: one winner every round, but fewer than 3 rounds reached the push. The loser mostly arrived after the winner had finished,
   so the atomic push was not exercised. Look at the skew numbers: a large skew (hundreds of ms or more, or seconds) means the clocks disagree;
   sync both clocks (NTP), pick a nearer start time, and rerun on a FRESH issue range (see Namespace). This is not a failure of the claim.
-- **FAILED**: some round has two winners, or none (an `error` result or a missing round). Two winners is a real defect: keep both files and report it.
-- **ERROR** (exit 2): the two files carry the same hostname, so the winner cannot be told apart. Give the machines different hostnames.
+- **FAILED**: some round has two winners, no winner, or no clean loser (an `error` result or a missing round). Two winners is a real
+  defect: keep both files and report it. No winner usually means the issue range was reused (the ref already existed): rerun on a fresh range.
+- **ERROR** (exit 2): the two files carry the same hostname (the winner cannot be told apart), a round names a different issue or branch
+  in the two files, or a round appears twice in one file. The files are not two halves of one attempt.
 Exit codes of `--compare`: 0 VERIFIED, 4 INCONCLUSIVE, 1 FAILED, 2 ERROR.
 
 ## Record the result

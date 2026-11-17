@@ -8,18 +8,23 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const SCRIPT = path.join(path.dirname(fileURLToPath(import.meta.url)), 'a9-two-machine.mjs');
-const row = (machine, round, result, lostAt, startedAt) => JSON.stringify({ round, machine, startedAt, result, lostAt });
-// plan[i] = [winner 'A'|'B'|'both', how the loser lost]
+// One race line, as race() prints it. heldBy = the loser's heldBy.machine (null for a winner).
+const row = (machine, round, result, lostAt, startedAt, heldBy) =>
+  JSON.stringify({ round, issue: 100 + round, machine, startedAt, result, lostAt, heldBy, branch: `t/${100 + round}-s${round}` });
+// plan[i] = [winner 'A'|'B'|'both'|'none', how the loser lost, optional: the machine the loser saw holding the ref]
 function fixture(plan, hostB = 'beta') {
   const A = [], B = [];
-  plan.forEach(([winner, lostAt], i) => {
+  plan.forEach(([winner, lostAt, held], i) => {
     const k = i + 1, t = 1000000 + k * 30000;
     const wa = winner === 'A' || winner === 'both', wb = winner === 'B' || winner === 'both';
-    A.push(row('alpha', k, wa ? 'claimed' : 'lost', wa ? null : lostAt, t));
-    B.push(row(hostB, k, wb ? 'claimed' : 'lost', wb ? null : lostAt, t + 120));
+    A.push(row('alpha', k, wa ? 'claimed' : 'lost', wa ? null : lostAt, t, wa ? null : (held || hostB)));
+    B.push(row(hostB, k, wb ? 'claimed' : 'lost', wb ? null : lostAt, t + 120, wb ? null : (held || 'alpha')));
   });
   return [A.join('\n'), B.join('\n')];
 }
+// Rewrites the fields of one round in one side's lines.
+const patch = (text, round, over) => text.split('\n')
+  .map((l) => (JSON.parse(l).round === round ? JSON.stringify({ ...JSON.parse(l), ...over }) : l)).join('\n');
 function compare(a, b) {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), 'a9cmp-'));
   try {
@@ -60,4 +65,40 @@ test('identical hostnames in the two files is an error, not a verdict', () => {
   const r = compare(...fixture([['A', 'push'], ['A', 'push'], ['A', 'push']], 'alpha'));
   assert.equal(r.summary.verdict, 'ERROR'); assert.equal(r.code, 2);
   assert.match(r.summary.error, /same hostname/);
+});
+
+test('I2: the two files must be about the same attempt: a different issue in one round is ERROR', () => {
+  const [a, b] = fixture([['A', 'push'], ['B', 'push'], ['A', 'push']]);
+  const r = compare(a, patch(b, 2, { issue: 999 }));
+  assert.equal(r.summary.verdict, 'ERROR'); assert.equal(r.code, 2);
+  assert.match(r.summary.error, /round 2.*issue/);
+});
+
+test('I2: a different branch in one round is ERROR', () => {
+  const [a, b] = fixture([['A', 'push'], ['B', 'push'], ['A', 'push']]);
+  const r = compare(patch(a, 3, { branch: 't/103-other' }), b);
+  assert.equal(r.summary.verdict, 'ERROR');
+  assert.match(r.summary.error, /round 3.*branch/);
+});
+
+test('I2: a duplicate round in one file is ERROR', () => {
+  const [a, b] = fixture([['A', 'push'], ['B', 'push'], ['A', 'push']]);
+  const r = compare(`${a}\n${a.split('\n')[1]}`, b);
+  assert.equal(r.summary.verdict, 'ERROR');
+  assert.match(r.summary.error, /round 2.*more than once/);
+});
+
+test('I2: a push loss to a ref held by some OTHER machine is not a race with this winner', () => {
+  // Rounds 1-3 lost at the push, but the loser saw a third machine holding the ref (a leftover of an earlier attempt).
+  const r = compare(...fixture([['A', 'push', 'gamma'], ['B', 'push', 'gamma'], ['A', 'push', 'gamma'], ['A', 'push'], ['B', 'push']]));
+  assert.deepEqual(r.rounds.map((x) => x.raced), [false, false, false, true, true]);
+  assert.equal(r.summary.raced, 2);
+  assert.equal(r.summary.verdict, 'INCONCLUSIVE');
+});
+
+test('I2: a round with zero winners is FAILED and says the issue range was probably reused', () => {
+  const r = compare(...fixture([['A', 'push'], ['none', 'precheck', 'gamma'], ['A', 'push'], ['B', 'push'], ['A', 'push']]));
+  assert.equal(r.summary.verdict, 'FAILED'); assert.equal(r.code, 1);
+  assert.match(r.summary.reason, /round 2: no winner/);
+  assert.match(r.summary.reason, /issue range was probably reused/);
 });

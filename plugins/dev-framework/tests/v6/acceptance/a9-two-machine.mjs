@@ -65,7 +65,9 @@ async function race(o, code) {
       const last = (r.stdout || '').split('\n').map((l) => l.trim()).filter(Boolean).pop();
       try { json = JSON.parse(last); } catch { /* reported below */ }
       console.log(JSON.stringify({ round: k, issue, machine: os.hostname(), startedAt, code: r.status,
-        result: json ? json.result : 'error', lostAt: (json && json.lostAt) || null, branch: json && json.branch, endedAt: Date.now(), ...(json ? {} : { stderr: (r.stderr || '').trim() }) }));
+        result: json ? json.result : 'error', lostAt: (json && json.lostAt) || null,
+        heldBy: (json && json.heldBy && json.heldBy.machine) || null, // the loser's view of who holds the ref (--compare needs it)
+        branch: json && json.branch, endedAt: Date.now(), ...(json ? {} : { stderr: (r.stderr || '').trim() }) }));
     }
   } finally { try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* temp cleaner */ } }
 }
