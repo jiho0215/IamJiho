@@ -8,14 +8,16 @@
 # an unmanaged repo is not ours; the plan repo is decided by the lease alone (`bin/lease check`; design B1, ruling
 # R23: bin/merge-gate is not called for it); every other managed repo must pass `bin/merge-gate`, whose first
 # reason leads the block message. Network bounds: lease DEVFW_HOOK_NET_TIMEOUT (20s), gate DEVFW_HOOK_GATE_TIMEOUT
-# (100s; the plan's inner 100 < hook 120).
+# (100s; the plan's inner 100 < hook 120). R29a: the pre-filter takes `git` too (a git alias or injected config can
+# run a merge with no merge word in the text); a git/gh shell (`!`) alias step counts when its text names gh, merge
+# or pulls/, or when the dir it was looked up in is managed.
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_v6-hook.sh"
 hook_init merge-gate-hook 115
 [ -n "$HOOK_CORE" ] || exit 0
 hook_need_jq 'merge|pulls/'
 [ "$HOOK_TOOL" = Bash ] || exit 0
 CMD=$(hook_field .tool_input.command)
-grep -Eiq 'gh|pulls/|merge' <<<"$CMD" || exit 0
+grep -Eiq 'gh|pulls/|merge|\bgit\b' <<<"$CMD" || exit 0   # R29a: \bgit\b too
 
 hook_parse "$CMD"
 PARSER_OK=1
@@ -27,9 +29,15 @@ fi
 NOPAQUE=0; NUNRES=0
 if [ "$PARSER_OK" -eq 1 ]; then
   NMERGE=$(jq -r '.merges | length' <<<"$PARSED" | tr -d '\r')
-  hook_opaque_rows 'merge|pulls/'
+  hook_opaque_rows 'merge|pulls/' 'merge|pulls/' '\bgh\b|merge|pulls/'
   for row in "${HOOK_OPQ_ROWS[@]}"; do
-    case "$row" in 2*) NUNRES=$((NUNRES + 1)) ;; *) NOPAQUE=$((NOPAQUE + 1)) ;; esac
+    case "$row" in
+      2*) NUNRES=$((NUNRES + 1)) ;;
+      3*)   # R29a: a `!` alias whose text names no merge counts only where it was looked up in a managed repo
+        rc=0; crepo=$(hook_repo_of "${row#*$'\t'}") || rc=1
+        if [ "$rc" -ne 0 ] || [ -n "$crepo" ]; then NOPAQUE=$((NOPAQUE + 1)); fi ;;
+      *) NOPAQUE=$((NOPAQUE + 1)) ;;
+    esac
   done
   if [ "$NUNRES" -gt 0 ]; then   # gh alias list failed: in scope only from a managed cwd (R25)
     rc=0; crepo=$(hook_repo_of "${HOOK_CWD:-.}") || rc=1

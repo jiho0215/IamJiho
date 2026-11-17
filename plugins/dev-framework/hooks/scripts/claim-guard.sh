@@ -67,7 +67,9 @@ if [ "${#HOOK_OPQ_ROWS[@]}" -gt 0 ]; then
   done <<<"$mrepos"
   if [ "$OPAQUE_HIT" -eq 1 ]; then
     OPQ=$(jq -r '.opaque[], (.aliases // [])[].raw' <<<"$PARSED" | tr -d '\r')
-    if ! grep -q 't/' <<<"$CMD" && ! grep -Eq '[$`(]' <<<"$OPQ"; then OPAQUE_HIT=0; fi
+    # M4: an `any` row (an alias from injected config) may name the ticket only inside that config: never dropped
+    ANY=$(jq -r '[(.opaqueDirs // [])[] | select(.any == true)] | length' <<<"$PARSED" | tr -d '\r')
+    if [ "$ANY" = 0 ] && ! grep -q 't/' <<<"$CMD" && ! grep -Eq '[$`(]' <<<"$OPQ"; then OPAQUE_HIT=0; fi
   fi
 fi
 [ "${#INSCOPE[@]}" -gt 0 ] || [ "$OPAQUE_HIT" -eq 1 ] || exit 0

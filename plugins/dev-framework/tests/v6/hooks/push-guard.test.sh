@@ -118,6 +118,42 @@ run "$W" 'git -c color.ui=never push origin t/12-x'; expect 0 "no-regression: ha
 run "$W" 'python -c "print(1)"'; expect 0 "no-regression: python without git"
 run "$W" 'Git status'; expect 0 "no-regression: Git status"
 run "$W" "bash -c 'git status'"; expect 0 "no-regression: interpreter string without a push"
+# --- fix round 1 (rulings R27a, R28a; M1, M2) ---
+# C1 / R27a: a mis-cased builtin is "command not found" in bash: the push still runs in the cwd
+mkdir -p "$TMP/elsewhere"
+run "$W" "CD '$TMP/elsewhere'; git push origin main"; expect 2 "R27a/C1: CD does not move the shell"
+says 'merge to main goes through the merge gate' "R27a: the push is read in the cwd"
+run "$W" "CD '$U'; git push --force origin main"; expect 2 "R27a/C1: CD into an unmanaged repo"
+run "$W" 'Cd /tmp || git push origin main'; expect 2 "R27a/C1: Cd ||"
+run "$W" "PUSHD '$TMP/elsewhere'; git push origin main"; expect 2 "R27a/C1: PUSHD"
+run "$W" "COMMAND cd '$TMP/elsewhere'; git push origin main"; expect 2 "R27a/C1: COMMAND cd"
+run "$W" "env cd '$TMP/elsewhere'; git push origin main"; expect 2 "R27a/C1: env cd (pre-existing)"
+run "$W" "timeout 5 cd '$TMP/elsewhere'; git push origin main"; expect 2 "R27a/C1: timeout 5 cd (pre-existing)"
+run "$W" "cd '$U' && git push --force origin main"; expect 0 "no-regression: a real cd into an unmanaged repo"
+# C2 / R28a: the code runner need not be the command word
+run "$W" "stdbuf -oL bash -c 'git push origin main'"; expect 2 "R28a/C2: stdbuf -oL bash -c"
+says 'cannot read this push command exactly' "R28a text"
+run "$W" "flock '$TMP/l' bash -c 'git push origin main'"; expect 2 "R28a/C2: flock bash -c"
+run "$W" "winpty python -c \"import os; os.system('git push origin main')\""; expect 2 "R28a/C2: winpty python -c"
+run "$U" "stdbuf -oL bash -c 'cd ~/api && git push origin main'"; expect 2 "R28a/C2: from an unmanaged cwd"
+# I1 / R28a: code fed on stdin
+run "$W" "echo 'git push origin main' | bash"; expect 2 "R28a/I1: echo | bash"
+run "$W" "printf 'git push origin main' | sh"; expect 2 "R28a/I1: printf | sh"
+run "$W" $'bash <<\'EOF\'\ngit push origin main\nEOF'; expect 2 "R28a/I1: heredoc into bash"
+run "$W" $'python - <<\'EOF\'\nimport os; os.system("git push origin main")\nEOF'; expect 2 "R28a/I1: heredoc into python -"
+run "$U" "echo 'git push origin main' | bash"; expect 2 "R28a/I1: from an unmanaged cwd"
+run "$W" 'git log --oneline -3 | python -c "import sys"'; expect 0 "no-regression: piping data into python -c"
+# I2 / R28a: a dynamic command word
+run "$U" "\"\$SHELL\" -c 'cd ~/api && git push origin main'"; expect 2 "R28a/I2: \"\$SHELL\" -c from an unmanaged cwd"
+# I3 / R28a: an alias called inside an interpreter string
+git -C "$W" config alias.p push
+run "$W" "bash -c 'git p origin main'"; expect 2 "R28a/I3: alias inside bash -c"
+run "$W" "python -c \"import os; os.system('git p origin main')\""; expect 2 "R28a/I3: alias inside python -c"
+git -C "$W" config --unset alias.p
+# M1: a bare CDPATH assignment
+run "$U" "CDPATH='$TMP'; cd W && git push origin main"; expect 2 "M1: CDPATH=...; cd"
+# M2: a path component named git is not git
+run "$U" 'python tools/git/push_stats.py'; expect 0 "M2: tools/git/ is not the word git"
 # C2 / R21: destinations as git resolves them (W is on main)
 run "$W" 'git push origin @'; expect 2 "C2: @ is the current branch (main)"
 says 'merge to main goes through the merge gate' "@ text"

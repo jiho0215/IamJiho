@@ -109,6 +109,14 @@ run "$(bash_ 'Git status')"; expect 0 "no-regression: Git status in core"
 run "$(bash_ 'git -c color.ui=never status')"; expect 0 "no-regression: harmless -c in core"
 run "$(bash_ 'python -c "print(1)"')"; expect 0 "no-regression: python without git"
 run "$(bash_ 'git push origin t/12-x')"; expect 0 "no-regression: push"
+# --- fix round 1 (rulings R27a, R28a) ---
+mkdir -p "$TMP/elsewhere"
+run "$(bash_ "CD '$TMP/elsewhere'; git commit -m x")"; expect 2 "R27a/C1: CD does not move the shell (commit in core)"
+grep -q lease <<<"$ERR" || fail "R27a: the commit is read in core: $ERR"
+run "$(bash_ "stdbuf -oL bash -c 'git commit -m x'")"; expect 2 "R28a/C2: stdbuf -oL bash -c in core"
+run "$(bash_ "stdbuf -oL bash -c 'git commit -m x'" "$TMP")"; expect 2 "R28a/C2: from outside core (dir unknown)"
+run "$(bash_ "echo 'git commit -m x' | bash" "$TMP")"; expect 2 "R28a/I1: echo | bash from outside core"
+run "$(bash_ "cd '$TMP' && git commit -m x")"; expect 0 "no-regression: a real cd out of core"
 g -C "$CORE" reset -q; g -C "$CORE" checkout -q -- docs/plan/PLAN.md
 echo r2 >> "$CORE/README.md"; g -C "$CORE" add README.md
 run "$(bash_ 'git commit -m x')"; expect 0 "only README staged"

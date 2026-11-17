@@ -151,5 +151,27 @@ if command -v node >/dev/null 2>&1; then
   DEVFW_BIN_DIR="$TMP/nodebin" run 'gh pr merge 2 --repo acme/api --squash'; expect 0 "a node-shebang merge-gate runs (path conversion)"
 fi
 
+# --- fix round 1 (rulings R27a, R28a, R29a) ---
+run "stdbuf -oL bash -c 'gh pr merge 5 --repo acme/api --squash'"; expect 2 "R28a/C2: stdbuf -oL bash -c gh pr merge"
+grep -q 'cannot read this merge command exactly' <<<"$ERR" || fail "R28a text: $ERR"
+run "echo 'gh pr merge 5 --repo acme/api --squash' | bash"; expect 2 "R28a/I1: echo | bash"
+run 'EXPORT GH_REPO=acme/api; gh pr merge 2 --squash'; expect 2 "R27a/C1: EXPORT sets no GH_REPO"
+grep -q 'pass --repo' <<<"$ERR" || fail "R27a: no repo inferred: $ERR"
+# C3 / R29a: git aliases and injected config reach merge-gate-hook (the pre-filter takes git)
+git -C "$TMP/M" config alias.m '!gh pr merge 5 --repo acme/api --squash'
+runin "$TMP/M" 'git m'; expect 2 "R29a/C3: git alias running gh pr merge, managed cwd"
+run "git -C '$TMP/M' m"; expect 2 "R29a/C3: same alias via -C, unmanaged cwd (text names gh)"
+printf '[alias]\n\tx = !gh pr merge 5 --repo acme/api --squash\n' > "$TMP/evil"
+runin "$TMP/M" "git -c include.path='$TMP/evil' x"; expect 2 "R29a/C3: -c include.path"
+runin "$TMP/M" "GIT_CONFIG_GLOBAL='$TMP/evil' git x"; expect 2 "R29a/C3: GIT_CONFIG_GLOBAL"
+# R29a narrowing: a `!` alias that names no gh/merge counts only where it was looked up in a managed repo
+git -C "$TMP/M" config alias.lg '!git log --oneline'
+git init -q "$TMP/UU"; git -C "$TMP/UU" config alias.lg '!git log --oneline'
+runin "$TMP/M" 'git lg'; expect 2 "R29a: a ! alias in a managed repo counts"
+run "git -C '$TMP/UU' lg"; expect 0 "R29a: a ! alias naming no merge, unmanaged repo"
+runin "$TMP/UU" 'git lg'; expect 0 "R29a: same, from its own unmanaged cwd"
+git -C "$TMP/M" config --unset alias.m; git -C "$TMP/M" config --unset alias.lg
+run 'git status'; expect 0 "no-regression: git status through the widened pre-filter"
+run 'git log --oneline -3'; expect 0 "no-regression: git log"
 unset DEVFW_CORE_DIR; run 'gh pr merge 1 --repo acme/api'; expect 0 "DEVFW_CORE_DIR unset"
 echo "PASS: merge-gate-hook"

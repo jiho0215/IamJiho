@@ -127,8 +127,11 @@ hook_parse() {
 # starts with an option, or names a next word that is neither an alias nor a command (parser's gitCommands /
 # ghCommands), or when the chain is longer than 10. A name that is no alias at its FIRST step is not a row (git /
 # gh fail, or run an external git-<name>; as before).
+# R29a: with <bang-regex>, a `!` step counts only when its text matches <bang-regex>; otherwise the call is a row of
+# kind 3 ("3<TAB><abs dir>": the dir the alias was looked up in), which the guard counts only when that dir is
+# managed. Without it, every `!` step counts (kind 0/1).
 hook_opaque_rows() {
-  local re="$1" are="${2:-$1}" row tool name dir unk d val ghl="" ghrc=-1 n nx depth hit w
+  local re="$1" are="${2:-$1}" bre="${3:-}" row tool name dir unk d val ghl="" ghrc=-1 n nx depth hit w
   local -A cmds=()
   HOOK_OPQ_ROWS=()
   while IFS= read -r row; do
@@ -157,13 +160,21 @@ hook_opaque_rows() {
         val="${val# }"
       fi
       if [ -z "$val" ]; then [ "$depth" -eq 1 ] || hit=1; break; fi  # later step: names an alias that does not resolve
-      case "$val" in '!'*) hit=1; break ;; esac                       # a shell alias: unreadable
+      # a shell alias: unreadable. (For real aliases the unresolved-step clause would also catch it on the next step, since
+      # "!word" is never an alias or a command; keep BOTH: deleting that clause would leave shell aliases to this one,
+      # and the R29a narrowing below needs a `!` step to stop here rather than fall through to it.)
+      if [ "${val:0:1}" = '!' ]; then
+        if [ -z "$bre" ] || jq -en --arg v "$val" --arg re "$bre" '$v | test($re; "i")' >/dev/null 2>&1; then hit=1
+        else hit=3; fi
+        break
+      fi
       if jq -en --arg v "$val" --arg re "$are" '$v | test($re; "i")' >/dev/null 2>&1; then hit=1; break; fi
       read -r nx _ <<<"$val"
       case "$nx" in -*|'') hit=1; break ;; esac                       # options first: not read here
       [ -z "${cmds["$tool:${nx,,}"]:-}" ] || break                    # a command the regex did not match: harmless
       n="$nx"
     done
+    if [ "$hit" -eq 3 ]; then HOOK_OPQ_ROWS+=("3"$'\t'"$d"); continue; fi   # R29a: counts only where $d is managed
     [ "$hit" -eq 1 ] || continue
     HOOK_OPQ_ROWS+=("$([ "$unk" = true ] && echo 1 || echo 0)"$'\t'"$dir")
   done < <(jq -r '(.aliases // [])[] | [.tool, .name, (.dir // ""), (.unknown | tostring)] | join("\u001f")' <<<"$PARSED" | tr -d '\r')

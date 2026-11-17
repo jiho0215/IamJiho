@@ -79,6 +79,18 @@ run "$W" 'git -c color.ui=never status'; expect 0 "no-regression: harmless -c"
 run "$W" 'git commit -m x'; expect 0 "no-regression: commit"
 run "$W" 'git push origin t/12-x'; expect 0 "no-regression: push"
 run "$W" 'git checkout -b t/41-x origin/t/41-x'; expect 0 "no-regression: claimed checkout -b"
+# --- fix round 1 (rulings R27a, R28a; M4) ---
+mkdir -p "$TMP/elsewhere"
+run "$W" "CD '$TMP/elsewhere'; git checkout -b t/43-z"; expect 2 "R27a/C1: CD does not move the shell"
+says 't/43-… has no claim on origin' "R27a: the creation is read in the cwd"
+run "$W" "stdbuf -oL bash -c 'git checkout -b t/43-z'"; expect 2 "R28a/C2: stdbuf -oL bash -c"
+run "$W" "echo 'git switch -c t/43-z' | bash"; expect 2 "R28a/I1: echo | bash"
+git -C "$W" config alias.nb 'checkout -b'
+run "$W" "bash -c 'git nb t/43-z'"; expect 2 "R28a/I3: alias inside bash -c"
+git -C "$W" config --unset alias.nb
+printf '[alias]\n\tx = !git checkout -b t/43-z\n' > "$TMP/evil"
+run "$W" "GIT_CONFIG_GLOBAL='$TMP/evil' git x"; expect 2 "M4: an any row is not dropped by the t/ filter"
+run "$W" "GIT_CONFIG_GLOBAL='$TMP/evil' git status"; expect 0 "no-regression: injected config, harmless builtin"
 
 run "$W" 'git worktree add ../wt -b t/41-x origin/t/41-x'; expect 0 "claimed worktree add"
 run "$W" 'git checkout -b t/41-x origin/t/41-x'; expect 0 "claimed checkout -b"
