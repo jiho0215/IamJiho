@@ -16,6 +16,6 @@ if [ "${1:-}" = "--init" ]; then
 fi
 
 TAP="$(mktemp)"; command -v cygpath >/dev/null 2>&1 && TAP="$(cygpath -m "$TAP")"; trap 'rm -f "$TAP"' EXIT
-node --test --test-timeout=300000 --test-reporter=tap "$SCEN"/*.accept.mjs >"$TAP" 2>&1
+node --test --test-concurrency=1 --test-timeout=300000 --test-reporter=tap "$SCEN"/*.accept.mjs >"$TAP" 2>&1
 node "$DIR/tap-report.mjs" "$TAP" "$SCEN/expected.json"
 exit $?

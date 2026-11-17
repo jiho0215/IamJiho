@@ -1,3 +1,5 @@
 {
-  "A0": { "expect": "green" }
+  "A0": { "expect": "green" },
+  "A1": { "expect": "green" },
+  "A4": { "expect": "green" }
 }
