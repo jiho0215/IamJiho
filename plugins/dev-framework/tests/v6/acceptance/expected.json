@@ -6,6 +6,6 @@
   "A4": { "expect": "green" },
   "A5": { "expect": "green" },
   "A6": { "expect": "green" },
-  "A7": { "expect": "red", "until": "Plan 3", "reason": "hooks/scripts/plan-edit-guard.sh" },
+  "A7": { "expect": "green" },
   "A8": { "expect": "green" }
 }

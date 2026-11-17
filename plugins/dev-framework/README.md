@@ -214,6 +214,83 @@ Under `skills/implement/references/autonomous/`:
 Under `skills/spike/references/autonomous/`:
 - `mistake-tracker-protocol.md` \u2014 chronic design-pattern lifecycle (fork of code variant, applied at spike-plan level)
 
+## v6 hooks (Plan 3)
+
+Wired in `hooks/hooks.json`; the wiring itself is fenced by `tests/v6/hooks/hooks-json.test.sh` (scripts exist and
+are executable, no `if` on any PreToolUse entry, the Edit matcher is `Edit|Write|MultiEdit|NotebookEdit`, each script's
+inner network bound is below its hook timeout, no EnterWorktree matcher). Every v6 hook reads its config from
+`DEVFW_CONFIG` or `<DEVFW_CORE_DIR>/orchestrator.json`, decides scope with no network, and inside scope fails closed:
+a block is exit 2 with stderr line 1 `devfw <hook-name>: <reason>`. Each script's header comment states its rules in
+order; the "rule" numbers below refer to those headers.
+
+| Event / matcher | Script | Timeout | Rule | Status |
+|---|---|---|---|---|
+| SessionStart | `session-digest.sh` | 15 s | Print the plan digest (fetch bounded at 8 s; stale is flagged) | Informational: always exits 0 |
+| PreToolUse Edit family + Bash | `plan-edit-guard.sh` | 30 s | Only the lease holder edits the plan or commits plan changes in core (`bin/lease check`, rules 2 and 5) | **Enforced** |
+| PreToolUse Edit family + Bash | `plan-edit-guard.sh` | 30 s | Subagents never edit the plan (rule 4, gated on a non-empty `agent_id`) | **Convention-backed** until Q2 is measured (see below) |
+| PreToolUse Edit family | `freeze-gate.sh` | 30 s | On a claim branch `t/<n>-<slug>`, a code edit needs the freeze doc committed on that branch to be APPROVED, hash-verified, and cite an `owner-said <n> <path>@<content hash>` comment on issue `<n>` by a trusted author (rules 4-8; hash from `freeze-content-hash.sh`) | **Enforced** (record + content binding); who typed `owner-said` is convention |
+| PreToolUse Bash | `merge-gate-hook.sh` | 120 s | `gh pr merge` / `gh api .../pulls/N/merge`: no `--auto`, `--repo` required, plan-repo merges need the lease, other managed repos must pass `bin/merge-gate` (bounded at 100 s) | **Enforced** for merges run through Claude's Bash tool |
+| PreToolUse Bash | `push-guard.sh` | 30 s | In a managed repo: no force/delete (unless `hooks.pushGuard.allowForce`), no push to the default branch, a `t/<n>-...` push needs a claim on origin, and issue `<n>` must not carry `needs-ack` | **Enforced** |
+| PreToolUse Bash | `claim-guard.sh` | 30 s | Creating a `t/<n>-<slug>` branch (`worktree add -b`, `checkout -b`, `switch -c`, `branch <new>`) needs a claim for `<n>` on origin | **Enforced** for the creation forms only |
+| PreToolUse EnterWorktree | (none) | - | Claim check on EnterWorktree | **Not registered**: Q5 (is it hookable) is unmeasured (ruling R5) |
+| Stop | `stop-backstop.sh` | 30 s | When `<git-dir>/devfw/run.json` exists and `bin/stop-check` names a stop code with no matching `devfw/handback.json`, keep the session going once | **Enforced once per stop**; not fail-closed by design |
+
+The v5 hooks (`load-chronic-patterns.sh`, `test-failure-capture.sh`, `phase-progress-validator.sh`, `precompact.sh`,
+`sessionend.sh`) stay wired as before until Plan 4 removes the v5-only ones.
+
+**Owner-assisted step before cutover (Q2, Q5).** The hook payload probe has never run (the child `claude -p` was not
+logged in; see `tests/v6/manual/hook-probe.md`). In a logged-in terminal run
+`timeout 5m bash tests/v6/manual/hook-probe.sh` and paste the table into `hook-probe.md`. Until then the subagent clause
+of `plan-edit-guard.sh` is convention-backed (if subagent payloads carry no `agent_id`, the clause is inert, never a
+false block), and EnterWorktree stays unhooked. A manual live smoke of the wired hooks is in
+`tests/v6/manual/hook-smoke.md`.
+
+### Fail-open cases and known limits
+
+Each item is a path on which a rule above does NOT block. They are accepted residuals, not bugs to rely on.
+
+1. **`DEVFW_CORE_DIR` unset**: every v6 hook exits 0 (`_v6-hook.sh` `hook_init`; the digest prints one "inactive"
+   line). Exception: `stop-backstop.sh` is scoped by `run.json`'s presence alone (ruling R17).
+2. **A hook timeout does not block.** Each script bounds each network call below its hook timeout
+   (`DEVFW_HOOK_NET_TIMEOUT`, default 20 s; merge-gate `DEVFW_HOOK_GATE_TIMEOUT`, default 100 s; stop-check 20 s),
+   and an expired bound blocks. But the bounds are per call, not per hook run: a claim check is an `ls-remote` plus a
+   `fetch` (2 x 20 s > 30 s) in `claim-guard.sh` and `push-guard.sh` (which may add a 20 s `gh api`), and a command
+   with several in-scope segments runs several checks; a slow enough network can therefore reach the hook timeout
+   first. Raising either env var past the hook timeout is also a fail-open (user-controlled, ruling R10).
+3. **`cd` and opaque commands.** A literal `cd <dir>` is tracked within one command (ruling R1); a non-literal `cd`
+   or `-C` makes later git / `gh` segments opaque. An opaque segment is in scope only when the hook cwd is in core /
+   managed, the text names the core path or a managed slug, or a `cd`/`-C` argument is non-literal (rulings R9, R15,
+   and `claim-guard.sh` rule 2). Residual: an opaque command (e.g. `eval`) that names no managed path, run from a cwd
+   outside every managed repo, is not seen.
+4. **Web merges** (GitHub UI, API outside Claude's Bash tool) never pass `merge-gate-hook.sh`; they are caught after
+   the fact by `bin/reconcile --post-merge` (`lib/reconcile.js`).
+5. **`owner-said` authorship**: `freeze-gate.sh` rule 8 proves an `owner-said` record for this exact plan content
+   exists on the ticket and that GitHub reports its author as trusted (`lib/acks.js` `isTrustedAuthor`), not that the
+   owner typed it: the worker posts it with the owner's token (v6-design C1).
+6. **EnterWorktree** is not hooked while Q5 is unmeasured (ruling R5).
+7. **Detached HEAD** skips `freeze-gate.sh` (its scope requires `HEAD` on `t/<n>-<slug>`).
+8. **Broad test patterns**: `freeze-gate.sh` treats any path matching v5's test patterns (`*.test.*`, `*.spec.*`,
+   `*_test.*`, `*/tests/*`, `*/test/*`, `tests/*`, `test/*`, `*/__tests__/*`) as out of scope, even under a code path.
+9. **Forgeable local approval cache**: a `"<blob sha> <comment id>"` line in `<git-dir>/devfw/freeze-ok` is trusted
+   (`freeze-gate.sh` rule 7); anything that can write the git dir can pre-approve a blob. A cache line written before
+   ruling R16 (content-hash `owner-said`) is still honoured after the upgrade.
+10. **`freeze-content-hash.sh` edge cases**: an unterminated front matter block strips approval-key and indented lines
+    from the body, and indented continuation lines are dropped after any approval key (not only `bypassHistory`), so
+    an edit confined to those lines does not change the content hash.
+11. **`codePaths`**: a whitespace-only entry is silently ignored (fewer paths in scope) rather than rejected.
+12. **DWIM checkout**: `git checkout t/43-x` / `git switch t/43-x` of an existing or remote-only branch is not a
+    creation form, so `claim-guard.sh` does not see it; `push-guard.sh` rule 6 (claim on push) is the control.
+13. **Push remote resolution**: a bare `git push` is scoped against the upstream remote, ignoring
+    `branch.<b>.pushRemote` / `remote.pushDefault`; and remote classification reads `remote.<n>.url`, ignoring
+    `remote.<n>.pushurl`. A managed push URL behind an unmanaged fetch URL is not seen.
+14. **`plan-edit-guard.sh` pre-filter**: `cherry-pick`, `merge`, `revert`, `am` into core, and `git add <new> && git
+    commit` in one command (the new file is not yet in the diff when the hook runs) are not seen.
+15. **Paths**: `hook_under` does not resolve symlinks, and compares case-insensitively only on Windows.
+16. **`--repo` case**: `merge-gate-hook.sh` matches `github.com/` case-sensitively, so `--repo https://GitHub.com/o/n`
+    falls through as unmanaged.
+17. **`DEVFW_BIN_DIR`** overrides where hooks find `bin/lease`, `bin/merge-gate` and `bin/stop-check`; it is a
+    test-only knob, and pointing it at a stub disables those checks.
+
 ## User Gates
 
 | Gate | Phase | Interactive | Autonomous | Physical artifact |

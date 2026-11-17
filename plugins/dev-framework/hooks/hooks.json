@@ -1,33 +1,31 @@
 {
-  "description": "Dev-framework harness: config bootstrap, pattern loading, freeze-doc gate, push guard, test capture, session lifecycle, state preservation",
+  "description": "Dev-framework harness (v6): plan digest, plan-edit lease guard, freeze gate, merge gate, push guard, claim guard, stop backstop; v5 pattern loading, test capture and session lifecycle kept until Plan 4",
   "hooks": {
     "SessionStart": [
       {
         "matcher": "*",
-        "hooks": [{
-          "type": "command",
-          "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/load-chronic-patterns.sh",
-          "timeout": 3
-        }]
+        "hooks": [
+          { "type": "command", "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/load-chronic-patterns.sh", "timeout": 3 },
+          { "type": "command", "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/session-digest.sh", "timeout": 15 }
+        ]
       }
     ],
     "PreToolUse": [
       {
-        "matcher": "Edit|Write",
-        "hooks": [{
-          "type": "command",
-          "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/freeze-gate.sh",
-          "timeout": 3
-        }]
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [
+          { "type": "command", "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/plan-edit-guard.sh", "timeout": 30 },
+          { "type": "command", "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/freeze-gate.sh", "timeout": 30 }
+        ]
       },
       {
         "matcher": "Bash",
-        "hooks": [{
-          "type": "command",
-          "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/push-guard.sh",
-          "if": "Bash(git push *)",
-          "timeout": 5
-        }]
+        "hooks": [
+          { "type": "command", "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/plan-edit-guard.sh", "timeout": 30 },
+          { "type": "command", "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/merge-gate-hook.sh", "timeout": 120 },
+          { "type": "command", "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/push-guard.sh", "timeout": 30 },
+          { "type": "command", "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/claim-guard.sh", "timeout": 30 }
+        ]
       }
     ],
     "PostToolUse": [
@@ -68,6 +66,14 @@
           "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/sessionend.sh",
           "timeout": 2
         }]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          { "type": "command", "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/stop-backstop.sh", "timeout": 30 }
+        ]
       }
     ]
   }

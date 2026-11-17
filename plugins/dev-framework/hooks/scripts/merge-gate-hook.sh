@@ -57,7 +57,9 @@ while IFS= read -r m; do
     [ "$rc" -eq 0 ] || hook_block "only the lease holder merges plan PRs: ${out:-lease check failed (exit $rc)}"
   fi
   rc=0
-  out=$(timeout "${DEVFW_HOOK_GATE_TIMEOUT:-100}" "$BIN/merge-gate" --core-dir "$CORE_W" --repo "$repo" --pr "$pr" 2>"$ERRF") || rc=$?
+  # bin/merge-gate is a `#!/usr/bin/env node` script: with MSYS_NO_PATHCONV (exported by _v6-hook.sh) Git Bash hands
+  # node.exe its path as /c/..., which node cannot load. Let msys convert the script path for this one exec.
+  out=$(timeout "${DEVFW_HOOK_GATE_TIMEOUT:-100}" env -u MSYS_NO_PATHCONV -u MSYS2_ARG_CONV_EXCL "$BIN/merge-gate" --core-dir "$CORE_W" --repo "$repo" --pr "$pr" 2>"$ERRF") || rc=$?
   out="${out//$'\r'/}"
   [ "$rc" -ne 124 ] || hook_block "merge-gate could not run: timed out"
   if ! jq -e 'type == "object"' >/dev/null 2>&1 <<<"$out"; then

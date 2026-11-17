@@ -93,5 +93,15 @@ run 'echo right'; expect 0 "parser failure on an unrelated command"
 run 'gh pr view 3'; expect 0 "parser failure on gh non-merge"
 PATH="$OLDP"
 
+# Task 10 (A7 on the real sandbox): the real bin/merge-gate is a `#!/usr/bin/env node` script. On Git Bash the hook
+# exports MSYS_NO_PATHCONV, so node.exe got the script path as /c/... (read as C:\c\...) and could not load it.
+# A node-shebang stub in a POSIX temp dir reproduces that on Windows; on Linux this case passes either way.
+if command -v node >/dev/null 2>&1; then
+  mkdir -p "$TMP/nodebin"
+  printf '#!/usr/bin/env node\nprocess.stdout.write(JSON.stringify({pass:true,reasons:[]})+"\\n");\n' > "$TMP/nodebin/merge-gate"
+  chmod +x "$TMP/nodebin/merge-gate"
+  DEVFW_BIN_DIR="$TMP/nodebin" run 'gh pr merge 2 --repo acme/api --squash'; expect 0 "a node-shebang merge-gate runs (path conversion)"
+fi
+
 unset DEVFW_CORE_DIR; run 'gh pr merge 1 --repo acme/api'; expect 0 "DEVFW_CORE_DIR unset"
 echo "PASS: merge-gate-hook"
