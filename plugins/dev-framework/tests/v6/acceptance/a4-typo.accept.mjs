@@ -3,16 +3,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawnSync, execFileSync } from 'node:child_process';
-import { openRun, closeRun, eventually } from './harness.mjs';
-
-const gh = (args) => {
-  const r = spawnSync('gh', args, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
-  if (r.status !== 0) throw new Error(`gh ${args.slice(0, 2).join(' ')} failed: ${r.stderr || r.stdout}`);
-  return r.stdout;
-};
-const ID = ['-c', 'user.name=devfw-harness', '-c', 'user.email=devfw-harness@users.noreply.github.com'];
-const git = (dir, args) => execFileSync('git', ['-C', dir, ...ID, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+import { openRun, closeRun, eventually, ghWrite, gitWrite } from './harness.mjs';
+import { ghRead as gh, gitRead as git } from './ticket-flow.mjs'; // reads and local git only; every write goes through ghWrite/gitWrite
 
 test('A4: typo', async () => {
   const run = await openRun();
@@ -49,9 +41,9 @@ test('A4: typo', async () => {
     fs.writeFileSync(file, text.replace('Expose a version endpoint.', 'Expose a versoin endpoint.'));
     git(run.coreDir, ['add', 'docs/plan/PLAN.md']);
     git(run.coreDir, ['commit', '-q', '-m', `typo ${run.runId}`]);
-    git(run.coreDir, ['push', '-q', '-u', 'origin', typo]);
+    gitWrite(run, run.coreDir, ['push', '-q', '-u', 'origin', typo]);
     const token = fs.readFileSync(path.join(run.coreDir, '.orchestrator', 'lease'), 'utf8').trim();
-    const prUrl = gh(['pr', 'create', '--repo', core, '--base', `run/${run.runId}`, '--head', typo,
+    const prUrl = ghWrite(run, ['pr', 'create', '--repo', core, '--base', `run/${run.runId}`, '--head', typo,
       '--title', `typo fix ${run.runId}`, '--body', `Typo only.\n\nlease: ${token}\n`]).trim();
     const prNo = Number(prUrl.split('/').pop());
     assert.ok(prNo > 0, `pr url: ${prUrl}`);

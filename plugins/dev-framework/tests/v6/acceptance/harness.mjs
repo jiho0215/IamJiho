@@ -119,7 +119,7 @@ export async function openRun(opts = {}) {
   const env = { ...process.env, DEVFW_CONFIG: configFile };
   const run = { runId, coreDir, codeDir, config, env, tmp, coreRepo: core, codeRepo: code };
   VERIFIED.set(run, verified);
-  run.exec = (script, args = []) => execIn(run, script, args);
+  run.exec = (script, args = [], opts = {}) => execIn(run, script, args, opts);
   requireRun(run);                                       // re-check right before the push
   git(codeDir, ['push', '-q', '-u', 'origin', codeDefault]);
   git(coreDir, ['push', '-q', '-u', 'origin', `run/${runId}`]);
@@ -136,12 +136,13 @@ export function ghWrite(run, args) { requireRun(run); return gh(args).stdout; }
 export function gitWrite(run, dir, args) { requireRun(run); return git(dir, args); }
 export function assertVerifiedRun(run) { requireRun(run); }
 
-export function execIn(run, script, args = []) {
+// opts.env: extra environment for this one call (e.g. DEVFW_CONFIG pointing at a config variant).
+export function execIn(run, script, args = [], opts = {}) {
   requireRun(run);                                       // scripts can write issues, PRs and merges
   const file = path.join(PLUGIN, 'bin', script);
   const cmd = NODE_SCRIPTS.has(script) ? ['node', [file, ...args]] : BASH_SCRIPTS.has(script) ? ['bash', [file, ...args]] : null;
   if (!cmd) throw new Error(`unknown plugin script: ${script}`);
-  const r = spawnSync(cmd[0], cmd[1], { env: run.env, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  const r = spawnSync(cmd[0], cmd[1], { env: { ...run.env, ...(opts.env || {}) }, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
   const stdout = r.stdout || '';
   let json = null;
   const last = stdout.split('\n').map((l) => l.trim()).filter(Boolean).pop();

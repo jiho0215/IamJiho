@@ -47,7 +47,8 @@ export async function issueCites(run, issue) {
 
 // Claims t/<issue>-<slug> off the run's base branch (one write), checks the claim branch out in run.codeDir, commits one
 // file, pushes (fast-forward), and opens the PR into the run's base with the design 6.7 body. Returns { branch, pr, cites }.
-export async function claimCommitPr(run, issue, slug, file) {
+// opts.fixes / opts.cites override the PR body's Fixes issue and Cites line (for scenarios that need a wrong PR).
+export async function claimCommitPr(run, issue, slug, file, opts = {}) {
   assertVerifiedRun(run);
   const base = run.config.repos.api.default;
   const claim = run.exec('claim', [String(issue), slug, '--repo-dir', run.codeDir, '--base', base]); // guarded by execIn
@@ -60,8 +61,8 @@ export async function claimCommitPr(run, issue, slug, file) {
   gitRead(run.codeDir, ['add', file]);
   gitRead(run.codeDir, ['commit', '-q', '-m', `${slug} ${run.runId}`]);
   gitWrite(run, run.codeDir, ['push', '-q', 'origin', branch]);
-  const cites = await issueCites(run, issue);
-  const body = `Fixes ${run.coreRepo}#${issue}\nCites: ${cites}\nEvidence:\nnpm test \u2014 1 passed\n`;
+  const cites = opts.cites || await issueCites(run, issue);
+  const body = `Fixes ${run.coreRepo}#${opts.fixes || issue}\nCites: ${cites}\nEvidence:\nnpm test \u2014 1 passed\n`;
   const url = ghWrite(run, ['pr', 'create', '--repo', run.codeRepo, '--base', base, '--head', branch, '--title', `${slug} ${run.runId}`, '--body', body]).trim();
   const pr = Number(url.split('/').pop());
   assert.ok(pr > 0, `pr url: ${url}`);
@@ -75,4 +76,4 @@ export const postAck = (run, issue, planSha, text) =>
 // Squash merge into the run's base branch of the sandbox code repo. Never --auto, never --delete-branch.
 export const mergePr = (run, pr) => ghWrite(run, ['pr', 'merge', String(pr), '--repo', run.codeRepo, '--squash']);
 
-export const gate = (run, pr) => run.exec('merge-gate', ['--core-dir', run.coreDir, '--repo', run.codeRepo, '--pr', String(pr)]);
+export const gate = (run, pr, opts = {}) => run.exec('merge-gate', ['--core-dir', run.coreDir, '--repo', run.codeRepo, '--pr', String(pr)], opts);
