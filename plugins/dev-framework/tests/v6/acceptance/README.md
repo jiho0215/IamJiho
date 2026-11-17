@@ -25,9 +25,18 @@ An expected `red` must fail with a message containing its `reason`; a crash or t
 
 ## The sandbox marker
 
-A file named `DEVFW_SANDBOX` at the root of the core repo's default branch. Before any write, `openRun` reads it; if it is
-missing nothing is cloned, created or pushed and a `SandboxError` is raised. The code repo deliberately has no marker, so
-pointing `DEVFW_SANDBOX_CORE` at it is a real negative test (scenario A0).
+A file named `DEVFW_SANDBOX` at the root of the core repo's default branch. Its content lists the allowed sandbox code
+repos, one `owner/name` per line (`#` lines are comments). `run.sh --init` writes it (or adds the code repo's line to an
+existing marker) from the env, by a normal push. Before any write, `openRun` reads it; if it is missing, or does not list
+`DEVFW_SANDBOX_CODE`, nothing is cloned, created or pushed and a `SandboxError` is raised. `run.exec` (`execIn`) and
+`closeRun` refuse any run object that `openRun` did not verify, and re-verify after 10 minutes. The code repo itself has
+no marker, so pointing `DEVFW_SANDBOX_CORE` at it is a real negative test (scenario A0).
+
+## Runner self-test
+
+`node --test --test-timeout=60000 plugins/dev-framework/tests/v6/acceptance/runner.unit.test.mjs` (no network) checks the
+runner: a SandboxError exits 2, a skip/todo never counts as green, and an expected red must carry its `reason` in the failure
+message (not the title or path). `tap-report.mjs` holds the parser.
 
 ## Each run
 

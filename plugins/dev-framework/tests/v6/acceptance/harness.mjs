@@ -47,11 +47,28 @@ function resolveRepos({ coreRepo, codeRepo } = {}) {
 }
 
 // Read-only. The marker must exist on the repo's DEFAULT branch (no ref given to the contents API).
-function hasMarker(repo) {
-  return gh(['api', `repos/${repo}/contents/${MARKER}`], { allowFail: true }).status === 0;
+// Its content lists the sandbox code repos allowed to be written, one owner/name per line ('#' lines are comments).
+function readMarker(repo) {
+  const r = gh(['api', '-H', 'Accept: application/vnd.github.raw', `repos/${repo}/contents/${MARKER}`], { allowFail: true });
+  return r.status === 0 ? r.stdout : null;
 }
-function assertSandbox(repo) {
-  if (!hasMarker(repo)) throw new SandboxError(`${repo} has no ${MARKER} file on its default branch: refusing to write`);
+const hasMarker = (repo) => readMarker(repo) !== null;
+const allowedRepos = (text) => String(text).replace(/\r/g, '').split('\n').map((l) => l.trim()).filter((l) => OWNER_NAME.test(l));
+
+// A run is writable only if openRun verified it: core carries the marker AND the marker lists the code repo.
+// The record lives in a module-private WeakMap, so a hand-built run object has none. Re-verified after 10 minutes.
+const VERIFIED = new WeakMap();
+const REVERIFY_MS = 10 * 60 * 1000;
+function verifyPair(core, code) {
+  const text = readMarker(core);
+  if (text === null) throw new SandboxError(`${core} has no ${MARKER} file on its default branch (or gh could not read it): refusing to write`);
+  if (!allowedRepos(text).includes(code)) throw new SandboxError(`${code} is not listed in the ${MARKER} file of ${core}: refusing to write`);
+  return { core, code, at: Date.now() };
+}
+function requireRun(run) {
+  const rec = VERIFIED.get(run);
+  if (!rec || rec.core !== run.coreRepo || rec.code !== run.codeRepo) throw new SandboxError('run was not verified by openRun: refusing to write');
+  if (Date.now() - rec.at > REVERIFY_MS) VERIFIED.set(run, verifyPair(rec.core, rec.code));
 }
 
 function runIdNow() {
@@ -62,11 +79,12 @@ function runIdNow() {
 
 export async function openRun(opts = {}) {
   const { core, code } = resolveRepos(opts);
-  assertSandbox(core);                                   // before anything is cloned, created or pushed
+  const verified = verifyPair(core, code);               // before anything is cloned, created or pushed
   const runId = runIdNow();
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), `devfw-accept-${runId}-`));
   const coreDir = path.join(tmp, 'core');
   const codeDir = path.join(tmp, 'code');
+  try {
   gh(['repo', 'clone', core, coreDir, '--', '-q']);
   gh(['repo', 'clone', code, codeDir, '--', '-q']);
   const codeDefault = git(codeDir, ['rev-parse', '--abbrev-ref', 'HEAD']).trim();
@@ -94,16 +112,22 @@ export async function openRun(opts = {}) {
   fs.writeFileSync(configFile, JSON.stringify(config, null, 2) + '\n');
   git(coreDir, ['add', 'docs/plan/PLAN.md', 'docs/plan/DECISIONS.md', 'docs/plan/START-HERE.md', 'orchestrator.json']);
   git(coreDir, ['commit', '-q', '-m', `acceptance run ${runId}`]);
-  git(coreDir, ['push', '-q', '-u', 'origin', `run/${runId}`]);
-  await sleep(HARNESS_DELAY_MS);
-
   const env = { ...process.env, DEVFW_CONFIG: configFile };
   const run = { runId, coreDir, codeDir, config, env, tmp, coreRepo: core, codeRepo: code };
-  run.exec = (script, args = []) => execScript(run, script, args);
+  VERIFIED.set(run, verified);
+  run.exec = (script, args = []) => execIn(run, script, args);
+  requireRun(run);                                       // re-check right before the push
+  git(coreDir, ['push', '-q', '-u', 'origin', `run/${runId}`]);
+  await sleep(HARNESS_DELAY_MS);
   return run;
+  } catch (e) {
+    try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* left for the temp cleaner */ }
+    throw e;
+  }
 }
 
-function execScript(run, script, args) {
+export function execIn(run, script, args = []) {
+  requireRun(run);                                       // scripts can write issues, PRs and merges
   const file = path.join(PLUGIN, 'bin', script);
   const cmd = NODE_SCRIPTS.has(script) ? ['node', [file, ...args]] : BASH_SCRIPTS.has(script) ? ['bash', [file, ...args]] : null;
   if (!cmd) throw new Error(`unknown plugin script: ${script}`);
@@ -128,6 +152,7 @@ export async function eventually(fn, { timeoutMs = 30000, everyMs = 2000 } = {})
 
 // Close every open issue and PR labelled epic:<runId> or titled with the runId, in both sandbox repos.
 export async function closeRun(run) {
+  requireRun(run);
   const closed = [];
   for (const repo of [run.coreRepo, run.codeRepo]) {
     const out = gh(['api', '--paginate', `repos/${repo}/issues?state=open&per_page=100`, '--jq', '.[] | {number, title, labels: [.labels[].name]}']).stdout;
@@ -144,24 +169,33 @@ export async function closeRun(run) {
   return closed;
 }
 
-// One-time: the marker goes to the CORE repo's default branch only (a normal push).
+// One-time: the marker goes to the CORE repo's default branch only (a normal push) and lists the code repo.
+// If the marker already exists the repo is already a verified sandbox; a missing code line is added to it.
 export async function initSandbox(opts = {}) {
   const { core, code } = resolveRepos(opts);
-  if (hasMarker(core)) return { created: false };
-  if (hasMarker(code)) throw new SandboxError('the code repo already carries the marker; it must not');
+  if (hasMarker(code)) throw new SandboxError('the code repo carries a marker; only the core repo may');
+  const existing = readMarker(core);
+  if (existing !== null && allowedRepos(existing).includes(code)) return { created: false, added: false };
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'devfw-accept-init-'));
   try {
     const dir = path.join(tmp, 'core');
     gh(['repo', 'clone', core, dir, '--', '-q']);
-    fs.writeFileSync(path.join(dir, MARKER), 'Throwaway sandbox for the dev-framework acceptance suite. Safe to write to.\n');
+    const body = existing === null
+      ? `# Throwaway sandbox for the dev-framework acceptance suite. Safe to write to.
+# Sandbox code repos allowed for this core repo, one per line:
+${code}
+`
+      : existing.replace(/\r/g, '').replace(/\n*$/, '\n') + `${code}
+`;
+    fs.writeFileSync(path.join(dir, MARKER), body);
     git(dir, ['add', MARKER]);
-    git(dir, ['commit', '-q', '-m', 'add DEVFW_SANDBOX marker']);
+    git(dir, ['commit', '-q', '-m', existing === null ? 'add DEVFW_SANDBOX marker' : 'DEVFW_SANDBOX: list the code repo']);
     git(dir, ['push', '-q', 'origin', 'HEAD']);
   } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
-  return { created: true };
+  return { created: existing === null, added: existing !== null };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href && process.argv[2] === '--init') {
-  initSandbox().then((r) => { console.log(r.created ? 'marker committed to the sandbox core repo' : 'marker already present'); })
+  initSandbox().then((r) => { console.log(r.created ? 'marker committed to the sandbox core repo' : r.added ? 'code repo added to the marker' : 'marker already present'); })
     .catch((e) => { console.error(`${e.name}: ${e.message}`); process.exit(e instanceof SandboxError ? 2 : 1); });
 }
