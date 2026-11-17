@@ -4,7 +4,7 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN="$DIR/../.."
 . "$DIR/_v6-hook.sh"
 unavailable() { echo "dev-framework v6: digest unavailable: $1"; exit 0; }
-# hook_init would hook_block (exit 2) without jq; this hook must always exit 0.
+# without jq the digest cannot read anything: say so in one line (this hook must always exit 0).
 if [ -n "${DEVFW_CORE_DIR:-}" ] && ! command -v jq >/dev/null 2>&1; then unavailable "jq not found"; fi
 HOOK_BUDGET_SOFT=1  # the digest always exits 0: an exhausted budget only marks it stale
 hook_init session-digest 10

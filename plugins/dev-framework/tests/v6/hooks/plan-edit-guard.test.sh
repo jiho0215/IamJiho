@@ -80,6 +80,8 @@ if command -v cygpath >/dev/null 2>&1; then
   run "$(bash_ "cd '$(cygpath -w "$CM")' && eval \"git commit -m x\"" "$TMP")"; expect 2 "R9: backslash form"
 fi
 run "$(bash_ 'eval "git commit -m x"' "$TMP")"; expect 0 "R9 residual: eval, no core path, cwd outside core"
+# R9 text trigger alone: the core path only inside the eval string (no cd, dir not readable, cwd outside core)
+run "$(bash_ "eval \"git -C '$CM' commit -m x\"" "$TMP")"; expect 2 "R9 trigger: core path named only inside an opaque string"
 run "$(printf '{"tool_name":"MultiEdit","cwd":"%s","tool_input":{"file_path":"%s","edits":[]}}' "$CORE" "$CORE/docs/plan/PLAN.md")"
 expect 2 "MultiEdit"
 run "$(bash_ 'eval "git commit -m x"')"; expect 2 "opaque in core"

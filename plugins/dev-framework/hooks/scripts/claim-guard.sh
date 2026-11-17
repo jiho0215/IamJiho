@@ -9,7 +9,8 @@
 # An unreadable branch command (an opaque segment naming a branch verb, or a git alias whose expansion is a
 # creation form; rulings R20, R25) is in scope when the parser cannot read its dir, when its literal dir or
 # HOOK_CWD is managed, or when the text names a managed slug; in scope + unreadable + (the text mentions t/ or a
-# segment is non-literal) blocks. A parser failure blocks only when the text also mentions t/. (3) fail closed; hook_claim_ok: 3 blocks "no claim", 1 blocks "cannot verify".
+# segment is non-literal) blocks. A parser failure blocks only when the text also mentions t/. (3) fail closed;
+# hook_claim_ok: 3 blocks "no claim", 1 blocks "cannot verify".
 # Rule 4 (EnterWorktree) is NOT implemented: Q5 (is it hookable) was never measured (controller ruling R5).
 # KNOWN GAP: the parser emits creation forms only; a plain `git checkout t/41-x` / `git switch t/41-x` of an
 # existing branch is not a Branch entry, so it is not seen here. Network calls are bounded by
