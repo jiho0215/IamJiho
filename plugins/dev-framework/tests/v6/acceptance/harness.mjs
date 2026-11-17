@@ -65,6 +65,12 @@ function verifyPair(core, code) {
   if (!allowedRepos(text).includes(code)) throw new SandboxError(`${code} is not listed in the ${MARKER} file of ${core}: refusing to write`);
   return { core, code, at: Date.now() };
 }
+// Read-only check for scripts that write outside openRun (the manual two-machine race): env names, then the marker.
+export function verifySandboxPair(opts = {}) {
+  const { core, code } = resolveRepos(opts);
+  verifyPair(core, code);
+  return { core, code };
+}
 function requireRun(run) {
   const rec = VERIFIED.get(run);
   if (!rec || rec.core !== run.coreRepo || rec.code !== run.codeRepo) throw new SandboxError('run was not verified by openRun: refusing to write');
