@@ -36,20 +36,34 @@ test('A1: ticket-sync', async () => {
       assert.match(iss.body.replace(/\r/g, '').split('\n')[0], /^> Mirror of /, `${id(n)} banner on line 1`);
     }
 
-    const second = await eventually(() => {
-      const r = run.exec('ticket-sync', ['--core-dir', run.coreDir, '--apply']);
-      assert.equal(r.code, 0, `second apply: ${r.stdout} ${r.stderr}`);
-      assert.deepEqual(r.json.missing, []);
-      assert.deepEqual(r.json.drift, []);
-      return r;
-    });
-    assert.deepEqual(second.json.created ?? [], []);
+    // The second apply is a write: it runs exactly once, never inside eventually().
+    const second = run.exec('ticket-sync', ['--core-dir', run.coreDir, '--apply']);
+    assert.equal(second.code, 0, `second apply: ${second.stdout} ${second.stderr}`);
+    assert.deepEqual(second.json.created, [], 'second apply creates nothing');
+    assert.deepEqual(second.json.patched, [], 'second apply patches nothing');
+    assert.deepEqual(second.json.drift, []);
+
+    // Read-only: exactly one issue per plan label, and the count stays 3 across a stable window.
+    const planLabelCounts = () => {
+      const rows = ghJson([`repos/${core}/issues?state=all&per_page=100&labels=epic:${run.runId}`]);
+      return [1, 2, 3].map((n) => rows.filter((i) => i.labels.some((l) => l.name === `plan:${id(n)}`)).length).concat(rows.length);
+    };
+    await eventually(() => assert.deepEqual(planLabelCounts(), [1, 1, 1, 3]));
+    for (let i = 0; i < 5; i++) {
+      await new Promise((r) => setTimeout(r, 2000));
+      assert.deepEqual(planLabelCounts(), [1, 1, 1, 3], 'issue count stays 3 (no late duplicates)');
+    }
+    const dry = run.exec('ticket-sync', ['--core-dir', run.coreDir]);
+    assert.deepEqual(dry.json.missing, []);
+    assert.deepEqual(dry.json.drift, []);
 
     const wb = run.exec('ticket-sync', ['--core-dir', run.coreDir, '--writeback']);
     assert.ok(wb.json && wb.json.writeback === 3, `writeback: ${wb.stdout} ${wb.stderr}`);
     const plan = fs.readFileSync(path.join(run.coreDir, 'docs', 'plan', 'PLAN.md'), 'utf8');
     const lines = plan.split('\n').filter((l) => l.startsWith('- ticket:'));
     assert.equal(lines.length, 3);
+    const issueNo = new Map(first.json.created.map((c) => [c.id, c.issue]));
+    for (const n of [1, 2, 3]) assert.ok(plan.includes(`- ticket: ${core}#${issueNo.get(id(n))}`), `${id(n)} ticket line carries its own issue number`);
     for (const l of lines) assert.match(l.trimEnd(), new RegExp(`^- ticket: ${escapeRe(core)}#\\d+$`));
   } finally { await closeRun(run); }
 });

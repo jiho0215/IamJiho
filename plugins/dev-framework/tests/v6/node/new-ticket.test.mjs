@@ -87,6 +87,7 @@ test('--apply: branch, push, PR with lease, impact, squash merge (no --auto/--de
     'POST repos/acme/core/pulls': { number: 7 },
     'GET repos/acme/core/pulls/7/files': [{ filename: 'docs/plan/PLAN.md' }],
     'GET repos/acme/core/issues?state=all': [],
+    'GET repos/acme/core/issues?labels=plan:P-3-5&state=all': [],
     'GET repos/acme/api/pulls?state=open': [],
     'GET repos/acme/core/issues/7/comments': [],
     'GET repos/acme/core/labels': [],

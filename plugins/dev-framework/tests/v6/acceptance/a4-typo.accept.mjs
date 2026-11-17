@@ -72,8 +72,16 @@ test('A4: typo', async () => {
 
     const rec2 = run.exec('reconcile', ['--core-dir', run.coreDir, '--apply']);
     assert.equal(rec2.code, 0, `reconcile 2: ${rec2.stdout} ${rec2.stderr}`);
-    await eventually(() => {
+    // A negative claim: judge reconcile's own output, not a read that may still be stale.
+    for (const k of [1, 3]) {
+      const row = rec2.json.items.find((i) => i.id === id(k));
+      assert.deepEqual([`state:${row.state}`], before.get(k), `${id(k)} derived state unchanged`);
+    }
+    assert.deepEqual(rec2.json.changes, [], 'reconcile after the typo PR changes no label');
+    // Reads only: the labels stay equal across a stable window (~10 s).
+    for (let i = 0; i < 5; i++) {
       for (const k of [1, 3]) assert.deepEqual(stateLabels(num.get(id(k))), before.get(k), `${id(k)} state unchanged`);
-    });
+      await new Promise((r) => setTimeout(r, 2000));
+    }
   } finally { await closeRun(run); }
 });

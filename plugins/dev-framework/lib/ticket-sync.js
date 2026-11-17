@@ -197,7 +197,12 @@ function sync(o, config, gh) {
   const pace = () => { if (writesDone++ > 0) sleepMs(config.github.writeDelayMs); };
   const write = (method, p, body) => { pace(); return gh.api(method, p, body); };
 
-  for (const name of labelsMissing) write('POST', `repos/${planRepo}/labels`, { name, color: wanted.get(name) });
+  // A label that already exists (HTTP 422: a parallel run or a lagging listing) is fine, not an error.
+  for (const name of labelsMissing) {
+    try { write('POST', `repos/${planRepo}/labels`, { name, color: wanted.get(name) }); } catch (e) {
+      if (!/HTTP 422|already_exists/.test(String(e && e.message))) throw e;
+    }
+  }
 
   const milestones = new Map(gh.paginate(`repos/${planRepo}/milestones?state=all`).map((m) => [m.title, m.number]));
   const stageKeys = [...new Set(allItems.map((i) => i.fields.stage))];
@@ -212,6 +217,14 @@ function sync(o, config, gh) {
   const created = [];
   for (const item of items) {
     if (byId.has(item.id)) continue;
+    // The full listing can lag a write made seconds ago: ask GitHub for this one ID right before creating.
+    const known = gh.paginate(`repos/${planRepo}/issues?labels=plan:${item.id}&state=all`).filter((i) => !i.pull_request);
+    if (known.length) {
+      const open = known.find((i) => i.state === 'open') || known[0];
+      byId.set(item.id, open);
+      numbers.set(item.id, open.number);
+      continue;
+    }
     const iss = write('POST', `repos/${planRepo}/issues`, {
       title: `${item.id} · ${item.title}`, body: render(item),
       milestone: milestones.get(config.stages[item.fields.stage]), labels: itemLabels(item, config),

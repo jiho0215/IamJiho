@@ -82,7 +82,9 @@ function sim(seed = {}) {
   const paginate = (path) => {
     if (path === 'repos/acme/core/labels') return st.labels;
     if (path === 'repos/acme/core/milestones?state=all') return st.milestones;
-    if (path === 'repos/acme/core/issues?state=all') return st.issues;
+    if (path === 'repos/acme/core/issues?state=all') return st.lagList ? [] : st.issues;
+    const pl = /^repos\/acme\/core\/issues\?labels=(plan:[^&]+)&state=all$/.exec(path);
+    if (pl) { st.perItemReads = (st.perItemReads || 0) + 1; return st.issues.filter((i) => i.labels.some((l) => l.name === pl[1])); }
     throw new Error(`sim: paginate ${path}`);
   };
   const graphql = (q, vars) => {
@@ -284,4 +286,30 @@ test('B3: --refresh-cites <ID> --apply re-renders Cites with current hashes for 
   assert.equal(patches[0].path, 'repos/acme/core/issues/2');
   assert.equal(citesLine(patches[0].body.body), citesLine(cur));
   assert.notEqual(citesLine(patches[0].body.body), citesLine(s.bodies['P-0-4']));
+});
+
+test('lag: the full listing misses an existing issue but the per-item read finds it; --apply creates nothing for it', () => {
+  const { dir } = coreRepo();
+  const { items } = ctx(dir);
+  const id = items[0].id;
+  const s = sim({ issues: [issue(9, id, 'old')] });
+  s.st.lagList = true;
+  const r = run({ argv: argv(dir, '--apply', '--only', id), gh: s.gh, env: {} });
+  assert.equal(r.exitCode, 0);
+  assert.deepEqual(r.result.created, []);
+  assert.equal(s.st.calls.filter((c) => c.method === 'POST' && c.path === 'repos/acme/core/issues').length, 0);
+  assert.equal(s.st.issues.filter((i) => i.labels.some((l) => l.name === 'plan:' + id)).length, 1);
+});
+
+test('label create answering 422 (already exists, a parallel run made it) is success', () => {
+  const { dir } = coreRepo();
+  const s = sim();
+  const orig = s.gh.api;
+  s.gh.api = (method, path, body) => {
+    if (method === 'POST' && path === 'repos/acme/core/labels') throw new Error('Command failed: gh api -X POST repos/acme/core/labels --input -\ngh: Validation Failed (HTTP 422)\n');
+    return orig(method, path, body);
+  };
+  const r = run({ argv: argv(dir, '--apply'), gh: s.gh, env: {} });
+  assert.equal(r.exitCode, 0);
+  assert.ok(r.result.created.length > 0);
 });
