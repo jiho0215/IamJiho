@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { loadConfig, ConfigError } = require('./config');
-const { PlanError } = require('./plan');
+const { PlanError, parsePlan, planHashes } = require('./plan');
 const impact = require('./impact');
 const ticketSync = require('./ticket-sync');
 
@@ -76,7 +76,10 @@ function run({ argv, gh, env = process.env }) {
     const config = loadConfig({ coreDir: o.coreDir, env });
     if (!config.plan.repo) throw new ConfigError('plan.repo is not configured');
     const lease = leaseStatus(o.coreDir, env);
-    if (lease !== 0) return { exitCode: lease === 3 ? 3 : 4, result: { error: lease === 4 ? 'the orchestrator lease is not held by this clone' : `lease check failed (exit ${lease})` } };
+    if (lease !== 0) {
+      const why = lease === 4 ? 'the orchestrator lease is held by another token' : lease === 3 ? 'the lease is missing (no lease line on origin or no local token)' : `lease check failed unexpectedly (exit ${lease})`;
+      return { exitCode: 4, result: { error: `lease not held: ${why}` } };
+    }
     const body = fs.readFileSync(o.bodyFile, 'utf8');
     const planFile = path.join(o.coreDir, config.plan.path, 'PLAN.md');
     const render = () => {
@@ -84,18 +87,29 @@ function run({ argv, gh, env = process.env }) {
       const id = nextId(text, o.epic);
       return { id, planText: insertItem(text, o, id, body), text: itemLines(o, id, body).join('\n') };
     };
+    // Validate before any write: the new plan must parse, the stage must exist, decision IDs must exist.
+    const validate = (planText) => {
+      if (!config.stages || !(o.stage in config.stages)) throw new ConfigError(`stage "${o.stage}" is not in config.stages`);
+      parsePlan(planText, config);
+      const wanted = o.decisions === '—' ? [] : o.decisions.split(',').map((s) => s.trim()).filter((s) => s && s !== '—');
+      if (wanted.length) {
+        const known = planHashes(o.coreDir, `origin/${config.plan.branch || 'main'}`, config);
+        for (const d of wanted) if (!known.has(d)) throw new ConfigError(`decision ${d} does not exist in the plan`);
+      }
+    };
+    validate(render().planText);
     if (!o.apply) {
       const r = render();
       return { exitCode: 0, result: { id: r.id, text: r.text, planText: r.planText } };
     }
-    return apply(o, config, gh, env, planFile, render);
+    return apply(o, config, gh, env, planFile, render, validate);
   } catch (e) {
     if (e instanceof ConfigError || e instanceof PlanError) return { exitCode: 2, result: { error: e.message } };
     throw e;
   }
 }
 
-function apply(o, config, gh, env, planFile, render) {
+function apply(o, config, gh, env, planFile, render, validate) {
   const planRepo = config.plan.repo;
   const base = config.plan.branch || 'main';
   const token = fs.readFileSync(path.join(o.coreDir, '.orchestrator', 'lease'), 'utf8').trim();
@@ -105,6 +119,7 @@ function apply(o, config, gh, env, planFile, render) {
   const tip = git(o.coreDir, ['show', `origin/${base}:${config.plan.path}/PLAN.md`]);
   const id = nextId(tip, o.epic);
   const branch = `plan/new-${id}`;
+  validate(insertItem(tip, o, id, fs.readFileSync(o.bodyFile, 'utf8'))); // the tip is what will be merged onto
   git(o.coreDir, ['checkout', '-q', '-b', branch, `origin/${base}`]);
   let pr;
   try {

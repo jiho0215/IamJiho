@@ -22,12 +22,13 @@ const LEASE = `orchestrator: ${TOKEN} · box1 · since 2026-11-16T00:00:00Z`;
 const item = (id, title, extra = '') => `### ${id} · ${title}\n- stage: A\n- kind: code\n- state: ready\n- area: acme-api — \`src/x.cs\`\n- depends: —\n- decisions: —\n- ticket: —\n\n${extra}Body of ${id}.\n`;
 const PLAN = (eol) => ['# Plan', '', '## P-3 · Epic three', '', item('P-3-1', 'First'), item('P-3-2', 'Second', 'Unused on purpose: P-3-4 was dropped.\n\n'), '## P-4 · Epic four', '', item('P-4-1', 'Other'), ''].join('\n').replace(/\n/g, eol);
 
-function core({ eol = '\n', lease = true } = {}) {
+function core({ eol = '\n', lease = true, noLeaseFile = false } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'devfw-nt-'));
   const p = (f) => join(dir, 'docs/plan', f);
   mkdirSync(join(dir, 'docs/plan'), { recursive: true });
   writeFileSync(join(dir, 'orchestrator.json'), JSON.stringify(CONFIG));
   writeFileSync(p('PLAN.md'), PLAN(eol));
+  writeFileSync(p('DECISIONS.md'), '# D\n\n### D-1 · First\n- rule: a\n');
   writeFileSync(p('START-HERE.md'), LEASE + '\n\n# Start\n');
   writeFileSync(join(dir, '.gitignore'), '.orchestrator/\n');
   const g = (...a) => execFileSync('git', ['-C', dir, ...a], { encoding: 'utf8' });
@@ -38,7 +39,7 @@ function core({ eol = '\n', lease = true } = {}) {
   execFileSync('git', ['init', '-q', '--bare', '-b', 'main', bare]);
   g('remote', 'add', 'origin', bare); g('push', '-q', 'origin', 'main');
   mkdirSync(join(dir, '.orchestrator'), { recursive: true });
-  writeFileSync(join(dir, '.orchestrator/lease'), lease ? TOKEN + '\n' : 'ffffffffffffffff\n');
+  if (!noLeaseFile) writeFileSync(join(dir, '.orchestrator/lease'), lease ? TOKEN + '\n' : 'ffffffffffffffff\n');
   return { dir, bare, g, plan: p('PLAN.md') };
 }
 const bodyFile = () => { const f = join(mkdtempSync(join(tmpdir(), 'devfw-nt-body-')), 'b.md'); writeFileSync(f, 'Do the new thing.\n'); return f; };
@@ -130,4 +131,42 @@ test('--apply: branch, push, PR with lease, impact, squash merge (no --auto/--de
   // the branch really reached origin with the new item, and the clone is back where it was
   assert.match(execFileSync('git', ['-C', k.bare, 'show', 'refs/heads/plan/new-P-3-5:docs/plan/PLAN.md'], { encoding: 'utf8' }), /### P-3-5 · New thing/);
   assert.equal(k.g('rev-parse', '--abbrev-ref', 'HEAD').trim(), onMain);
+});
+
+// Fix round 1: validate before any write.
+for (const [name, extra, re] of [
+  ['unknown stage', ['--stage', 'Z'], /stage/],
+  ['unknown area repo', ['--area', 'acme-nope - x'], /acme-nope/],
+  ['unknown decision ID', ['--decisions', 'D-99'], /D-99/],
+]) {
+  for (const apply of [false, true]) {
+    test(`${name}: exit 2, nothing changed, zero gh calls${apply ? ' (--apply)' : ' (dry run)'}`, () => {
+      const k = core();
+      const before = readFileSync(k.plan, 'utf8');
+      const { gh, calls } = fakeGh({});
+      const out = run({ argv: [...argv(k.dir, ...(apply ? ['--apply'] : [])), ...extra], gh, env: {} });
+      assert.equal(out.exitCode, 2, JSON.stringify(out.result));
+      assert.match(out.result.error, re);
+      assert.equal(readFileSync(k.plan, 'utf8'), before);
+      assert.equal(calls.length, 0);
+      assert.equal(k.g('branch', '--list', 'plan/new-*').trim(), '');
+    });
+  }
+}
+
+test('valid stage, area and an existing decision ID still allocate', () => {
+  const k = core();
+  const { gh } = fakeGh({});
+  const out = run({ argv: argv(k.dir, '--decisions', 'D-1'), gh, env: {} });
+  assert.equal(out.exitCode, 0, JSON.stringify(out.result));
+  assert.equal(out.result.id, 'P-3-5');
+});
+
+test('missing local lease file: exit 4 (not 3)', () => {
+  const k = core({ noLeaseFile: true });
+  const { gh, calls } = fakeGh({});
+  const out = run({ argv: argv(k.dir, '--apply'), gh, env: {} });
+  assert.equal(out.exitCode, 4);
+  assert.match(out.result.error, /missing/i);
+  assert.equal(calls.length, 0);
 });
