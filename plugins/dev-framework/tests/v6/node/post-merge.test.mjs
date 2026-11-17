@@ -60,12 +60,15 @@ const pr = (n, mergedDaysAgo, cite, over = {}) => ({
   head: { ref: 't/12-swagger', sha: `sha${n}` }, body: prBody(cite), ...over,
 });
 
-function routes(c, prs, { sha, issues = [], mobile = [] } = {}) {
+const issueBody = (...ids) => `## item\n\n- **Cites:** ${ids.join(', ')}\n`;
+
+function routes(c, prs, { sha, issues = [], mobile = [], issue12 } = {}) {
   const r = {
     'GET repos/acme/api/pulls?state=closed': prs,
     'GET repos/acme/mobile/pulls?state=closed': mobile,
     'GET repos/acme/core/issues?state=all&labels=merged-stale': issues,
     'GET repos/acme/core/issues/12/comments': [],
+    'GET repos/acme/core/issues/12': { number: 12, body: issue12 || issueBody(`P-0-4@${c.hashes1.get('P-0-4')}`) },
   };
   for (const p of prs) {
     r[`GET repos/acme/api/commits/${p.head.sha}/check-runs`] = { total_count: 1, check_runs: [{ name: 'build', status: 'completed', conclusion: 'success' }] };
@@ -207,4 +210,37 @@ test('ack cutoff: an ack dated before merged_at clears a stale cite; the same ac
   const after = go(c, mk(iso(2)));
   assert.equal(after.result.staleMerges.length, 1, 'ack added after the merge must not count');
   assert.match(after.result.staleMerges[0].reasons.join('|'), /no covering ack/);
+});
+
+test('ticket tie (a): a merged PR from t/42-x that fixes #41 is stale with a ticket: reason', () => {
+  const c = core();
+  const h = c.hashes1.get('P-0-4');
+  const p = pr(50, 12, h, { head: { ref: 't/42-x', sha: 'sha50' }, body: `Fixes acme/core#41\nCites: P-0-4@${h}\n\n${EVID}` });
+  const r = routes(c, [p]);
+  r['GET repos/acme/core/issues/41'] = { number: 41, body: issueBody(`P-0-4@${h}`) };
+  r['GET repos/acme/core/issues/41/comments'] = [];
+  const { result, exitCode } = go(c, r);
+  assert.equal(exitCode, 9);
+  assert.equal(result.staleMerges.length, 1);
+  assert.ok(result.staleMerges[0].reasons.some((x) => x.startsWith('ticket:')), result.staleMerges[0].reasons.join('|'));
+});
+
+test('ticket tie (b): the right branch but a cite the issue lists is missing is stale', () => {
+  const c = core();
+  const h = c.hashes1.get('P-0-4');
+  const r = routes(c, [pr(50, 12, h)], { issue12: issueBody(`P-0-4@${h}`, `D-1@${c.hashes1.get('D-1')}`) });
+  const { result } = go(c, r);
+  assert.equal(result.staleMerges.length, 1);
+  assert.deepEqual(result.staleMerges[0].reasons.filter((x) => !x.startsWith('ticket:')), []);
+  assert.match(result.staleMerges[0].reasons.join('|'), /ticket: PR does not cite D-1/);
+});
+
+test('ticket tie (c) positive control: the right branch with every cite is not stale', () => {
+  const c = core();
+  const h = c.hashes1.get('P-0-4');
+  const d = c.hashes1.get('D-1');
+  const p = pr(50, 12, h, { body: `Fixes acme/core#12\nCites: P-0-4@${h}, D-1@${d}\n\n${EVID}` });
+  const { result, exitCode } = go(c, routes(c, [p], { issue12: issueBody(`P-0-4@${h}`, `D-1@${d}`) }));
+  assert.deepEqual(result.staleMerges, []);
+  assert.equal(exitCode, 0);
 });

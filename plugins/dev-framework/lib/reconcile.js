@@ -167,6 +167,9 @@ function postMerge(o, config, gh) {
             // Only acks that existed when the PR merged count.
             loadComments: (n) => gh.paginate(`repos/${planRepo}/issues/${n}/comments`).filter((c) => !c.created_at || Date.parse(c.created_at) <= Date.parse(p.merged_at)),
           }),
+          // The ticket tie: the PR sits on its own issue's claim branch and cites what that issue cites. The issue
+          // is read as it is now; an unreadable issue is a ticket: reason, never silently fine.
+          ...gate.checkTicket({ headRef: p.head.ref, body, planRepo, loadIssue: (n) => gh.api('GET', `repos/${planRepo}/issues/${n}`) }),
           ...gate.checkEvidence({ evidence }),
         ];
         if (r.ci === 'required') {
