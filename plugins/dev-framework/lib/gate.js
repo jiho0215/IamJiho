@@ -8,9 +8,9 @@ const { loadConfig, ConfigError } = require('./config');
 const { planHashes, PlanError } = require('./plan');
 const { parseCitesStrict } = require('./ticket-body');
 const { ackCovers } = require('./acks');
+const { resolvePlanRef, PlanFetchError } = require('./fetch-plan');
 
 const OK_CONCLUSIONS = new Set(['success', 'skipped', 'neutral']);
-const git = (coreDir, args) => execFileSync('git', ['-C', coreDir, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 
 // The Evidence block: text after "Evidence:" (same line included) up to the next blank line or heading.
 function evidenceBlock(body) {
@@ -31,13 +31,19 @@ function linkedIssue(body, planRepo) {
   return m ? Number(m[1]) : null;
 }
 
+// ci:none fallback: Evidence must name every configured test command.
+function evidenceTests({ repoConfig, evidence }) {
+  if (!Array.isArray(repoConfig.tests) || repoConfig.tests.length === 0) return ['ci: no test commands configured for ci:none repo'];
+  const missing = repoConfig.tests.filter((t) => !String(evidence).includes(t));
+  return missing.length ? [`ci: none configured and Evidence lacks test command(s): ${missing.join(', ')}`] : [];
+}
+
 // (a) ci. runs: check-run objects; statuses: commit status objects.
+// Something must actually have PASSED: skipped/neutral runs alone prove nothing.
 function checkCi({ repoConfig, runs, statuses, evidence }) {
   if (runs.length + statuses.length === 0) {
     if (repoConfig.ci === 'required') return ['ci: no checks attached'];
-    if (!Array.isArray(repoConfig.tests) || repoConfig.tests.length === 0) return ['ci: no test commands configured for ci:none repo'];
-    const missing = repoConfig.tests.filter((t) => !String(evidence).includes(t));
-    return missing.length ? [`ci: none configured and Evidence lacks test command(s): ${missing.join(', ')}`] : [];
+    return evidenceTests({ repoConfig, evidence });
   }
   const reasons = [];
   for (const r of runs) {
@@ -46,6 +52,12 @@ function checkCi({ repoConfig, runs, statuses, evidence }) {
   }
   for (const s of statuses) {
     if (s.state !== 'success') reasons.push(`ci: status "${s.context}" is ${s.state}`);
+  }
+  const passed = runs.some((r) => r.status === 'completed' && r.conclusion === 'success') || statuses.some((s) => s.state === 'success');
+  if (!passed) {
+    // ci:none: attached checks that passed nothing leave the Evidence rule in force.
+    if (repoConfig.ci === 'required') reasons.push('ci: no successful check');
+    else reasons.push(...evidenceTests({ repoConfig, evidence }));
   }
   return reasons;
 }
@@ -112,10 +124,10 @@ function checkCoverage({ config, evidence }) {
 
 // Fresh reads (O6): fetch the plan branch before hashing it; null when the fetch fails.
 function currentPlanHashes(coreDir, config) {
-  const b = config.plan.branch;
+  let ref;
   // Fail closed: a failed fetch means origin/<branch> may be stale, so no hashes at all (null).
-  try { git(coreDir, ['fetch', '-q', 'origin', b]); } catch { return null; }
-  return planHashes(coreDir, `origin/${b}`, config);
+  try { ref = resolvePlanRef({ coreDir, config }); } catch (e) { if (e instanceof PlanFetchError) return null; throw e; }
+  return planHashes(coreDir, ref, config);
 }
 
 function evaluate({ gh, config, coreDir, repo, pr, env = process.env, hashes }) {

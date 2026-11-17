@@ -7,6 +7,7 @@ const { loadConfig, ConfigError } = require('./config');
 const { parsePlan, planHashes, PlanError } = require('./plan');
 const { renderBody, parseCites } = require('./ticket-body');
 const { readIssues, sleepMs } = require('./plan-issues');
+const { resolvePlanRef } = require('./fetch-plan');
 
 const COLORS = { plan: 'ededed', epic: 'c5def5', stage: '0e8a16', kind: 'fbca04', state: 'd93f0b', repo: '5319e7' };
 const EXTRA_LABELS = [
@@ -15,7 +16,7 @@ const EXTRA_LABELS = [
 ];
 
 function parseArgs(argv) {
-  const o = { apply: false, writeback: false, ref: 'origin/main', coreDir: '', only: '', refresh: new Set() };
+  const o = { apply: false, writeback: false, ref: '', coreDir: '', only: '', refresh: new Set() };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--apply') o.apply = true;
@@ -126,6 +127,7 @@ function run({ argv, gh, env = process.env }) {
 
 function sync(o, config, gh) {
   const planRepo = config.plan.repo;
+  o.ref = resolvePlanRef({ coreDir: o.coreDir, config, ref: o.ref });
   let planSha;
   try { planSha = gitOut(o.coreDir, ['rev-parse', o.ref]).trim(); } catch (e) { throw new PlanError(`cannot resolve ref ${o.ref}`); }
   let text;

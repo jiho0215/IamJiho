@@ -2,6 +2,7 @@
 // waiting: who is the pipeline waiting on? Read from issue comments, once, repo-wide (never /search).
 const { loadConfig, ConfigError } = require('./config');
 const { parseCommand } = require('./comments');
+const { isTrustedAuthor } = require('./acks');
 
 const WINDOW_DAYS = 30;
 const OWNER_KINDS = new Set(['owner-ask', 'plan-ready', 'stopped']);
@@ -18,15 +19,16 @@ function parseArgs(argv) {
 
 const ts = (c) => Date.parse(c.created_at);
 
-function waiting(comments) {
+// config: for the trusted-author rule (lib/acks.js). Only a trusted author's owner-said clears an ask.
+function waiting(comments, config) {
   const cmds = [];
   for (const c of comments) {
     const cmd = parseCommand(c.body);
-    if (cmd && !Number.isNaN(ts(c))) cmds.push({ ...cmd, at: ts(c), since: c.created_at, url: c.html_url || '', id: c.id });
+    if (cmd && !Number.isNaN(ts(c))) cmds.push({ ...cmd, at: ts(c), since: c.created_at, url: c.html_url || '', id: c.id, trusted: isTrustedAuthor(c, config) });
   }
   cmds.sort((a, b) => a.at - b.at || (a.id || 0) - (b.id || 0));
   // "later" = strictly later created_at on the same issue.
-  const clearedBy = (cmd, kind) => cmds.some((x) => x.kind === kind && x.issue === cmd.issue && x.at > cmd.at);
+  const clearedBy = (cmd, kind) => cmds.some((x) => x.kind === kind && x.issue === cmd.issue && x.at > cmd.at && (kind !== 'owner-said' || x.trusted));
   const row = (x) => ({ issue: x.issue, kind: x.kind, since: x.since, url: x.url });
   return {
     owner: cmds.filter((x) => OWNER_KINDS.has(x.kind) && !clearedBy(x, 'owner-said')).map(row),
@@ -41,7 +43,7 @@ function run({ argv, gh, env = process.env }) {
     if (!config.plan.repo) throw new ConfigError('plan.repo is not configured');
     const since = new Date(Date.now() - WINDOW_DAYS * 86400000).toISOString().replace(/\.\d+Z$/, 'Z');
     const comments = gh.paginate(`repos/${config.plan.repo}/issues/comments?since=${since}`);
-    return { exitCode: 0, result: waiting(comments) };
+    return { exitCode: 0, result: waiting(comments, config) };
   } catch (e) {
     if (e instanceof ConfigError) return { exitCode: 2, result: { error: e.message } };
     throw e;

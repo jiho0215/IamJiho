@@ -21,7 +21,7 @@ const CONFIG = {
   plan: { repo: 'acme/core', path: 'docs/plan', branch: 'main' },
   repos: {
     'acme-api': { github: 'acme/api', default: 'main', label: 'api', ci: 'required' },
-    'acme-mobile': { github: 'acme/mobile', default: 'master', label: 'mobile', ci: 'none' },
+    'acme-mobile': { github: 'acme/mobile', default: 'master', label: 'mobile', ci: 'none', tests: ['npm test'] },
   },
   ownerArea: 'owner',
   stages: { A: 'Stage A — Gates', later: 'Post-launch' },
@@ -63,7 +63,7 @@ const issue = (n, id, body, labels = [], state = 'open') => ({
   number: n, state, body, title: id, created_at: '2026-11-01T00:00:00Z',
   labels: [{ name: `plan:${id}` }, ...labels.map((name) => ({ name }))],
 });
-const comment = (n, body) => ({ issue_url: `https://api.github.com/repos/acme/core/issues/${n}`, body });
+const comment = (n, body) => ({ issue_url: `https://api.github.com/repos/acme/core/issues/${n}`, body, author_association: 'OWNER' });
 const SINCE = 'GET repos/acme/core/issues/comments?since=2026-11-01T00:00:00Z';
 const argv = (dir, ...more) => ['--core-dir', dir, '--ref', 'HEAD', ...more];
 const pr = (head, over = {}) => ({ number: 7, state: 'open', merged_at: null, head: { ref: head }, base: { ref: 'main' }, ...over });

@@ -40,15 +40,39 @@ function loadConfig({ coreDir, env = process.env } = {}) {
     throw new ConfigError(`DEVFW_CONFIG file not found: ${env.DEVFW_CONFIG}`);
   }
   const config = merge(DEFAULTS, user);
-  for (const [name, repo] of Object.entries(config.repos || {})) {
+  validate(config);
+  return config;
+}
+
+// Fail closed: a missing or malformed value is a ConfigError (exit 2), never a silent default.
+const nonEmpty = (v) => typeof v === 'string' && v.trim() !== '';
+const OWNER_NAME = /^[\w.-]+\/[\w.-]+$/;
+
+function validate(config) {
+  const plan = config.plan || {};
+  if (typeof plan.repo !== 'string' || !OWNER_NAME.test(plan.repo)) {
+    throw new ConfigError(`plan.repo must be "owner/name", got ${JSON.stringify(plan.repo)}`);
+  }
+  for (const k of ['branch', 'path']) {
+    if (!nonEmpty(plan[k])) throw new ConfigError(`plan.${k} must be a non-empty string, got ${JSON.stringify(plan[k])}`);
+  }
+  if (!config.repos || typeof config.repos !== 'object' || Array.isArray(config.repos)) {
+    throw new ConfigError('repos must be an object');
+  }
+  for (const [name, repo] of Object.entries(config.repos)) {
     if (!repo || !['required', 'none'].includes(repo.ci)) {
       throw new ConfigError(`repos.${name}.ci must be "required" or "none", got ${JSON.stringify(repo && repo.ci)}`);
     }
-    if (typeof repo.github !== 'string' || !/^[\w.-]+\/[\w.-]+$/.test(repo.github)) {
+    if (typeof repo.github !== 'string' || !OWNER_NAME.test(repo.github)) {
       throw new ConfigError(`repos.${name}.github must be "owner/name", got ${JSON.stringify(repo.github)}`);
     }
+    if (!nonEmpty(repo.default)) {
+      throw new ConfigError(`repos.${name}.default must be a non-empty branch name, got ${JSON.stringify(repo.default)}`);
+    }
+    if (repo.ci === 'none' && (!Array.isArray(repo.tests) || repo.tests.length === 0 || !repo.tests.every(nonEmpty))) {
+      throw new ConfigError(`repos.${name}.tests must be a non-empty array of test commands when ci is "none", got ${JSON.stringify(repo.tests)}`);
+    }
   }
-  return config;
 }
 
 module.exports = { loadConfig, ConfigError };

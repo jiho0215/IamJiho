@@ -7,6 +7,7 @@ const { loadConfig, ConfigError } = require('./config');
 const { PlanError, parsePlan, planHashes, list: planList } = require('./plan');
 const impact = require('./impact');
 const ticketSync = require('./ticket-sync');
+const { resolvePlanRef } = require('./fetch-plan');
 
 const BIN = path.join(__dirname, '..', 'bin');
 const VALUE_FLAGS = { '--core-dir': 'coreDir', '--epic': 'epic', '--title': 'title', '--area': 'area', '--kind': 'kind', '--stage': 'stage', '--depends': 'depends', '--decisions': 'decisions', '--body-file': 'bodyFile' };
@@ -80,6 +81,7 @@ function run({ argv, gh, env = process.env }) {
       const why = lease === 4 ? 'the orchestrator lease is held by another token' : lease === 3 ? 'the lease is missing (no lease line on origin or no local token)' : `lease check failed unexpectedly (exit ${lease})`;
       return { exitCode: 4, result: { error: `lease not held: ${why}` } };
     }
+    const ref = resolvePlanRef({ coreDir: o.coreDir, config }); // the plan of record, fetched fresh
     const body = fs.readFileSync(o.bodyFile, 'utf8');
     const planFile = path.join(o.coreDir, config.plan.path, 'PLAN.md');
     const render = () => {
@@ -93,7 +95,7 @@ function run({ argv, gh, env = process.env }) {
       parsePlan(planText, config);
       const wanted = planList(o.decisions);
       if (wanted.length) {
-        const known = planHashes(o.coreDir, `origin/${config.plan.branch || 'main'}`, config);
+        const known = planHashes(o.coreDir, ref, config);
         for (const d of wanted) if (!known.has(d)) throw new ConfigError(`decision ${d} does not exist in the plan`);
       }
     };
@@ -102,25 +104,24 @@ function run({ argv, gh, env = process.env }) {
       const r = render();
       return { exitCode: 0, result: { id: r.id, text: r.text, planText: r.planText } };
     }
-    return apply(o, config, gh, env, planFile, render, validate);
+    return apply(o, config, gh, env, planFile, render, validate, ref);
   } catch (e) {
     if (e instanceof ConfigError || e instanceof PlanError) return { exitCode: 2, result: { error: e.message } };
     throw e;
   }
 }
 
-function apply(o, config, gh, env, planFile, render, validate) {
+function apply(o, config, gh, env, planFile, render, validate, ref) {
   const planRepo = config.plan.repo;
-  const base = config.plan.branch || 'main';
+  const base = config.plan.branch;
   const token = fs.readFileSync(path.join(o.coreDir, '.orchestrator', 'lease'), 'utf8').trim();
   const start = git(o.coreDir, ['rev-parse', '--abbrev-ref', 'HEAD']).trim();
-  git(o.coreDir, ['fetch', '-q', 'origin', base]);
-  // The branch name needs the ID, which needs the freshest plan: allocate on origin's tip first.
-  const tip = git(o.coreDir, ['show', `origin/${base}:${config.plan.path}/PLAN.md`]);
+  // The branch name needs the ID, which needs the freshest plan: allocate on origin's tip (fetched by resolvePlanRef).
+  const tip = git(o.coreDir, ['show', `${ref}:${config.plan.path}/PLAN.md`]);
   const id = nextId(tip, o.epic);
   const branch = `plan/new-${id}`;
   validate(insertItem(tip, o, id, fs.readFileSync(o.bodyFile, 'utf8'))); // the tip is what will be merged onto
-  git(o.coreDir, ['checkout', '-q', '-b', branch, `origin/${base}`]);
+  git(o.coreDir, ['checkout', '-q', '-b', branch, ref]);
   let pr;
   try {
     const r = render();
@@ -140,9 +141,9 @@ function apply(o, config, gh, env, planFile, render, validate) {
   if (im.exitCode !== 0) return { exitCode: im.exitCode || 8, result: { error: 'plan impact check did not pass; PR left open', id, planPr: pr, impact: im.result } };
 
   gh.raw(['pr', 'merge', String(pr), '--repo', planRepo, '--squash']);
-  git(o.coreDir, ['fetch', '-q', 'origin', base]);
 
-  const ts = ticketSync.run({ argv: ['--core-dir', o.coreDir, '--ref', `origin/${base}`, '--only', id, '--apply'], gh, env });
+  // No --ref: ticket-sync fetches the merged plan branch itself (resolvePlanRef).
+  const ts = ticketSync.run({ argv: ['--core-dir', o.coreDir, '--only', id, '--apply'], gh, env });
   if (ts.exitCode !== 0) return { exitCode: ts.exitCode || 1, result: { error: 'ticket-sync failed after the plan PR merged', id, planPr: pr, sync: ts.result } };
   const made = (ts.result.created || []).find((c) => c.id === id);
   return { exitCode: 0, result: { id, issue: made ? made.issue : null, planPr: pr } };

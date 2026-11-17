@@ -6,6 +6,8 @@ const { planHashes, PlanError } = require('./plan');
 const { parseCites } = require('./ticket-body');
 const { readIssues, sleepMs, claimRefs } = require('./plan-issues');
 const { parseLeaseLine } = require('./lease');
+const { resolvePlanRef } = require('./fetch-plan');
+const { isTrustedAuthor } = require('./acks');
 
 const MARKER = '<!-- devfw:impact -->';
 const CONTEXT = 'devfw/plan-impact';
@@ -78,15 +80,6 @@ function decisionViolations(coreDir, config, base, head) {
     }
   }
   return out;
-}
-
-// The lease is judged against the LIVE tip of origin/<plan.branch> (fetched fresh), not the PR's base sha.
-function fetchTip(coreDir, config) {
-  const b = config.plan.branch || 'main';
-  try { git(coreDir, ['fetch', '-q', 'origin', `+refs/heads/${b}:refs/remotes/origin/${b}`]); } catch (e) {
-    throw new PlanError(`cannot fetch origin ${b} (the lease must be read fresh): ${String(e.stderr || e.message).trim()}`);
-  }
-  return `origin/${b}`;
 }
 
 function leaseViolations(coreDir, config, pr, base, head, files, tip) {
@@ -180,12 +173,13 @@ function impact(o, config, gh) {
 
   const violations = [
     ...decisionViolations(o.coreDir, config, base, head),
-    ...leaseViolations(o.coreDir, config, pr, base, head, files, fetchTip(o.coreDir, config)),
+    ...leaseViolations(o.coreDir, config, pr, base, head, files, resolvePlanRef({ coreDir: o.coreDir, config })), // the lease is judged on the LIVE tip
   ];
   const affected = findAffected(gh, config, changed);
 
   const comments = gh.paginate(`repos/${planRepo}/issues/${o.pr}/comments`);
-  const existing = comments.find((c) => String(c.body || '').replace(/\r/g, '').split('\n')[0] === MARKER);
+  // Only a trusted author's marker comment is ours (lib/acks.js rule): a forged one with ticked boxes clears nothing.
+  const existing = comments.find((c) => String(c.body || '').replace(/\r/g, '').split('\n')[0] === MARKER && isTrustedAuthor(c, config));
   const done = existing ? ticked(existing.body) : new Map();
   const isDone = (a) => done.get(a.issue) === setKey(a, after);
   const pending = affected.filter((a) => a.kind === 'issue' && !isDone(a)).length;

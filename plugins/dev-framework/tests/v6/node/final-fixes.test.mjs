@@ -172,3 +172,271 @@ test('C2: a range such as O-1–O-11 still throws PlanError', () => {
   assert.throws(() => p4(withP4(' O-1–O-11', ' D-8')), (e) => e instanceof PlanError && /O-1–O-11/.test(e.message));
   assert.throws(() => p4(withP4(' P-0-3, O-1–O-11', ' D-8')), PlanError);
 });
+
+// ---------------------------------------------------------------- I5
+const { ConfigError } = require('../../../lib/config.js');
+const cfgFile = (cfg) => { const d = mkdtempSync(join(tmpdir(), 'devfw-ff-cfg-')); writeFileSync(join(d, 'orchestrator.json'), JSON.stringify(cfg)); return d; };
+const tweak = (fn) => { const c = JSON.parse(JSON.stringify(CONFIG)); fn(c); return c; };
+
+test('I5: a valid config loads (positive control)', () => {
+  assert.equal(loadConfig({ coreDir: cfgFile(CONFIG), env: {} }).plan.repo, 'acme/core');
+});
+
+for (const [name, fn, re] of [
+  ['repos.*.default missing', (c) => { delete c.repos['acme-api'].default; }, /repos\.acme-api\.default/],
+  ['repos.*.default empty', (c) => { c.repos['acme-api'].default = ''; }, /repos\.acme-api\.default/],
+  ['repos.*.default not a string', (c) => { c.repos['acme-api'].default = 7; }, /repos\.acme-api\.default/],
+  ['plan.repo empty', (c) => { c.plan.repo = ''; }, /plan\.repo/],
+  ['plan.repo not owner/name', (c) => { c.plan.repo = 'acme'; }, /plan\.repo/],
+  ['plan.branch empty', (c) => { c.plan.branch = ''; }, /plan\.branch/],
+  ['plan.branch not a string', (c) => { c.plan.branch = 3; }, /plan\.branch/],
+  ['plan.path empty', (c) => { c.plan.path = ''; }, /plan\.path/],
+  ['ci:none with no tests', (c) => { delete c.repos['acme-mobile'].tests; }, /repos\.acme-mobile\.tests/],
+  ['ci:none with an empty tests array', (c) => { c.repos['acme-mobile'].tests = []; }, /repos\.acme-mobile\.tests/],
+  ['ci:none with tests not an array', (c) => { c.repos['acme-mobile'].tests = 'npm test'; }, /repos\.acme-mobile\.tests/],
+  ['ci:none with a blank test command', (c) => { c.repos['acme-mobile'].tests = ['  ']; }, /repos\.acme-mobile\.tests/],
+]) {
+  test(`I5: ConfigError when ${name}`, () => {
+    assert.throws(() => loadConfig({ coreDir: cfgFile(tweak(fn)), env: {} }), (e) => e instanceof ConfigError && re.test(e.message));
+  });
+}
+
+test('I5: no config file at all fails closed (plan.repo is required)', () => {
+  assert.throws(() => loadConfig({ coreDir: join(tmpdir(), 'devfw-ff-no-such-dir'), env: {} }), ConfigError);
+});
+
+test('I5: a script given a bad config exits 2', () => {
+  const dir = cfgFile(tweak((c) => { c.repos['acme-api'].default = ''; }));
+  const r = reconcile.run({ argv: ['--core-dir', dir, '--ref', 'HEAD'], gh: fakeGh({}).gh, env: {} });
+  assert.equal(r.exitCode, 2);
+  assert.match(r.result.error, /default/);
+});
+
+// ---------------------------------------------------------------- I1
+const gate = require('../../../lib/gate.js');
+const REQ = CONFIG.repos['acme-api'];
+const NONE = CONFIG.repos['acme-mobile'];
+const run_ = (name, conclusion, status = 'completed') => ({ name, status, conclusion });
+
+test('I1: ci:required with every run skipped or neutral refuses with "ci: no successful check"', () => {
+  const runs = [run_('a', 'skipped'), run_('b', 'neutral')];
+  assert.deepEqual(gate.checkCi({ repoConfig: REQ, runs, statuses: [], evidence: '' }), ['ci: no successful check']);
+  assert.deepEqual(gate.checkCi({ repoConfig: REQ, runs: [run_('a', 'skipped')], statuses: [], evidence: '' }), ['ci: no successful check']);
+});
+
+test('I1: one success run, or one success status, satisfies it (positive controls)', () => {
+  assert.deepEqual(gate.checkCi({ repoConfig: REQ, runs: [run_('a', 'skipped'), run_('b', 'neutral'), run_('c', 'success')], statuses: [], evidence: '' }), []);
+  assert.deepEqual(gate.checkCi({ repoConfig: REQ, runs: [run_('a', 'skipped')], statuses: [{ context: 'legacy', state: 'success' }], evidence: '' }), []);
+});
+
+test('I1: a success conclusion on a run that is not completed does not count', () => {
+  const r = gate.checkCi({ repoConfig: REQ, runs: [run_('a', 'success', 'in_progress')], statuses: [], evidence: '' });
+  assert.ok(r.includes('ci: no successful check'), r.join(' | '));
+});
+
+test('I1: ci:none with only skipped runs falls back to the Evidence test-command rule', () => {
+  const runs = [run_('a', 'skipped')];
+  assert.deepEqual(gate.checkCi({ repoConfig: NONE, runs, statuses: [], evidence: 'npm test: 40 passed' }), []);
+  assert.ok(gate.checkCi({ repoConfig: NONE, runs, statuses: [], evidence: 'looked fine' }).length > 0);
+});
+
+test('I1: the post-merge check refuses an all-skipped merge the same way', () => {
+  const c = core();
+  const h = planHashes(c.dir, 'HEAD', CONFIG);
+  const mergedAt = new Date(Date.now() - 2 * 86400000).toISOString();
+  const p = { number: 50, merged_at: mergedAt, base: { ref: 'main' }, head: { ref: 't/12-swagger', sha: 'sha50' },
+    body: `Fixes acme/core#12\nCites: P-0-4@${h.get('P-0-4')}, D-8@${h.get('D-8')}, RL-7@${h.get('RL-7')}\n\nEvidence:\ndotnet test: ok\n` };
+  const routes = (runs) => ({
+    'GET repos/acme/api/pulls?state=closed': [p], 'GET repos/acme/mobile/pulls?state=closed': [],
+    'GET repos/acme/core/issues/12/comments': [],
+    'GET repos/acme/core/issues?state=all&labels=merged-stale': [],
+    'GET repos/acme/api/commits/sha50/check-runs': { total_count: runs.length, check_runs: runs },
+    'GET repos/acme/api/commits/sha50/status': { state: 'pending', statuses: [] },
+    [`GET repos/acme/core/commits?sha=main&until=${mergedAt}&per_page=1`]: [{ sha: c.sha }],
+  });
+  const bad = reconcile.run({ argv: ['--core-dir', c.dir, '--post-merge'], gh: fakeGh(routes([run_('a', 'skipped')])).gh, env: {} });
+  assert.equal(bad.exitCode, 9, JSON.stringify(bad.result));
+  assert.ok(bad.result.staleMerges[0].reasons.includes('ci: no successful check'), JSON.stringify(bad.result));
+  const ok = reconcile.run({ argv: ['--core-dir', c.dir, '--post-merge'], gh: fakeGh(routes([run_('a', 'success')])).gh, env: {} });
+  assert.equal(ok.exitCode, 0, JSON.stringify(ok.result));
+});
+
+// ---------------------------------------------------------------- I3
+const ticketSync = require('../../../lib/ticket-sync.js');
+const { readdirSync } = await import('node:fs');
+const TS_BASE = { 'GET repos/acme/core/labels': [], 'GET repos/acme/core/milestones?state=all': [] };
+
+test('I3: resolvePlanRef: an explicit ref is used without fetching; no ref fetches; a failed fetch throws', () => {
+  const { resolvePlanRef, PlanFetchError } = require('../../../lib/fetch-plan.js');
+  const c = core();
+  const config = loadConfig({ coreDir: c.dir, env: {} });
+  upstreamEdit(c, 'PLAN.md', 'Expose a health endpoint.', 'Expose it upstream.');
+  const before = c.g('rev-parse', 'origin/main').trim();
+  assert.equal(resolvePlanRef({ coreDir: c.dir, config, ref: 'HEAD' }), 'HEAD');
+  assert.equal(c.g('rev-parse', 'origin/main').trim(), before, 'an explicit ref must not fetch');
+  assert.equal(resolvePlanRef({ coreDir: c.dir, config }), 'origin/main');
+  assert.notEqual(c.g('rev-parse', 'origin/main').trim(), before, 'no ref: origin/main is fetched');
+  c.g('remote', 'set-url', 'origin', join(tmpdir(), 'devfw-ff-no-such-origin'));
+  assert.throws(() => resolvePlanRef({ coreDir: c.dir, config }), (e) => e instanceof PlanFetchError && /cannot fetch origin main/.test(e.message));
+});
+
+test('I3: ticket-sync with no --ref fetches: a stale clone sees the upstream edit as drift', () => {
+  const c = core();
+  const nums = [['P-0-3', 1], ['P-0-4', 2], ['P-0-5', 3]];
+  const issues = nums.map(([id, n]) => issue(n, id, renderBody(parsePlan(fixture, loadConfig({ coreDir: c.dir, env: {} })).find((i) => i.id === id),
+    { hashes: planHashes(c.dir, 'HEAD', CONFIG), issueNumbers: new Map(nums), planSha: c.sha, config: CONFIG })));
+  const go = () => ticketSync.run({ argv: ['--core-dir', c.dir], gh: fakeGh({ ...TS_BASE, 'GET repos/acme/core/issues?state=all': issues }).gh, env: {} });
+  const fresh = go();
+  assert.equal(fresh.exitCode, 0, JSON.stringify(fresh.result));
+  upstreamEdit(c, 'PLAN.md', 'Disable Swagger in production builds.', 'Disable Swagger, edited upstream.');
+  const r = go();
+  assert.equal(r.exitCode, 7, JSON.stringify(r.result));
+  assert.deepEqual(r.result.drift.map((d) => d.id), ['P-0-4']);
+  assert.ok(r.result.drift[0].diff.includes('+Disable Swagger, edited upstream.'));
+});
+
+test('I3: a plan branch other than main is honoured (no main exists on origin)', () => {
+  const cfg = { ...CONFIG, plan: { ...CONFIG.plan, branch: 'trunk' } };
+  const c = core({ config: cfg, branch: 'trunk' });
+  const r = ticketSync.run({ argv: ['--core-dir', c.dir], gh: fakeGh({ ...TS_BASE, 'GET repos/acme/core/issues?state=all': [] }).gh, env: {} });
+  assert.equal(r.exitCode, 7, JSON.stringify(r.result));
+  assert.deepEqual(r.result.missing, ['P-0-3', 'P-0-4', 'P-0-5']);
+  const rc = reconcile.run({ argv: ['--core-dir', c.dir], gh: fakeGh({ 'GET repos/acme/core/issues?state=all': [] }).gh, env: {} });
+  assert.equal(rc.exitCode, 0, JSON.stringify(rc.result));
+});
+
+test('I3: ticket-sync maps a failed fetch to exit 2', () => {
+  const c = core();
+  c.g('remote', 'set-url', 'origin', join(tmpdir(), 'devfw-ff-no-such-origin'));
+  const r = ticketSync.run({ argv: ['--core-dir', c.dir], gh: fakeGh({ ...TS_BASE, 'GET repos/acme/core/issues?state=all': [] }).gh, env: {} });
+  assert.equal(r.exitCode, 2);
+  assert.match(r.result.error, /cannot fetch origin main/);
+});
+
+test('I3: the five readers resolve the plan through lib/fetch-plan.js and carry no fetch of their own', () => {
+  const lib = join(here, '../../../lib');
+  for (const f of ['ticket-sync.js', 'reconcile.js', 'gate.js', 'impact.js', 'new-ticket.js']) {
+    const src = readFileSync(join(lib, f), 'utf8');
+    assert.match(src, /require\('\.\/fetch-plan'\)/, `${f} must use fetch-plan`);
+    assert.match(src, /resolvePlanRef\(/, `${f} must call resolvePlanRef`);
+  }
+  const fetching = readdirSync(lib).filter((f) => f.endsWith('.js') && /'fetch'/.test(readFileSync(join(lib, f), 'utf8'))).sort();
+  // impact.js keeps one fetch: the PR's own base/head shas (not the plan branch).
+  assert.deepEqual(fetching, ['fetch-plan.js', 'impact.js']);
+  const impactFetches = readFileSync(join(lib, 'impact.js'), 'utf8').split('\n').filter((l) => /'fetch'/.test(l));
+  assert.ok(impactFetches.every((l) => !/refs\/heads|plan\.branch|origin\/\$\{/.test(l)), impactFetches.join('\n'));
+});
+
+// ---------------------------------------------------------------- I6
+const waitingLib = require('../../../lib/waiting.js');
+const by = (assoc, extra = {}) => ({ author_association: assoc, user: { login: 'someone' }, ...extra });
+
+test('I6: an ack from author_association NONE does not clear needs-ack; the same ack from OWNER does', () => {
+  const c = core();
+  const oldBody = bodyOf(c.dir, 'P-0-3');
+  const newSha = upstreamEdit(c, 'PLAN.md', 'Expose a health endpoint.', 'Expose a health endpoint, v2.');
+  c.g('fetch', '-q', 'origin'); c.g('merge', '-q', '--ff-only', 'origin/main');
+  const go = (who) => reconcile.run({
+    argv: ['--core-dir', c.dir, '--ref', 'HEAD'],
+    gh: fakeGh({
+      'GET repos/acme/core/issues?state=all': [issue(41, 'P-0-3', oldBody)],
+      [SINCE]: [{ issue_url: 'https://api.github.com/repos/acme/core/issues/41', body: `ack 41 ${newSha}: fine`, ...who }],
+      'GET repos/acme/api/git/matching-refs/heads/t/': [], 'GET repos/acme/api/pulls?state=all': [],
+    }).gh,
+    env: {},
+  });
+  assert.equal(stateOf(go(by('NONE')), 'P-0-3').state, 'needs-ack');
+  assert.equal(stateOf(go(by('CONTRIBUTOR')), 'P-0-3').state, 'needs-ack');
+  assert.equal(stateOf(go({}), 'P-0-3').state, 'needs-ack', 'no author_association at all is not trusted');
+  for (const a of ['OWNER', 'MEMBER', 'COLLABORATOR']) assert.equal(stateOf(go(by(a)), 'P-0-3').state, 'ready', a);
+});
+
+test('I6: github.trustedAuthors extends the set by login (case-insensitive)', () => {
+  const { isTrustedAuthor } = require('../../../lib/acks.js');
+  const cfg = { github: { trustedAuthors: ['Release-Bot'] } };
+  assert.equal(isTrustedAuthor({ author_association: 'NONE', user: { login: 'release-bot' } }, cfg), true);
+  assert.equal(isTrustedAuthor({ author_association: 'NONE', user: { login: 'stranger' } }, cfg), false);
+  assert.equal(isTrustedAuthor({ author_association: 'NONE', user: { login: 'release-bot' } }, {}), false);
+  assert.equal(isTrustedAuthor({ author_association: 'owner' }, {}), false, 'exact upper-case values only');
+});
+
+test('I6: waiting - an owner-said from NONE does not clear the ask; from OWNER it does', () => {
+  const ask = { id: 1, body: 'owner-ask 41: pick', created_at: '2026-11-10T10:00:00Z', ...by('OWNER') };
+  const said = (assoc) => ({ id: 2, body: 'owner-said 41: ok', created_at: '2026-11-10T11:00:00Z', ...by(assoc) });
+  assert.deepEqual(waitingLib.waiting([ask, said('NONE')], CONFIG).owner.map((x) => x.issue), [41]);
+  assert.deepEqual(waitingLib.waiting([ask, said('OWNER')], CONFIG).owner, []);
+});
+
+test('I6: impact - a marker comment from NONE is ignored (its ticks do not count, a new one is posted)', () => {
+  const c = core();
+  c.g('checkout', '-q', '-b', 'pr');
+  const p = join(c.dir, 'docs/plan/PLAN.md');
+  writeFileSync(p, readFileSync(p, 'utf8').replace('Disable Swagger in production builds.', 'Disable Swagger everywhere.'));
+  c.g('commit', '-qam', 'head');
+  const head = c.g('rev-parse', 'HEAD').trim();
+  const world = (comments) => fakeGh({
+    'GET repos/acme/core/pulls/7': { number: 7, body: 'lease: 00000000000000aa', base: { sha: c.sha }, head: { sha: head } },
+    'GET repos/acme/core/pulls/7/files': [{ filename: 'docs/plan/PLAN.md' }],
+    'GET repos/acme/core/issues?state=all': [issue(12, 'P-0-4', `- **Cites:** P-0-4@${'a'.repeat(12)}\n`)],
+    'GET repos/acme/core/issues/7/comments': comments,
+    'GET repos/acme/api/pulls?state=open': [], 'GET repos/acme/mobile/pulls?state=open': [],
+    'GET repos/acme/api/git/matching-refs/heads/t/': [], 'GET repos/acme/mobile/git/matching-refs/heads/t/': [],
+  });
+  const first = world([]);
+  impact.run({ argv: ['--core-dir', c.dir, '--pr', '7', '--apply'], gh: first.gh, env: {} });
+  const ticked = first.calls.find((x) => x.method === 'POST' && x.path.endsWith('/comments')).body.body.replace('- [ ]', '- [x]');
+  const forged = world([{ id: 901, body: ticked, ...by('NONE') }]);
+  const r1 = impact.run({ argv: ['--core-dir', c.dir, '--pr', '7', '--apply'], gh: forged.gh, env: {} });
+  assert.equal(r1.result.pending, 1);
+  assert.equal(r1.exitCode, 8);
+  assert.equal(forged.calls.filter((x) => x.method === 'PATCH').length, 0);
+  const real = world([{ id: 901, body: ticked, ...by('OWNER') }]);
+  const r2 = impact.run({ argv: ['--core-dir', c.dir, '--pr', '7', '--apply'], gh: real.gh, env: {} });
+  assert.equal(r2.result.pending, 0);
+  assert.equal(real.calls.filter((x) => x.method === 'PATCH').length, 1);
+});
+
+// ---------------------------------------------------------------- I4
+function pmWorld(c, { issues = [], unreachable = false } = {}) {
+  const mergedAt = new Date(Date.now() - 2 * 86400000).toISOString();
+  const p = { number: 50, merged_at: mergedAt, base: { ref: 'main' }, head: { ref: 't/12-swagger', sha: 'sha50' },
+    body: `Fixes acme/core#12\nCites: P-0-4@${'c'.repeat(12)}\n\nEvidence:\ndotnet test: ok\n` };
+  if (unreachable) c.g('remote', 'set-url', 'origin', join(tmpdir(), 'devfw-ff-no-such-origin'));
+  return {
+    'GET repos/acme/api/pulls?state=closed': [p], 'GET repos/acme/mobile/pulls?state=closed': [],
+    'GET repos/acme/core/issues/12/comments': [],
+    'GET repos/acme/core/issues?state=all&labels=merged-stale': issues,
+    'GET repos/acme/api/commits/sha50/check-runs': { total_count: 1, check_runs: [run_('b', 'success')] },
+    'GET repos/acme/api/commits/sha50/status': { state: 'pending', statuses: [] },
+    [`GET repos/acme/core/commits?sha=main&until=${mergedAt}&per_page=1`]: [{ sha: c.sha }],
+  };
+}
+const msIssue = (title, state) => ({ number: 90, title, state, labels: [{ name: 'merged-stale' }] });
+
+for (const [kind, unreachable] of [['merged-stale', false], ['merged-unverifiable', true]]) {
+  test(`I4: a CLOSED ${kind} issue resolves the PR: no new issue, reported under resolved, exit 0`, () => {
+    const c = core();
+    for (const extra of [[], ['--apply']]) {
+      const f = fakeGh(pmWorld(c, { issues: [msIssue(`${kind}: acme/api#50`, 'closed')], unreachable }));
+      const r = reconcile.run({ argv: ['--core-dir', c.dir, '--post-merge', ...extra], gh: f.gh, env: {} });
+      assert.equal(r.exitCode, 0, JSON.stringify(r.result));
+      assert.deepEqual(r.result.staleMerges, []);
+      assert.deepEqual(r.result.unverifiable, []);
+      assert.deepEqual(r.result.resolved.map((x) => [x.repo, x.pr, x.issue]), [['acme/api', 50, 90]]);
+      assert.equal(f.calls.filter((x) => x.method === 'POST').length, 0);
+    }
+  });
+}
+
+test('I4: an OPEN merged-stale issue is still reported (exit 9) and not duplicated; none at all creates one', () => {
+  const c = core();
+  const open = fakeGh(pmWorld(c, { issues: [msIssue('merged-stale: acme/api#50', 'open')] }));
+  const r = reconcile.run({ argv: ['--core-dir', c.dir, '--post-merge', '--apply'], gh: open.gh, env: {} });
+  assert.equal(r.exitCode, 9);
+  assert.equal(r.result.staleMerges.length, 1);
+  assert.equal(open.calls.filter((x) => x.method === 'POST').length, 0);
+  const none = fakeGh(pmWorld(c));
+  const r2 = reconcile.run({ argv: ['--core-dir', c.dir, '--post-merge', '--apply'], gh: none.gh, env: {} });
+  assert.equal(r2.exitCode, 9);
+  assert.deepEqual(none.calls.filter((x) => x.method === 'POST').map((x) => x.body.title), ['merged-stale: acme/api#50']);
+});

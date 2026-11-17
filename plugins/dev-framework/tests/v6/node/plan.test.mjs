@@ -14,10 +14,13 @@ const { loadConfig, ConfigError } = require('../../../lib/config.js');
 const { createGh } = require('../../../lib/gh.js');
 const here = dirname(fileURLToPath(import.meta.url));
 const fixture = readFileSync(join(here, '../fixtures/PLAN-list.md'), 'utf8');
-const config = loadConfig({ coreDir: tmpdir(), env: {} });
-config.repos = {
-  'acme-api': { github: 'acme/api', ci: 'required' },
-  'acme-mobile': { github: 'acme/mobile', ci: 'none' },
+const config = {
+  plan: { repo: 'acme/core', path: 'docs/plan', branch: 'main' },
+  ownerArea: 'owner',
+  repos: {
+    'acme-api': { github: 'acme/api', default: 'main', ci: 'required' },
+    'acme-mobile': { github: 'acme/mobile', default: 'master', ci: 'none', tests: ['npm test'] },
+  },
 };
 
 test('parses PLAN-list.md into 3 items with fields and dep arrays', () => {
@@ -93,14 +96,16 @@ test('search path is forbidden', () => {
 test('loadConfig rejects bad ci and bad github; honours DEVFW_CONFIG', () => {
   const dir = mkdtempSync(join(tmpdir(), 'acme-cfg-'));
   const file = join(dir, 'orchestrator.json');
-  writeFileSync(file, JSON.stringify({ repos: { 'acme-api': { github: 'acme/api', ci: 'sometimes' } } }));
-  assert.throws(() => loadConfig({ coreDir: dir, env: {} }), ConfigError);
-  writeFileSync(file, JSON.stringify({ repos: { 'acme-api': { github: 'nonsense', ci: 'none' } } }));
-  assert.throws(() => loadConfig({ coreDir: dir, env: {} }), ConfigError);
+  const plan = { repo: 'acme/core' };
+  writeFileSync(file, JSON.stringify({ plan, repos: { 'acme-api': { github: 'acme/api', default: 'main', ci: 'sometimes' } } }));
+  assert.throws(() => loadConfig({ coreDir: dir, env: {} }), (e) => e instanceof ConfigError && /ci/.test(e.message));
+  writeFileSync(file, JSON.stringify({ plan, repos: { 'acme-api': { github: 'nonsense', default: 'main', ci: 'required' } } }));
+  assert.throws(() => loadConfig({ coreDir: dir, env: {} }), (e) => e instanceof ConfigError && /github/.test(e.message));
   const good = join(dir, 'other.json');
-  writeFileSync(good, JSON.stringify({ repos: { x: { github: 'acme/x', ci: 'none' } }, github: { writeDelayMs: 5 } }));
+  writeFileSync(good, JSON.stringify({ plan, repos: { x: { github: 'acme/x', default: 'main', ci: 'none', tests: ['npm test'] } }, github: { writeDelayMs: 5 } }));
   const c = loadConfig({ coreDir: dir, env: { DEVFW_CONFIG: good } });
   assert.equal(c.github.writeDelayMs, 5);
   assert.equal(c.plan.path, 'docs/plan');
-  assert.equal(loadConfig({ coreDir: join(dir, 'none'), env: {} }).ownerArea, 'owner');
+  assert.equal(c.plan.branch, 'main');
+  assert.equal(c.ownerArea, 'owner');
 });

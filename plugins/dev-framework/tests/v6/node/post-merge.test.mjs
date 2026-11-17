@@ -64,7 +64,7 @@ function routes(c, prs, { sha, issues = [], mobile = [] } = {}) {
   const r = {
     'GET repos/acme/api/pulls?state=closed': prs,
     'GET repos/acme/mobile/pulls?state=closed': mobile,
-    'GET repos/acme/core/issues?state=open&labels=merged-stale': issues,
+    'GET repos/acme/core/issues?state=all&labels=merged-stale': issues,
     'GET repos/acme/core/issues/12/comments': [],
   };
   for (const p of prs) {
@@ -134,7 +134,7 @@ test('filters: outside lookback, wrong base, non-t/ branch, unmerged are skipped
     pr(3, 3, cite, { head: { ref: 'feature/x', sha: 's3' } }), // not t/*
     pr(4, 3, cite, { merged_at: null }), // closed unmerged
   ];
-  const { result } = go(c, { 'GET repos/acme/api/pulls?state=closed': prs, 'GET repos/acme/mobile/pulls?state=closed': [], 'GET repos/acme/core/issues?state=open&labels=merged-stale': [] });
+  const { result } = go(c, { 'GET repos/acme/api/pulls?state=closed': prs, 'GET repos/acme/mobile/pulls?state=closed': [], 'GET repos/acme/core/issues?state=all&labels=merged-stale': [] });
   assert.deepEqual(result.staleMerges, []);
 });
 
@@ -200,7 +200,7 @@ test('ack cutoff: an ack dated before merged_at clears a stale cite; the same ac
   const c = core();
   // The plan at merge time is day 3; the PR cites the day-1 hash, so it is stale unless acked.
   const p = pr(50, 12, c.hashes1.get('P-0-4'));
-  const ack = (when) => [{ body: `ack 12 ${c.day3}: P-0-4 text only`, created_at: when, issue_url: 'https://api.github.com/repos/acme/core/issues/12' }];
+  const ack = (when) => [{ body: `ack 12 ${c.day3}: P-0-4 text only`, created_at: when, issue_url: 'https://api.github.com/repos/acme/core/issues/12', author_association: 'OWNER' }];
   const mk = (when) => { const r = routes(c, [p], { sha: c.day3 }); r['GET repos/acme/core/issues/12/comments'] = ack(when); return r; };
   const before = go(c, mk(iso(13)));
   assert.deepEqual(before.result.staleMerges, [], 'ack predating the merge covers it');

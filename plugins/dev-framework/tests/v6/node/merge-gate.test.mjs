@@ -91,10 +91,14 @@ test('ci positive control: the same PR with one success run passes (a)', () => {
   assert.equal(result.checks.ci, true);
 });
 
-test('ci: skipped and neutral pass; failure, pending and failing statuses refuse', () => {
+test('ci: skipped and neutral are tolerated beside a success; alone they refuse; failure, pending and failing statuses refuse', () => {
   const c = core();
-  const ok = [{ name: 'a', status: 'completed', conclusion: 'skipped' }, { name: 'b', status: 'completed', conclusion: 'neutral' }];
+  const skipNeutral = [{ name: 'a', status: 'completed', conclusion: 'skipped' }, { name: 'b', status: 'completed', conclusion: 'neutral' }];
+  const ok = [...skipNeutral, { name: 's', status: 'completed', conclusion: 'success' }];
   assert.equal(go(c, routes({ prBody: body(c), runs: ok })).result.checks.ci, true);
+  const alone = go(c, routes({ prBody: body(c), runs: skipNeutral })).result;
+  assert.equal(alone.checks.ci, false);
+  assert.ok(alone.reasons.includes('ci: no successful check'), alone.reasons.join(' | '));
   const bad = go(c, routes({ prBody: body(c), runs: [...ok, { name: 'c', status: 'completed', conclusion: 'failure' }] })).result;
   assert.equal(bad.checks.ci, false);
   const pending = go(c, routes({ prBody: body(c), runs: [{ name: 'p', status: 'in_progress', conclusion: null }] })).result;
@@ -128,11 +132,11 @@ test('cites: current hashes pass; a stale hash with no ack refuses', () => {
 test('cites: stale plus an ack that resolves to the current hash passes', () => {
   const c = core();
   const stale = `P-0-4@${'f'.repeat(12)}, D-8@${c.hashes.get('D-8')}`;
-  const comments = [{ body: `ack 12 ${c.sha}: wording only` }];
+  const comments = [{ body: `ack 12 ${c.sha}: wording only`, author_association: 'MEMBER' }];
   const { result } = go(c, routes({ prBody: body(c, { cites: stale }), comments }));
   assert.equal(result.checks.cites, true, result.reasons.join(' | '));
   // an ack for a different issue number does not cover it
-  const other = go(c, routes({ prBody: body(c, { cites: stale }), comments: [{ body: `ack 99 ${c.sha}: x` }] })).result;
+  const other = go(c, routes({ prBody: body(c, { cites: stale }), comments: [{ body: `ack 99 ${c.sha}: x`, author_association: 'MEMBER' }] })).result;
   assert.equal(other.checks.cites, false);
 });
 
@@ -214,15 +218,18 @@ test('fix1: a failed plan fetch refuses, even though the cites match the cached 
   assert.ok(result.reasons.includes('cites: plan fetch failed'), result.reasons.join(' | '));
 });
 
-test('fix2: a ci:none repo with an empty or missing tests list refuses on zero runs', () => {
+test('fix2: a ci:none repo with an empty or missing tests list is a config error (exit 2), never a pass', () => {
   for (const tests of [[], undefined]) {
     const repos = { ...BASE.repos, 'acme-mobile': { github: 'acme/mobile', default: 'master', label: 'mobile', ci: 'none', ...(tests ? { tests } : {}) } };
     const c = core({ ...BASE, repos });
     const r = routes({ repo: 'acme/mobile', runs: [], prBody: body(c, { evidence: 'Evidence:\nnpm test: 40 passed\n' }) });
-    const { result } = go(c, r, { repo: 'acme/mobile' });
-    assert.equal(result.checks.ci, false);
-    assert.ok(result.reasons.includes('ci: no test commands configured for ci:none repo'), result.reasons.join(' | '));
+    const { exitCode, result } = go(c, r, { repo: 'acme/mobile' });
+    assert.equal(exitCode, 2);
+    assert.match(result.error, /repos\.acme-mobile\.tests/);
   }
+  // The gate's own check stays as defense in depth for a config built in code.
+  const { checkCi } = require('../../../lib/gate.js');
+  assert.deepEqual(checkCi({ repoConfig: { ci: 'none', tests: [] }, runs: [], statuses: [], evidence: 'npm test' }), ['ci: no test commands configured for ci:none repo']);
 });
 
 test('fix3: a malformed cite entry refuses and is named; parseCites keeps its lenient behaviour', () => {

@@ -17,7 +17,7 @@ const coreDir = () => {
   return d;
 };
 let nextId = 1;
-const c = (body, at) => ({ id: nextId++, body, created_at: at, html_url: `https://github.test/acme/core/issues/1#c${nextId}` });
+const c = (body, at) => ({ id: nextId++, body, created_at: at, html_url: `https://github.test/acme/core/issues/1#c${nextId}`, author_association: 'OWNER' });
 
 // The since= value depends on the clock, so route by prefix.
 function routes(comments, seenPaths) {

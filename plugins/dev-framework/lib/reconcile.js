@@ -8,6 +8,7 @@ const { readIssues, sleepMs, labelNames, claimRefs } = require('./plan-issues');
 const { ackCovers } = require('./acks');
 const { deriveState, staleCites } = require('./state');
 const gate = require('./gate');
+const { resolvePlanRef } = require('./fetch-plan');
 
 function parseArgs(argv) {
   const o = { apply: false, ref: '', coreDir: '', postMerge: false };
@@ -52,19 +53,9 @@ function readComments(gh, planRepo, openIssues) {
   return gh.paginate(`repos/${planRepo}/issues/comments${since ? `?since=${since}` : ''}`);
 }
 
-// Read fresh, never a cache: unless the caller named a ref explicitly, fetch the plan branch first.
-function resolveRef(o, config) {
-  if (o.ref) return;
-  const b = config.plan.branch || 'main';
-  try { gitOut(o.coreDir, ['fetch', '-q', 'origin', `+refs/heads/${b}:refs/remotes/origin/${b}`]); } catch (e) {
-    throw new PlanError(`cannot fetch origin ${b} (the plan must be read fresh): ${String(e.stderr || e.message).trim()}`);
-  }
-  o.ref = `origin/${b}`;
-}
-
 function reconcile(o, config, gh) {
   const planRepo = config.plan.repo;
-  resolveRef(o, config);
+  o.ref = resolvePlanRef({ coreDir: o.coreDir, config, ref: o.ref });
   let text;
   try { text = gitOut(o.coreDir, ['show', `${o.ref}:${config.plan.path}/PLAN.md`]); } catch { throw new PlanError(`${config.plan.path}/PLAN.md not found at ${o.ref}`); }
   const items = parsePlan(text, config);
@@ -139,13 +130,12 @@ function reconcile(o, config, gh) {
 // plan edit cannot turn old merges stale. Anything that cannot be judged is `unverifiable`, never silently fine.
 function postMerge(o, config, gh) {
   const planRepo = config.plan.repo;
-  const branch = config.plan.branch || 'main';
+  const branch = config.plan.branch;
   const days = (config.reconcile && config.reconcile.lookbackDays) || 14;
   const cutoff = Date.now() - days * 86400000;
   let fetchError = null;
-  try { gitOut(o.coreDir, ['fetch', '-q', 'origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`]); } catch (e) {
-    fetchError = `cannot fetch origin ${branch}: ${String(e.stderr || e.message).trim()}`;
-  }
+  // Fetched so the merge-time plan commits are in the clone; a failure makes every PR unverifiable, never fine.
+  try { resolvePlanRef({ coreDir: o.coreDir, config }); } catch (e) { fetchError = e.message; }
   const hashCache = new Map();
   const hashesAtMerge = (mergedAt) => {
     if (fetchError) throw new Error(fetchError);
@@ -189,31 +179,44 @@ function postMerge(o, config, gh) {
     }
   }
 
-  const created = [];
   const NL = String.fromCharCode(10);
+  const titleOf = (kind, x) => `${kind}: ${x.repo}#${x.pr}`;
   const todo = [
     ...staleMerges.map((s) => ({
-      title: `merged-stale: ${s.repo}#${s.pr}`,
+      title: titleOf('merged-stale', s), list: 'staleMerges', entry: s,
       body: ['PR ' + s.repo + '#' + s.pr + ' was merged against a plan it did not satisfy, judged at its merge time.', '', ...s.reasons.map((x) => `- ${x}`), ''].join(NL),
     })),
     ...unverifiable.map((u) => ({
-      title: `merged-unverifiable: ${u.repo}#${u.pr}`,
+      title: titleOf('merged-unverifiable', u), list: 'unverifiable', entry: u,
       body: ['PR ' + u.repo + '#' + u.pr + ' was merged but could not be judged against the plan at its merge time.', '', `Reason: ${u.reason}`, ''].join(NL),
     })),
   ];
 
-  if (o.apply && todo.length) {
-    const open = new Set(gh.paginate(`repos/${planRepo}/issues?state=open&labels=merged-stale`).filter((i) => !i.pull_request).map((i) => i.title));
+  // Existing tracking issues, open AND closed: a closed one means a person resolved that PR, so it must not reopen
+  // (a new issue) and no longer counts toward exit 9. An open one is still a problem, just not a new issue.
+  const resolved = []; const created = [];
+  const pending = { staleMerges: [], unverifiable: [] };
+  if (todo.length) {
+    const seen = new Map(); // title -> { open, number }
+    for (const i of gh.paginate(`repos/${planRepo}/issues?state=all&labels=merged-stale`)) {
+      if (i.pull_request) continue;
+      const cur = seen.get(i.title);
+      if (!cur || (!cur.open && i.state === 'open')) seen.set(i.title, { open: i.state === 'open', number: i.number });
+    }
     let writes = 0;
     for (const t of todo) {
-      if (open.has(t.title)) continue;
+      const had = seen.get(t.title);
+      if (had && !had.open) { resolved.push({ repo: t.entry.repo, pr: t.entry.pr, issue: had.number, title: t.title }); continue; }
+      pending[t.list].push(t.entry);
+      if (!o.apply || had) continue;
       if (writes++ > 0) sleepMs(config.github.writeDelayMs);
       gh.api('POST', `repos/${planRepo}/issues`, { title: t.title, body: t.body, labels: ['merged-stale'] });
-      open.add(t.title); created.push(t.title);
+      seen.set(t.title, { open: true }); created.push(t.title);
     }
   }
-  // 9 = something merged that is stale or could not be verified; 0 only when both lists are empty.
-  return { exitCode: staleMerges.length || unverifiable.length ? 9 : 0, result: { staleMerges, unverifiable, created } };
+  // 9 = something merged that is stale or could not be verified and nobody has closed its issue; 0 otherwise.
+  const out = { staleMerges: pending.staleMerges, unverifiable: pending.unverifiable, resolved, created };
+  return { exitCode: out.staleMerges.length || out.unverifiable.length ? 9 : 0, result: out };
 }
 
 function run({ argv, gh, env = process.env }) {

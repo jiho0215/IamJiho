@@ -18,7 +18,7 @@ const CONFIG = {
   plan: { repo: 'acme/core', path: 'docs/plan', branch: 'main' },
   repos: {
     'acme-api': { github: 'acme/api', default: 'main', label: 'api', ci: 'required' },
-    'acme-mobile': { github: 'acme/mobile', default: 'master', label: 'mobile', ci: 'none' },
+    'acme-mobile': { github: 'acme/mobile', default: 'master', label: 'mobile', ci: 'none', tests: ['npm test'] },
   },
   ownerArea: 'owner',
   github: { writeDelayMs: 0 },
@@ -197,7 +197,7 @@ test('--apply twice: one POST then one PATCH, ticked box survives, status follow
 
   // Second run: the comment exists with #11 ticked.
   const ticked = text.replace('- [ ] #11', '- [x] #11');
-  const existing = [{ id: 900, body: 'unrelated' }, { id: 901, body: ticked }];
+  const existing = [{ id: 900, body: 'unrelated', author_association: 'OWNER' }, { id: 901, body: ticked, author_association: 'OWNER' }];
   const second = go(core, world(core, head, { comments: existing }), ['--apply']);
   const w2 = writes(second.calls);
   assert.equal(w2.filter((c) => c.method === 'POST' && c.path.endsWith('/comments')).length, 0);
@@ -216,7 +216,7 @@ test('commit status: success when every box is ticked and nothing violates', () 
   const head = core.commit();
   const first = go(core, world(core, head), ['--apply']);
   const body = writes(first.calls).find((c) => c.path.endsWith('/comments')).body.body;
-  const existing = [{ id: 901, body: body.replace('- [ ]', '- [x]') }];
+  const existing = [{ id: 901, body: body.replace('- [ ]', '- [x]'), author_association: 'OWNER' }];
   const { exitCode, result, calls } = go(core, world(core, head, { comments: existing }), ['--apply']);
   assert.equal(result.pending, 0);
   assert.equal(exitCode, 0);
@@ -246,12 +246,12 @@ test('fix2: a tick holds only for the exact (ID, hash) set it was made for', () 
   const first = go(core, world(core, head1), ['--apply']);
   const text = writes(first.calls).find((c) => c.path.endsWith('/comments')).body.body;
   const ticked = text.replace('- [ ]', '- [x]');
-  const same = go(core, world(core, head1, { comments: [{ id: 901, body: ticked }] }));
+  const same = go(core, world(core, head1, { comments: [{ id: 901, body: ticked, author_association: 'OWNER' }] }));
   assert.equal(same.result.pending, 0);
 
   core.edit('DECISIONS.md', 'rule: b\n', 'rule: b\n- superseded-by: D-12\n');
   const head2 = core.commit();
-  const second = go(core, world(core, head2, { comments: [{ id: 901, body: ticked }] }), ['--apply']);
+  const second = go(core, world(core, head2, { comments: [{ id: 901, body: ticked, author_association: 'OWNER' }] }), ['--apply']);
   assert.deepEqual(second.result.violations, []);
   assert.deepEqual(second.result.affected[0].ids, ['D-8', 'P-0-4']);
   assert.equal(second.result.pending, 1);

@@ -20,7 +20,7 @@ const CONFIG = {
   plan: { repo: 'acme/core', path: 'docs/plan', branch: 'main' },
   repos: {
     'acme-api': { github: 'acme/api', default: 'main', label: 'api', ci: 'required' },
-    'acme-mobile': { github: 'acme/mobile', default: 'master', label: 'mobile', ci: 'none' },
+    'acme-mobile': { github: 'acme/mobile', default: 'master', label: 'mobile', ci: 'none', tests: ['npm test'] },
   },
   stages: { A: 'Stage A — Gates', later: 'Post-launch' },
   project: { owner: 'acme', number: 1, fields: { Stage: 'stage', 'Lands in': 'repo', Kind: 'kind' } },
