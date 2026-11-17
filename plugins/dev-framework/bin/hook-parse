@@ -1,0 +1,7 @@
+#!/usr/bin/env node
+'use strict';
+// hook-parse: reads a Bash command line on stdin and prints lib/hook-cmd.js parseCommand(...) as JSON.
+const fs = require('node:fs');
+const path = require('node:path');
+const { parseCommand } = require(path.join(__dirname, '..', 'lib', 'hook-cmd.js'));
+process.stdout.write(JSON.stringify(parseCommand(fs.readFileSync(0, 'utf8'))) + '\n');
