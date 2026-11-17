@@ -216,9 +216,10 @@ Under `skills/spike/references/autonomous/`:
 
 ## v6 hooks (Plan 3)
 
-Wired in `hooks/hooks.json`; the wiring itself is fenced by `tests/v6/hooks/hooks-json.test.sh` (scripts exist and
-are executable, no `if` on any PreToolUse entry, the Edit matcher is `Edit|Write|MultiEdit|NotebookEdit`, each script's
-inner network bound is below its hook timeout, no EnterWorktree matcher). Every v6 hook reads its config from
+Wired in `hooks/hooks.json`; the wiring itself is fenced by `tests/v6/hooks/hooks-json.test.sh` (scripts exist, every
+`bin/` file and every `hooks/scripts/*.sh` is mode 100755 in the git index, no `if` on any PreToolUse entry, the Edit
+matcher is `Edit|Write|MultiEdit|NotebookEdit`, each script's run budget is below its hook timeout, every network call
+goes through `hook_net`, no EnterWorktree matcher). Every v6 hook reads its config from
 `DEVFW_CONFIG` or `<DEVFW_CORE_DIR>/orchestrator.json`, decides scope with no network, and inside scope fails closed:
 a block is exit 2 with stderr line 1 `devfw <hook-name>: <reason>`. Each script's header comment states its rules in
 order; the "rule" numbers below refer to those headers.
@@ -228,9 +229,9 @@ order; the "rule" numbers below refer to those headers.
 | SessionStart | `session-digest.sh` | 15 s | Print the plan digest (fetch bounded at 8 s; stale is flagged) | Informational: always exits 0 |
 | PreToolUse Edit family + Bash | `plan-edit-guard.sh` | 30 s | Only the lease holder edits the plan or commits plan changes in core (`bin/lease check`, rules 2 and 5) | **Enforced** |
 | PreToolUse Edit family + Bash | `plan-edit-guard.sh` | 30 s | Subagents never edit the plan (rule 4, gated on a non-empty `agent_id`) | **Convention-backed** until Q2 is measured (see below) |
-| PreToolUse Edit family | `freeze-gate.sh` | 30 s | On a claim branch `t/<n>-<slug>`, a code edit needs the freeze doc committed on that branch to be APPROVED, hash-verified, and cite an `owner-said <n> <path>@<content hash>` comment on issue `<n>` by a trusted author (rules 4-8; hash from `freeze-content-hash.sh`) | **Enforced** (record + content binding); who typed `owner-said` is convention |
-| PreToolUse Bash | `merge-gate-hook.sh` | 120 s | `gh pr merge` / `gh api .../pulls/N/merge`: no `--auto`, `--repo` required, plan-repo merges need the lease, other managed repos must pass `bin/merge-gate` (bounded at 100 s) | **Enforced** for merges run through Claude's Bash tool |
-| PreToolUse Bash | `push-guard.sh` | 30 s | In a managed repo: no force/delete (unless `hooks.pushGuard.allowForce`), no push to the default branch, a `t/<n>-...` push needs a claim on origin, and issue `<n>` must not carry `needs-ack` | **Enforced** |
+| PreToolUse Edit family | `freeze-gate.sh` | 30 s | On a claim branch `t/<n>-<slug>`, a code edit needs the freeze doc committed on that branch to be APPROVED, hash-verified, and cite an `owner-said <n> <path>@<content hash>` comment on issue `<n>` by a trusted author (rules 4-8; hash from `freeze-content-hash.sh`) | **Enforced for Edit/Write/MultiEdit/NotebookEdit; Bash writes are convention** (ruling R26: `cat >`, `sed -i`, `cp` into a code path are not parsed); who typed `owner-said` is convention |
+| PreToolUse Bash | `merge-gate-hook.sh` | 120 s | `gh pr merge` / `gh api .../pulls/N/merge` (the endpoint also as a full URL, ruling R22) and gh/git aliases that expand to one (R25): no `--auto`, `--repo` required, a plan-repo merge is decided by the lease alone (R23; `bin/merge-gate` is not called for it), other managed repos must pass `bin/merge-gate` (bounded at 100 s) | **Enforced** for merges run through Claude's Bash tool |
+| PreToolUse Bash | `push-guard.sh` | 30 s | In a managed repo: no force/delete (unless `hooks.pushGuard.allowForce`), no push to the default branch (the destination resolved as git does: `@`, `HEAD`, `heads/<x>`, `refs/heads/<x>`; an unresolvable one blocks, ruling R21), a `t/<n>-...` push needs a claim on origin, and issue `<n>` must not carry `needs-ack` | **Enforced** |
 | PreToolUse Bash | `claim-guard.sh` | 30 s | Creating a `t/<n>-<slug>` branch (`worktree add -b`, `checkout -b`, `switch -c`, `branch <new>`) needs a claim for `<n>` on origin | **Enforced** for the creation forms only |
 | PreToolUse EnterWorktree | (none) | - | Claim check on EnterWorktree | **Not registered**: Q5 (is it hookable) is unmeasured (ruling R5) |
 | Stop | `stop-backstop.sh` | 30 s | When `<git-dir>/devfw/run.json` exists and `bin/stop-check` names a stop code with no matching `devfw/handback.json`, keep the session going once | **Enforced once per stop**; not fail-closed by design |
@@ -256,14 +257,21 @@ Each item is a path on which a rule above does NOT block. They are accepted resi
    digest), at least 5 s under the hooks.json timeout. Every network call is bounded by min(its per-call bound:
    `DEVFW_HOOK_NET_TIMEOUT` default 20 s, `DEVFW_HOOK_GATE_TIMEOUT` default 100 s; the time left), and a call with
    under 1 s left blocks with "time budget ran out" (the digest only marks itself stale). `hooks-json.test.sh` fences
-   budget + 5 s <= timeout and that every network call goes through `hook_net`. What remains: local work after the
-   last network call (node/jq/git, normally well under the 5 s margin) is not bounded, and `DEVFW_HOOK_BUDGET` raised
-   past the hook timeout is a fail-open (user-controlled, like the per-call env vars, ruling R10).
-3. **`cd` and opaque commands.** A literal `cd <dir>` is tracked within one command (ruling R1); a non-literal `cd`
-   or `-C` makes later git / `gh` segments opaque. An opaque segment is in scope only when the hook cwd is in core /
-   managed, the text names the core path or a managed slug, or a `cd`/`-C` argument is non-literal (rulings R9, R15,
-   and `claim-guard.sh` rule 2). Residual: an opaque command (e.g. `eval`) that names no managed path, run from a cwd
-   outside every managed repo, is not seen.
+   budget + 5 s <= timeout and that every network call goes through `hook_net`. `hook_net` captures output in a temp
+   file, not a pipe, so a grandchild that outlives the command and holds stdout cannot stretch the run. What remains:
+   local work after the last network call (node/jq/git, normally well under the 5 s margin) is not bounded, and
+   `DEVFW_HOOK_BUDGET` raised past the hook timeout is a fail-open (user-controlled, like the per-call env vars,
+   ruling R10).
+3. **`cd` and opaque commands** (rulings R1, R9, R15, R20). A literal `cd <dir>` / `pushd <dir>` is tracked within
+   one command; a leading `~`, `~/`, `$HOME` or `${HOME}` reads as `$HOME` (so `cd ~/repo` scopes like the full path).
+   For every segment it cannot read exactly, the parser (`lib/hook-cmd.js`) also reports where it runs: dir unknown
+   (a dynamic `cd`/`pushd`/`-C`, `popd`, `cd -`, `~user`, a glob or brace in the dir, `GIT_DIR`/`--git-dir`), else a
+   literal `-C`/`--chdir` in the segment, else the cd dir. All Bash guards share one rule (`_v6-hook.sh`
+   `hook_opaque_rows` / `hook_opaque_hit`): an unreadable guarded segment is in scope when its dir is unknown, when its
+   literal dir or the hook cwd is managed / in core, or when the text names a managed slug / the core path. So an
+   unknown dir blocks from ANY cwd (a false block outside v6 repos; workaround: write the path literally). Residual:
+   an `eval` / `sh -c` / `xargs` string that names no managed path and has no unknown dir, run from a cwd outside
+   every managed repo, is not seen.
 4. **Web merges** (GitHub UI, API outside Claude's Bash tool) never pass `merge-gate-hook.sh`; they are caught after
    the fact by `bin/reconcile --post-merge` (`lib/reconcile.js`).
 5. **`owner-said` authorship**: `freeze-gate.sh` rule 8 proves an `owner-said` record for this exact plan content
@@ -276,9 +284,11 @@ Each item is a path on which a rule above does NOT block. They are accepted resi
 9. **Forgeable local approval cache**: a `"<blob sha> <comment id>"` line in `<git-dir>/devfw/freeze-ok` is trusted
    (`freeze-gate.sh` rule 7); anything that can write the git dir can pre-approve a blob. A cache line written before
    ruling R16 (content-hash `owner-said`) is still honoured after the upgrade.
-10. **`freeze-content-hash.sh` edge cases**: an unterminated front matter block strips approval-key and indented lines
-    from the body, and indented continuation lines are dropped after any approval key (not only `bypassHistory`), so
-    an edit confined to those lines does not change the content hash.
+10. **`freeze-content-hash.sh` scope**: only a CLOSED front matter (line 1 `---` and a later `---`) is stripped, and only
+    of the `status:`, `approvedBy:`, `approvedAt:`, `approvedHash:` lines and the `bypassHistory:` line with its indented
+    list; an unterminated front matter is hashed whole, and every other line (body, other keys, indented lines after
+    other keys) is content. Residual: an edit confined to those stripped lines (e.g. a `bypassHistory` entry) does not
+    change the content hash, by design. Each clause is fenced in `freeze-gate.test.sh`.
 11. **`codePaths`**: a whitespace-only entry is silently ignored (fewer paths in scope) rather than rejected.
 12. **DWIM checkout**: `git checkout t/43-x` / `git switch t/43-x` of an existing or remote-only branch is not a
     creation form, so `claim-guard.sh` does not see it; `push-guard.sh` rule 6 (claim on push) is the control.
@@ -292,6 +302,31 @@ Each item is a path on which a rule above does NOT block. They are accepted resi
     falls through as unmanaged.
 17. **`DEVFW_BIN_DIR`** overrides where hooks find `bin/lease`, `bin/merge-gate` and `bin/stop-check`; it is a
     test-only knob, and pointing it at a stub disables those checks.
+18. **Code written through Bash** (`cat > src/x.js`, `sed -i`, `cp`, `python -c ...`) never reaches `freeze-gate.sh`,
+    which is wired to the Edit tools only (ruling R26). "No code before plan approval" is enforced for the Edit tools
+    and is convention for Bash writes; nothing else re-checks the freeze approval for code written that way.
+19. **Direct ref / merge writes through the API**: `gh api -X PATCH repos/o/n/git/refs/heads/main`,
+    `gh api -X POST repos/o/n/merges`, `curl` to api.github.com, and any other HTTP client are not parsed; only
+    `gh pr merge`, `gh api .../pulls/N/merge` and the GraphQL merge mutations are. Branch protection on GitHub and
+    `bin/reconcile --post-merge` are the controls.
+20. **Wrappers and aliases** (ruling R25): a command word the parser does not know followed by `git`/`gh` (`stdbuf`,
+    `winpty`, `flock`, ...) is unreadable and handled by item 3's rule; `exec` is read through. Commands whose
+    arguments are data (`echo`, `printf`, `grep`, `rg`, `cat`, `ls`, `test`, `[`, `read`, `alias`, ... — the
+    `DATA` set in `lib/hook-cmd.js`) are not. A git subcommand that is not a git command is looked up as
+    `alias.<name>` in the repo the segment runs in (from the hook cwd when that dir is unknown, so only global
+    aliases are seen then); a gh command that is not a gh command is looked up in `gh alias list`. An alias whose
+    expansion names the guarded verb is treated as unreadable. Residual: claim-guard counts an alias only when it
+    expands to a creation form (`-b`, `-c`, `--create`, `--orphan`, `branch`, `worktree`), so an alias for plain
+    `checkout` is item 12's DWIM gap; when `gh alias list` fails, a gh alias call blocks only from a managed cwd.
+21. **jq missing** (ruling R24; not a fail-open, but visible): with `DEVFW_CORE_DIR` set and no jq, a hook never
+    blocks before scope. Each one reads the raw input for its own tokens and blocks only those calls: push-guard on
+    `push`, claim-guard on `worktree|checkout|switch|branch`, merge-gate-hook on `merge|pulls/`, plan-edit-guard on a
+    Bash `commit` or an edit naming core's directory name, freeze-gate on an edit in a repo on a `t/<n>-...` branch;
+    stop-backstop blocks once only when `devfw/run.json` exists, and never when `stop_hook_active` is true.
+22. **Default branch from config**: push-guard takes a repo's default branch from `repos.<x>.default`, else
+    `plan.default`, else `main`; it does not ask the remote. A config that omits `default` for a repo whose real
+    default is not `main` lets a push to that default through (`lib/config.js`, which `bin/merge-gate` loads, already
+    rejects a repo without `default`, so a config the merge gate accepts has it).
 
 ## User Gates
 
