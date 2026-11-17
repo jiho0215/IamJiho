@@ -5,7 +5,7 @@ set -uo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HOOK="${FG_HOOK:-$DIR/../../../hooks/scripts/freeze-gate.sh}"
 HASH="$DIR/../../../hooks/scripts/freeze-doc-hash.sh"
-CHASH="$DIR/../../../hooks/scripts/freeze-content-hash.sh"
+CHASH="${FG_CHASH:-$DIR/../../../hooks/scripts/freeze-content-hash.sh}"
 [ -f "$HOOK" ] || { echo "FAIL: hooks/scripts/freeze-gate.sh missing"; exit 1; }
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
@@ -71,6 +71,24 @@ run() {
 expect() { [ "$RC" = "$1" ] || fail "$2: rc=$RC want $1 (stderr: $ERR)"; }
 says() { grep -qF -- "$1" <<<"$ERR" || fail "$2: stderr lacks '$1': $ERR"; }
 lines() { if [ -f "$CACHE" ]; then grep -c . "$CACHE"; else echo 0; fi; }
+
+# --- freeze-content-hash.sh: one fence per clause (the hash is a cross-plan contract: owner-said cites it) ---
+# H <printf-format>: content hash of a doc written with that printf format.
+H() { printf -- "$1" > "$TMP/ch.md"; bash "$CHASH" "$TMP/ch.md" | tr -d '\r'; }
+same() { [ "$(H "$1")" = "$(H "$2")" ] || fail "content hash: $3 (should hash the same)"; }
+differ() { [ "$(H "$1")" != "$(H "$2")" ] || fail "content hash: $3 (should hash differently)"; }
+BASE='---\ntitle: t\n---\n# body\n'
+same "---\ntitle: t\nstatus: APPROVED\n---\n# body\n" "$BASE" "status: is stripped in a closed front matter"
+same "---\ntitle: t\napprovedBy: x\n---\n# body\n" "$BASE" "approvedBy: is stripped"
+same "---\ntitle: t\napprovedAt: 2026-11-17\n---\n# body\n" "$BASE" "approvedAt: is stripped"
+same "---\ntitle: t\napprovedHash: abc\n---\n# body\n" "$BASE" "approvedHash: is stripped"
+same "---\ntitle: t\nbypassHistory:\n  - at: x\n\t- at: y\n---\n# body\n" "$BASE" "bypassHistory: and its indented list are stripped"
+differ "---\ntitle: t\napprovedAt: 2026-11-17\n  sneaky: line\n---\n# body\n" "$BASE" "an indented line after approvedAt: is content (only bypassHistory: owns continuations)"
+differ "---\ntitle: t\nbypassHistory:\n  - at: x\nother: y\n---\n# body\n" "$BASE" "a non-indented key after bypassHistory: ends its list"
+differ "---\nstatus: DRAFT\n# body\n" "---\nstatus: APPROVED\n# body\n" "an unterminated front matter is hashed whole (status: kept)"
+differ "---\ntitle: t\n---\n# body\napprovedAt: x\n" "$BASE" "an approval key in the BODY is content"
+differ "title: t\nstatus: A\n" "title: t\nstatus: B\n" "no --- on line 1: no front matter, nothing stripped"
+same "---\r\ntitle: t\r\nstatus: X\r\n---\r\n# body\r\n" "$BASE" "CRs are stripped"
 
 # --- no committed doc ---
 run "$W/src/a.js"; expect 2 "no committed doc"
