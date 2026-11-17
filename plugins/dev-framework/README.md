@@ -262,16 +262,24 @@ Each item is a path on which a rule above does NOT block. They are accepted resi
    local work after the last network call (node/jq/git, normally well under the 5 s margin) is not bounded, and
    `DEVFW_HOOK_BUDGET` raised past the hook timeout is a fail-open (user-controlled, like the per-call env vars,
    ruling R10).
-3. **`cd` and opaque commands** (rulings R1, R9, R15, R20). A literal `cd <dir>` / `pushd <dir>` is tracked within
-   one command; a leading `~`, `~/`, `$HOME` or `${HOME}` reads as `$HOME` (so `cd ~/repo` scopes like the full path).
-   For every segment it cannot read exactly, the parser (`lib/hook-cmd.js`) also reports where it runs: dir unknown
-   (a dynamic `cd`/`pushd`/`-C`, `popd`, `cd -`, `~user`, a glob or brace in the dir, `GIT_DIR`/`--git-dir`), else a
+3. **`cd` and opaque commands** (rulings R1, R9, R15, R20, R28, R31). A literal `cd <dir>` / `pushd <dir>` is tracked
+   within one command; a leading `~`, `~/`, `$HOME` or `${HOME}` reads as `$HOME` (so `cd ~/repo` scopes like the full
+   path). For every segment it cannot read exactly, the parser (`lib/hook-cmd.js`) also reports where it runs: dir
+   unknown (a dynamic `cd`/`pushd`/`-C`, `popd`, `cd -`, `~user`, a glob or brace in the dir, `GIT_DIR`/`--git-dir`,
+   a relative `cd`/`pushd` other than `.`, `..`, `./x`, `../x` while `CDPATH` is set in the command or in the hook's
+   own environment, and any code-running word whose arguments mention `git`/`gh` as a word: `eval`, `xargs`,
+   `sh`/`bash -c`, `script`, `python`, `perl`, `node`, `sudo`, `nohup`, `wsl`, ... — the `CODE_RUNNERS` set), else a
    literal `-C`/`--chdir` in the segment, else the cd dir. All Bash guards share one rule (`_v6-hook.sh`
    `hook_opaque_rows` / `hook_opaque_hit`): an unreadable guarded segment is in scope when its dir is unknown, when its
    literal dir or the hook cwd is managed / in core, or when the text names a managed slug / the core path. So an
-   unknown dir blocks from ANY cwd (a false block outside v6 repos; workaround: write the path literally). Residual:
-   an `eval` / `sh -c` / `xargs` string that names no managed path and has no unknown dir, run from a cwd outside
-   every managed repo, is not seen.
+   unknown dir blocks from ANY cwd (a false block outside v6 repos, e.g. `bash -c 'git push ...'` anywhere, or any
+   relative `cd` before a guarded call when `CDPATH` is exported; workaround: run git plainly and write the path
+   literally). Residuals: an opaque segment counts for a guard only when its text names the guard's verb (`push`,
+   `commit`, `merge`/`pulls/`, a branch verb; case-insensitive), so a script that hides the verb (`bash -c "git $V"`,
+   an alias called from inside a `python -c` string, `pu""sh`) is not seen; a code-running word missing from
+   `CODE_RUNNERS` that is followed by a literal `git`/`gh` word is item 20's wrapper rule (dir as written), and one
+   that mentions git only inside a string (`npx foo -c 'git push'`) is not seen; `sudo` and `nohup` are no longer
+   read through, so `sudo git push ...` blocks as unreadable from any cwd.
 4. **Web merges** (GitHub UI, API outside Claude's Bash tool) never pass `merge-gate-hook.sh`; they are caught after
    the fact by `bin/reconcile --post-merge` (`lib/reconcile.js`).
 5. **`owner-said` authorship**: `freeze-gate.sh` rule 8 proves an `owner-said` record for this exact plan content
@@ -309,17 +317,34 @@ Each item is a path on which a rule above does NOT block. They are accepted resi
     `gh api -X POST repos/o/n/merges`, `curl` to api.github.com, and any other HTTP client are not parsed; only
     `gh pr merge`, `gh api .../pulls/N/merge` and the GraphQL merge mutations are. Branch protection on GitHub and
     `bin/reconcile --post-merge` are the controls.
-20. **Wrappers and aliases** (ruling R25): a command word the parser does not know followed by `git`/`gh` (`stdbuf`,
-    `winpty`, `flock`, ...) is unreadable and handled by item 3's rule; `exec` is read through. Commands whose
-    arguments are data (`echo`, `printf`, `grep`, `rg`, `cat`, `ls`, `test`, `[`, `read`, `alias`, ... — the
-    `DATA` set in `lib/hook-cmd.js`) are not. A git subcommand that is not a git command is looked up as
-    `alias.<name>` in the repo the segment runs in (from the hook cwd when that dir is unknown, so only global
-    aliases are seen then); a gh command that is not a gh command is looked up in `gh alias list`. An alias whose
-    expansion names the guarded verb is treated as unreadable. Residual: claim-guard counts an alias only when it
-    expands to a creation form (`-b`, `-c`, `--create`, `--orphan`, `branch`, `worktree`), so an alias for plain
-    `checkout` is item 12's DWIM gap; when `gh alias list` fails, a gh alias call blocks only from a managed cwd.
+20. **Wrappers, case and aliases** (rulings R25, R27, R29, R30): command words are compared case-insensitively by
+    basename without `.exe` (`GIT`, `Git.EXE`, `/usr/bin/git`, `C:/Program Files/Git/cmd/git.exe` are git; the same
+    for gh, cd, export, env and every word in the parser's sets), and so are git subcommands and gh command groups
+    (`git PUSH` is push), on every platform. A command word the parser does not know followed by `git`/`gh`
+    (`stdbuf`, `winpty`, `flock`, ...) is unreadable and handled by item 3's rule with the dir as written; `exec`,
+    `command`, `builtin`, `env`, `timeout`, `nice` are read through. Commands whose arguments are data (`echo`,
+    `printf`, `grep`, `rg`, `cat`, `ls`, `test`, `[`, `read`, `alias`, ... — the `DATA` set in `lib/hook-cmd.js`)
+    are not. A git subcommand that is not a git command is looked up as `alias.<name>` in the repo the segment runs
+    in (from the hook cwd when that dir is unknown, so only global aliases are seen then); a gh command that is not a
+    gh command is looked up in `gh alias list`. The lookup follows a chain (`q = p`, `p = push`) up to 10 steps; the
+    call is unreadable when a step starts with `!` (a shell alias, whatever it runs), names the guarded verb, starts
+    with an option, names a word that is neither an alias nor a command, or the chain is longer than 10. A git call
+    carrying config that can define or redirect an alias (`-c alias.*`/`include.*`/`includeIf.*`/`remote.*`/`url.*`/
+    `branch.*`/`push.*`, a dynamic `-c`, any `--config-env`, or `GIT_CONFIG_COUNT`/`_KEY_*`/`_VALUE_*`/
+    `_PARAMETERS`/`_GLOBAL`/`_SYSTEM`/`GIT_CONFIG`/`HOME`/`XDG_CONFIG_HOME` in its env prefix or an earlier
+    `export`) is unreadable when its subcommand is a guarded verb (push, commit, worktree, checkout, switch, branch);
+    when it is not a git command at all, it is unreadable for EVERY guard whatever its text says (`any`; the
+    expansion may live only in that config). gh with `GH_CONFIG_DIR`/`HOME`/`XDG_CONFIG_HOME`/`APPDATA` and a
+    non-command group likewise. Costs, accepted: a git shell alias (`!...`) blocks push-guard / plan-edit-guard in
+    a managed repo / core, and merge-gate-hook from any cwd (merges have no dir); an alias step naming an external
+    `git-<name>` command (not in the parser's command list) counts as unresolved. Residuals: claim-guard counts an alias only when a step
+    is a creation form (`-b`, `-c`, `--create`, `--orphan`, `branch`, `worktree`) or a shell alias, so an alias for
+    plain `checkout` is item 12's DWIM gap; when `gh alias list` fails, a gh alias call blocks only from a managed
+    cwd; `-c` keys outside the list above (and `--exec-path`) are read as harmless; `unset GIT_CONFIG_*` does not
+    clear an earlier `export`.
 21. **jq missing** (ruling R24; not a fail-open, but visible): with `DEVFW_CORE_DIR` set and no jq, a hook never
-    blocks before scope. Each one reads the raw input for its own tokens and blocks only those calls: push-guard on
+    blocks before scope. Each one reads the raw input for its own tokens (case-insensitively, R27) and blocks only
+    those calls: push-guard on
     `push`, claim-guard on `worktree|checkout|switch|branch`, merge-gate-hook on `merge|pulls/`, plan-edit-guard on a
     Bash `commit` or an edit naming core's directory name, freeze-gate on an edit in a repo on a `t/<n>-...` branch;
     stop-backstop blocks once only when `devfw/run.json` exists, and never when `stop_hook_active` is true.
