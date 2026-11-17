@@ -137,7 +137,9 @@ R=$(run '{}' 'hook_init t 25; hook_net o merge 5 sh -c "echo a; echo b >&2; exit
 R=$(run '{}' 'hook_init t 25; hook_net o null 1 sleep 3; echo "rc=$?"')
 [ "$R" = "0|rc=124|" ] || fail "hook_net per-call bound: $R"
 R=$(DEVFW_HOOK_BUDGET=3 run '{}' 'hook_init t 25; hook_net o null 20 sleep 5; echo "rc=$? $SECONDS"')
-[[ "$R" =~ ^0\|rc=124\ [0-3]\|$ ]] || fail "hook_net capped by the time left, not the per-call bound: $R"
+# rc=124 alone shows the 5 s sleep was cut (the per-call bound is 20); <= 4 s leaves room for a loaded machine
+# (SECONDS counts whole seconds from shell start; one full-suite run measured 4)
+[[ "$R" =~ ^0\|rc=124\ [0-4]\|$ ]] || fail "hook_net capped by the time left, not the per-call bound: $R"
 R=$(DEVFW_HOOK_BUDGET=x run '{}' 'hook_init t 7; echo "$HOOK_BUDGET"')
 [ "$R" = "0|7|" ] || fail "a non-numeric DEVFW_HOOK_BUDGET is ignored: $R"
 # M6: a grandchild that outlives the command and holds stdout must not keep hook_net past the command's end
