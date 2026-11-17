@@ -154,6 +154,8 @@ R=$(printf '%s' '{"tool_name":"Bash","tool_input":{"command":"ls"}}' | PATH="$NO
 [ "$RC" = 0 ] && [ -z "$R" ] || fail "R24: no token, no jq must exit 0 quietly: rc=$RC [$R]"
 R=$(printf '%s' '{"tool_name":"Bash","tool_input":{"command":"git push"}}' | PATH="$NOJQ_PATH" DEVFW_CORE_DIR="$TMP/core" bash -c ". '$LIB'; hook_init t; hook_need_jq 'push'; echo reached" 2>&1); RC=$?
 [ "$RC" = 2 ] && [[ "$R" == "devfw t: jq not found"* ]] || fail "R24: token present, no jq must block: rc=$RC [$R]"
+R=$(printf '%s' '{"tool_name":"Bash","tool_input":{"command":"GIT PUSH origin main"}}' | PATH="$NOJQ_PATH" DEVFW_CORE_DIR="$TMP/core" bash -c ". '$LIB'; hook_init t; hook_need_jq 'push'; echo reached" 2>&1); RC=$?
+[ "$RC" = 2 ] && [[ "$R" == "devfw t: jq not found"* ]] || fail "R24+R27: token in another case, no jq must block: rc=$RC [$R]"
 R=$(run '{"tool_name":"Bash","tool_input":{"command":"git push"}}' 'hook_init t; hook_need_jq push; echo reached')
 [ "$R" = "0|reached|" ] || fail "R24: with jq, hook_need_jq returns: $R"
 R=$(run '{"cwd":"C:\\w \"q\"","x":"y"}' 'hook_init t; hook_raw_str cwd')

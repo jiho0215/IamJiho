@@ -9,7 +9,7 @@ TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 g() { git -c user.name=t -c user.email=t@t -c init.defaultBranch=main "$@"; }
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
 fail() { echo "FAIL: $*"; exit 1; }
-unset DEVFW_CONFIG DEVFW_CORE_DIR
+unset DEVFW_CONFIG DEVFW_CORE_DIR CDPATH
 P() { cygpath -m "$1" 2>/dev/null || echo "$1"; }
 
 CORE="$TMP/core"; mkdir -p "$CORE"
@@ -46,13 +46,39 @@ run "$U" 'cd ~nosuchuser/W && git checkout -b t/43-z'; expect 2 "R20 trigger: un
 says 'cannot read this branch command exactly' "unknown-dir text"
 run "$U" 'pushd $D && git switch -c t/43-z'; expect 2 "R20 trigger: pushd <dynamic>"
 run "$U" "cd '$TMP'/W* && git switch -c t/43-z"; expect 2 "R20 trigger: glob"
-run "$U" "xargs git -C '$W' switch -c t/43-z < /dev/null"; expect 2 "R20 trigger: opaque segment's literal -C is managed"
-run "$U" "xargs git -C '$U' switch -c t/43-z < /dev/null"; expect 0 "opaque segment's literal -C is unmanaged"
+# R28 reseed: xargs is a CODE_RUNNER (unknown dir), so the literal -C fences use flock (R25 only, dir as given)
+run "$U" "flock '$TMP/l' git -C '$W' switch -c t/43-z"; expect 2 "R20 trigger: opaque segment's literal -C is managed"
+run "$U" "flock '$TMP/l' git -C '$U' switch -c t/43-z"; expect 0 "opaque segment's literal -C is unmanaged"
+run "$U" "xargs git -C '$U' switch -c t/43-z < /dev/null"; expect 2 "R28: xargs runs git, dir unknown"
 run "$U" "stdbuf -oL git -C '$W' checkout -b t/43-z"; expect 2 "R25: unknown wrapper"
 git -C "$W" config alias.nb 'checkout -b'; git -C "$W" config alias.co checkout
 run "$W" 'git nb t/43-z'; expect 2 "R25: alias for checkout -b"
 run "$W" 'git co t/41-x'; expect 0 "R25: alias for plain checkout is the documented DWIM gap, not a creation"
 git -C "$W" config --unset alias.nb; git -C "$W" config --unset alias.co
+# --- plan 3 hardening (rulings R27-R31) ---
+run "$W" 'GIT checkout -b t/43-z'; expect 2 "R27/A: GIT checkout -b"
+says 't/43-… has no claim on origin' "R27: GIT is read exactly"
+run "$W" 'Git.EXE switch -c t/43-z'; expect 2 "R27/A: Git.EXE switch -c"
+run "$W" "script -qc 'git checkout -b t/43-z'"; expect 2 "R28/B: script -qc"
+says 'cannot read this branch command exactly' "R28 text"
+run "$W" "python -c \"import os; os.system('git checkout -b t/43-z')\""; expect 2 "R28/B: python -c"
+run "$W" "perl -e 'system(\"git switch -c t/43-z\")'"; expect 2 "R28/B: perl -e"
+run "$U" "bash -c 'cd ~/api && git switch -c t/43-z'"; expect 2 "R28/B: bash -c from an unmanaged cwd"
+git -C "$W" config alias.q nb; git -C "$W" config alias.nb 'checkout -b'
+run "$W" 'git q t/43-z'; expect 2 "R29/C: q -> nb -> checkout -b"
+git -C "$W" config --unset alias.q; git -C "$W" config --unset alias.nb
+run "$W" "git -c alias.x='checkout -b' x t/43-z"; expect 2 "R30/D: -c alias.x"
+run "$W" 'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.x GIT_CONFIG_VALUE_0=switch git x -c t/43-z'; expect 2 "R30/D: GIT_CONFIG_COUNT"
+run "$W" 'git --config-env=alias.x=V x t/43-z'; expect 2 "R30/D: --config-env"
+run "$U" 'cd W && git checkout -b t/43-z'; expect 0 "R31 baseline: no CDPATH"
+run "$U" "export CDPATH='$TMP'; cd W && git checkout -b t/43-z"; expect 2 "R31/E: export CDPATH"
+CDPATH="$TMP" run "$U" 'cd W && git checkout -b t/43-z'; expect 2 "R31/E: CDPATH in the hook's environment"
+run "$W" 'Git status'; expect 0 "no-regression: Git status"
+run "$W" 'python -c "print(1)"'; expect 0 "no-regression: python without git"
+run "$W" 'git -c color.ui=never status'; expect 0 "no-regression: harmless -c"
+run "$W" 'git commit -m x'; expect 0 "no-regression: commit"
+run "$W" 'git push origin t/12-x'; expect 0 "no-regression: push"
+run "$W" 'git checkout -b t/41-x origin/t/41-x'; expect 0 "no-regression: claimed checkout -b"
 
 run "$W" 'git worktree add ../wt -b t/41-x origin/t/41-x'; expect 0 "claimed worktree add"
 run "$W" 'git checkout -b t/41-x origin/t/41-x'; expect 0 "claimed checkout -b"
@@ -78,7 +104,9 @@ run "$W" 'eval "git switch -c t/43-z"'; expect 2 "opaque in a managed cwd naming
 says 'cannot read this branch command exactly' "opaque text"
 run "$W" 'git switch -c "t/4$N-z"'; expect 2 "non-literal ticket name"
 run "$W" 'eval "git switch -c feature/x"'; expect 0 "opaque, literal non-ticket name"
-run "$U" 'eval "git switch -c t/43-z"'; expect 0 "opaque in an unmanaged cwd"
+# R28 adjudication: was "expect 0" (the accepted residual); eval mentioning git has an unknown dir now
+run "$U" 'eval "git switch -c t/43-z"'; expect 2 "R28: eval from an unmanaged cwd"
+run "$U" "flock '$TMP/l' git switch -c t/43-z"; expect 0 "opaque (R25, dir known) in an unmanaged cwd"
 run "$U" 'cd $X && eval "git switch -c t/43-z"'; expect 2 "non-literal cd, opaque"
 run "$U" 'eval "git switch -c t/43-z" # acme/api'; expect 2 "opaque naming a managed slug"
 run "$W" 'git worktree add -b t/4'"'"'1-x ../w'; expect 2 "unparseable, mentions t/"

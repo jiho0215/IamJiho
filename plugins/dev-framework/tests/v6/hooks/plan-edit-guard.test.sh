@@ -7,7 +7,7 @@ HOOK="$DIR/../../../hooks/scripts/plan-edit-guard.sh"
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 g() { git -c user.name=t -c user.email=t@t -c init.defaultBranch=main "$@"; }
 fail() { echo "FAIL: $*"; exit 1; }
-unset DEVFW_CONFIG DEVFW_CORE_DIR
+unset DEVFW_CONFIG DEVFW_CORE_DIR CDPATH
 
 g init -q --bare "$TMP/origin.git"
 g clone -q "$TMP/origin.git" "$TMP/core" 2>/dev/null
@@ -79,13 +79,36 @@ if command -v cygpath >/dev/null 2>&1; then
   run "$(bash_ "cd '$CU' && eval \"git commit -m x\"" "$TMP")"; expect 2 "R9: /c/ form"
   run "$(bash_ "cd '$(cygpath -w "$CM")' && eval \"git commit -m x\"" "$TMP")"; expect 2 "R9: backslash form"
 fi
-run "$(bash_ 'eval "git commit -m x"' "$TMP")"; expect 0 "R9 residual: eval, no core path, cwd outside core"
+# R28 adjudication: was "expect 0" (the R9 residual); eval mentioning git has an unknown dir now
+run "$(bash_ 'eval "git commit -m x"' "$TMP")"; expect 2 "R28: eval, no core path, cwd outside core (R9 residual closed)"
 # R9 text trigger alone: the core path only inside the eval string (no cd, dir not readable, cwd outside core)
 run "$(bash_ "eval \"git -C '$CM' commit -m x\"" "$TMP")"; expect 2 "R9 trigger: core path named only inside an opaque string"
 run "$(printf '{"tool_name":"MultiEdit","cwd":"%s","tool_input":{"file_path":"%s","edits":[]}}' "$CORE" "$CORE/docs/plan/PLAN.md")"
 expect 2 "MultiEdit"
 run "$(bash_ 'eval "git commit -m x"')"; expect 2 "opaque in core"
-run "$(bash_ 'eval "git commit -m x"' "$TMP")"; expect 0 "opaque outside core"
+run "$(bash_ 'stdbuf -oL git commit -m x' "$TMP")"; expect 0 "opaque (R25, dir known) outside core"
+# --- plan 3 hardening (rulings R27-R31); the plan file is staged and the lease mismatched here ---
+run "$(bash_ 'GIT commit -m x')"; expect 2 "R27/A: GIT commit in core"
+grep -q lease <<<"$ERR" || fail "R27: GIT commit is read exactly (lease checked): $ERR"
+git -C "$CORE" config alias.ci commit
+run "$(bash_ 'GIT ci -m x')"; expect 2 "R27/A: GIT + an alias (case-insensitive pre-filter)"
+git -C "$CORE" config alias.q ci
+run "$(bash_ 'git q -m x')"; expect 2 "R29/C: q -> ci -> commit"
+git -C "$CORE" config --unset alias.q; git -C "$CORE" config --unset alias.ci
+run "$(bash_ "python -c \"import os; os.system('git commit -m x')\"" "$TMP")"; expect 2 "R28/B: python -c, cwd outside core"
+run "$(bash_ "script -qc 'git commit -m x'" "$TMP")"; expect 2 "R28/B: script -qc, cwd outside core"
+run "$(bash_ "perl -e 'system(\"git commit -m x\")'" "$TMP")"; expect 2 "R28/B: perl -e, cwd outside core"
+run "$(bash_ "bash -c 'cd ~/api && git commit -m x'" "$TMP")"; expect 2 "R28/B: bash -c, cwd outside core"
+run "$(bash_ 'git -c alias.x=commit x -m x')"; expect 2 "R30/D: -c alias.x in core"
+run "$(bash_ 'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.x GIT_CONFIG_VALUE_0=commit git x -m x')"; expect 2 "R30/D: GIT_CONFIG_COUNT"
+run "$(bash_ 'git --config-env=alias.x=V x -m x')"; expect 2 "R30/D: --config-env"
+run "$(bash_ 'cd core && git commit -m x' "$TMP/other")"; expect 0 "R31 baseline: no CDPATH, other/core is not core"
+run "$(bash_ "export CDPATH='$TMP'; cd core && git commit -m x" "$TMP/other")"; expect 2 "R31/E: export CDPATH"
+CDPATH="$TMP" run "$(bash_ 'cd core && git commit -m x' "$TMP/other")"; expect 2 "R31/E: CDPATH in the hook's environment"
+run "$(bash_ 'Git status')"; expect 0 "no-regression: Git status in core"
+run "$(bash_ 'git -c color.ui=never status')"; expect 0 "no-regression: harmless -c in core"
+run "$(bash_ 'python -c "print(1)"')"; expect 0 "no-regression: python without git"
+run "$(bash_ 'git push origin t/12-x')"; expect 0 "no-regression: push"
 g -C "$CORE" reset -q; g -C "$CORE" checkout -q -- docs/plan/PLAN.md
 echo r2 >> "$CORE/README.md"; g -C "$CORE" add README.md
 run "$(bash_ 'git commit -m x')"; expect 0 "only README staged"

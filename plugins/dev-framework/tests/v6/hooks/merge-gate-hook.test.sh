@@ -6,7 +6,7 @@ HOOK="$DIR/../../../hooks/scripts/merge-gate-hook.sh"
 [ -x "$HOOK" ] || { echo "FAIL: hooks/scripts/merge-gate-hook.sh missing or not executable"; exit 1; }
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 fail() { echo "FAIL: $*"; exit 1; }
-unset DEVFW_CONFIG DEVFW_CORE_DIR
+unset DEVFW_CONFIG DEVFW_CORE_DIR CDPATH
 
 CORE="$TMP/core"; mkdir -p "$CORE" "$TMP/bin"
 echo '{"plan":{"repo":"acme/core"},"repos":{"api":{"github":"acme/api"}}}' > "$CORE/orchestrator.json"
@@ -78,13 +78,17 @@ cat > "$TMP/ghbin/gh" <<'STUB'
 #!/bin/bash
 [ "$*" = "alias list" ] || exit 1
 [ "${GH_ALIAS:-ok}" = ok ] || exit 1
-printf 'co: pr checkout\nm: pr merge\n'
+printf 'co: pr checkout\nm: pr merge\nq: m\nv: pr view\nsh1: !gh pr view\n'
 STUB
 chmod +x "$TMP/ghbin/gh"
 OLDP="$PATH"; PATH="$TMP/ghbin:$PATH"
 run 'gh m 2 --repo acme/api'; expect 2 "R25: gh alias expanding to pr merge"
 grep -q 'cannot read this merge command exactly' <<<"$ERR" || fail "alias text: $ERR"
 run 'gh co 2'; expect 0 "R25: gh co is a gh command (pr checkout)"
+run 'gh q 2 --repo acme/api'; expect 2 "R29/C: gh alias chain q -> m -> pr merge"
+grep -q 'cannot read this merge command exactly' <<<"$ERR" || fail "R29 gh chain text: $ERR"
+run 'gh v 2'; expect 0 "R29: gh alias to a non-merge command"
+run 'gh sh1 2'; expect 2 "R29: gh shell (!) alias"
 run 'gh xyz 2'; expect 0 "R25: unknown gh command that is no alias"
 GH_ALIAS=fail run 'gh xyz 2'; expect 0 "R25: gh alias list fails, unmanaged cwd"
 git init -q "$TMP/M"; git -C "$TMP/M" remote add origin https://github.com/acme/api.git
@@ -97,6 +101,18 @@ grep -q 'cannot read this merge command exactly' <<<"$ERR" || fail "opaque text:
 run 'eval "gh pr view 2"'; expect 0 "opaque non-merge"
 run 'gh pr merge 2 --repo acme/api && gh pr merge 1 --repo acme/api'; expect 2 "second merge refused"
 run 'gh pr merge 1 --repo ACME/API'; expect 2 "repo case-insensitive match"
+# --- plan 3 hardening (rulings R27, R28, R30) ---
+run 'Gh pr merge 1 --repo acme/api'; expect 2 "R27/A: Gh pr merge is gated"
+[ "$(head -1 <<<"$ERR")" = "devfw merge-gate-hook: cites: stale P-1@abc" ] || fail "R27: Gh read exactly (gate reason): $ERR"
+DEVFW_HOOK_GATE_TIMEOUT=1 run 'Gh pr merge 5 --repo acme/api'; expect 2 "R27/A: the measured bypass reaches the gate"
+grep -q 'merge-gate could not run: timed out' <<<"$ERR" || fail "R27: gate called for Gh pr merge 5: $ERR"
+run 'GH.exe PR MERGE 2 --repo acme/api'; expect 0 "R27: GH.exe PR MERGE of a passing PR is read exactly"
+run "python -c \"import os; os.system('gh pr merge 2 --repo acme/api')\""; expect 2 "R28/B: python -c gh pr merge"
+run "script -qc 'gh pr merge 2 --repo acme/api'"; expect 2 "R28/B: script -qc"
+run "git -c alias.x='!gh pr merge 2 --repo acme/api' x"; expect 2 "R30/D: -c alias.x shell alias"
+run 'GH_CONFIG_DIR=/t/gh gh m 2'; expect 2 "R30: gh alias from another config dir (any)"
+run 'python -c "print(1)"'; expect 0 "no-regression: python without gh"
+run 'gh pr view 2 --repo acme/api'; expect 0 "no-regression: gh pr view"
 
 # Plan repo: the lease alone decides (ruling R23); bin/merge-gate is never called for it.
 : > "$LOG"; : > "$LLOG"

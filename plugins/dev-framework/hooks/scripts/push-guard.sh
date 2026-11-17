@@ -7,10 +7,10 @@
 # (the push's, else the branch's upstream remote, else origin) has a raw URL naming a managed repo. An unreadable
 # push (an opaque segment mentioning push, or a git alias whose expansion mentions push; rulings R20, R25) is in
 # scope when the parser cannot read its dir (dynamic cd/pushd/-C, popd, ~user, glob, GIT_DIR), when its literal
-# dir or HOOK_CWD is managed, or when the text names a managed slug. RESIDUAL, accepted: an eval/sh -c string
-# that pushes elsewhere, run from an unmanaged cwd and naming nothing managed, is not seen. A parser failure on a
-# push-looking command blocks. (2) fail closed. (3) force/del blocks. (4) destination (ruling R21, git's way):
-# the refspec's dst, or the current branch (no refspec; HEAD and @; detached blocks); refs/tags/* and
+# dir or HOOK_CWD is managed, or when the text names a managed slug. An eval / sh -c / python -c ... string that
+# mentions git has an unknown dir (R28), so it is in scope from any cwd; RESIDUAL (README item 3): a string that
+# hides the verb. A parser failure on a push-looking command blocks. (2) fail closed. (3) force/del blocks.
+# (4) destination (ruling R21, git's way): the refspec's dst, or the current branch (no refspec; HEAD and @; detached blocks); refs/tags/* and
 # refs/devfw/* skip 5-7; other refs/* block; heads/<x> is checked as <x> and as heads/<x>; a dst that is not a
 # valid branch name blocks. (5) default branch blocks. (6) t/<n>-... needs `hook_claim_ok`. (7) the issue must
 # not be `needs-ack`.

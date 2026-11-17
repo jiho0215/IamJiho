@@ -9,7 +9,7 @@ TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 g() { git -c user.name=t -c user.email=t@t -c init.defaultBranch=main "$@"; }
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
 fail() { echo "FAIL: $*"; exit 1; }
-unset DEVFW_CONFIG DEVFW_CORE_DIR
+unset DEVFW_CONFIG DEVFW_CORE_DIR CDPATH
 
 CORE="$TMP/core"; mkdir -p "$CORE" "$TMP/fakebin"
 CFG='{"plan":{"repo":"acme/core"},"repos":{"api":{"github":"acme/api","default":"main"}}}'
@@ -22,6 +22,7 @@ echo x > "$TMP/W/f"; g -C "$TMP/W" add f; g -C "$TMP/W" commit -qm init; g -C "$
 git -C "$TMP/W" remote set-url origin https://github.com/acme/api.git
 git -C "$TMP/W" config url."$(cygpath -m "$TMP/origin.git" 2>/dev/null || echo "$TMP/origin.git")".insteadOf https://github.com/acme/api.git
 "$CLAIM" 41 x --repo-dir "$TMP/W" --base main >/dev/null || fail "setup: claim 41"
+"$CLAIM" 12 x --repo-dir "$TMP/W" --base main >/dev/null || fail "setup: claim 12"
 g init -q "$TMP/U"; git -C "$TMP/U" remote add origin https://github.com/other/x.git
 
 # fake gh: GH_MODE = ok | ack | fail | slow
@@ -32,7 +33,7 @@ case "${GH_MODE:-ok}" in
   fail) exit 1 ;;
   slow) sleep 10 ;;
   ack) [ "$*" = "api repos/acme/core/issues/41" ] && { echo '{"labels":[{"name":"needs-ack"}]}'; exit 0; }; exit 1 ;;
-  *) [ "$*" = "api repos/acme/core/issues/41" ] && { echo '{"labels":[{"name":"p1"}]}'; exit 0; }; exit 1 ;;
+  *) case "$*" in "api repos/acme/core/issues/41"|"api repos/acme/core/issues/12") echo '{"labels":[{"name":"p1"}]}'; exit 0 ;; esac; exit 1 ;;
 esac
 STUB
 chmod +x "$TMP/fakebin/gh"
@@ -70,6 +71,53 @@ says 'cannot read this push command exactly' "alias text"
 run "$U" "git -C '$W' p origin main"; expect 2 "R25: alias of the -C repo, unmanaged cwd"
 run "$W" 'git s'; expect 0 "R25: alias that is not a push"
 git -C "$W" config --unset alias.p; git -C "$W" config --unset alias.s
+# --- plan 3 hardening (rulings R27-R31): the final review's measured bypasses, exact commands; all were rc=0 ---
+# A / R27: command words fold case, path and .exe
+run "$W" 'GIT push origin main'; expect 2 "R27/A: GIT push"
+says 'merge to main goes through the merge gate' "R27: GIT is read exactly"
+run "$W" 'Git.EXE push origin main'; expect 2 "R27/A: Git.EXE push"
+run "$W" 'git PUSH origin main'; expect 2 "R27/A: git PUSH"
+# B / R28: interpreter strings mentioning git are opaque with an unknown dir (in scope from any cwd)
+run "$W" "script -qc 'git push origin main'"; expect 2 "R28/B: script -qc"
+says 'cannot read this push command exactly' "R28 text"
+run "$W" "python -c \"import os; os.system('git push origin main')\""; expect 2 "R28/B: python -c"
+run "$W" "perl -e 'system(\"git push origin main\")'"; expect 2 "R28/B: perl -e"
+run "$U" "bash -c 'cd ~/api && git push origin main'"; expect 2 "R28/B: bash -c from an UNMANAGED cwd (R9 residual)"
+run "$U" "python -c \"import os; os.system('git push origin main')\""; expect 2 "R28/B: python -c from an unmanaged cwd"
+# C / R29: alias chains
+git -C "$W" config alias.q p; git -C "$W" config alias.p push
+run "$W" 'git q origin main'; expect 2 "R29/C: q -> p -> push"
+says 'cannot read this push command exactly' "R29 text"
+git -C "$W" config alias.q s; git -C "$W" config alias.s status
+run "$W" 'git q'; expect 0 "R29: chain ending at a builtin the guard does not read"
+git -C "$W" config alias.q nosuchalias
+run "$W" 'git q origin main'; expect 2 "R29: a step naming an alias that does not resolve"
+git -C "$W" config alias.q l1; git -C "$W" config alias.l1 q
+run "$W" 'git q origin main'; expect 2 "R29: alias loop (depth > 10)"
+git -C "$W" config alias.q '!sh ./x.sh'
+run "$W" 'git q origin main'; expect 2 "R29: a shell (!) step"
+git -C "$W" config --unset alias.q; git -C "$W" config --unset alias.p; git -C "$W" config --unset alias.s
+git -C "$W" config --unset alias.l1
+# D / R30: inline alias / config
+run "$W" 'git -c alias.x=push x origin main'; expect 2 "R30/D: -c alias.x=push"
+says 'cannot read this push command exactly' "R30 text"
+run "$W" 'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.x GIT_CONFIG_VALUE_0=push git x origin main'; expect 2 "R30/D: GIT_CONFIG_COUNT"
+run "$W" "GIT_CONFIG_PARAMETERS=\"'alias.x'='push'\" git x origin main"; expect 2 "R30/D: GIT_CONFIG_PARAMETERS"
+run "$W" 'git --config-env=alias.x=V x origin main'; expect 2 "R30/D: --config-env"
+run "$W" "GIT_CONFIG_GLOBAL='$TMP/evil' git x origin main"; expect 2 "R30/D: alias from a config file, no push in the text (any)"
+# E / R31: CDPATH (U/W does not exist; bash would take W from CDPATH=$TMP)
+run "$U" 'cd W && git push origin main'; expect 0 "R31 baseline: no CDPATH, U/W is not a repo"
+run "$U" "export CDPATH='$TMP'; cd W && git push origin main"; expect 2 "R31/E: export CDPATH"
+run "$U" "CDPATH='$TMP' cd W && git push origin main"; expect 2 "R31/E: CDPATH prefix on cd"
+CDPATH="$TMP" run "$U" 'cd W && git push origin main'; expect 2 "R31/E: CDPATH in the hook's environment"
+# no-regression in a managed repo
+run "$W" 'git push origin t/12-x'; expect 0 "no-regression: claimed push"
+run "$W" 'git commit -m x'; expect 0 "no-regression: commit"
+run "$W" 'git -c color.ui=never status'; expect 0 "no-regression: harmless -c"
+run "$W" 'git -c color.ui=never push origin t/12-x'; expect 0 "no-regression: harmless -c on a claimed push"
+run "$W" 'python -c "print(1)"'; expect 0 "no-regression: python without git"
+run "$W" 'Git status'; expect 0 "no-regression: Git status"
+run "$W" "bash -c 'git status'"; expect 0 "no-regression: interpreter string without a push"
 # C2 / R21: destinations as git resolves them (W is on main)
 run "$W" 'git push origin @'; expect 2 "C2: @ is the current branch (main)"
 says 'merge to main goes through the merge gate' "@ text"
@@ -135,7 +183,9 @@ says 'cannot read this push command exactly' "R15 cd text"
 run "$TMP/U" 'git -C "$D" push origin main'; expect 2 "non-literal -C, unmanaged cwd"
 run "$TMP/U" 'eval "git push https://github.com/acme/api.git main"'; expect 2 "opaque push naming a managed slug"
 run "$TMP/U" "cd '$TMP/U' && git push --force origin main"; expect 0 "literal cd to an unmanaged repo"
-run "$TMP/U" 'eval "git push other"'; expect 0 "opaque push, nothing managed named"
+# R28 adjudication: eval mentioning git now has an unknown dir (was "expect 0": the accepted residual R28 closes)
+run "$TMP/U" 'eval "git push other"'; expect 2 "R28: eval push from an unmanaged cwd"
+run "$TMP/U" "stdbuf -oL git -C '$TMP/U' push other"; expect 0 "opaque push (R25, dir known), nothing managed named"
 
 # push.default decides what a bare push updates
 g -C "$W" checkout -q t/41-x

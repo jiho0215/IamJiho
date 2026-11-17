@@ -86,7 +86,7 @@ hook_init() {
 # the DEVFW_CORE_DIR check, before anything that reads a field (fields read as empty without jq).
 hook_need_jq() {
   [ "$HOOK_HAVE_JQ" -eq 0 ] || return 0
-  grep -Eq -- "$1" <<<"${HOOK_JSON:-}" || exit 0
+  grep -Eiq -- "$1" <<<"${HOOK_JSON:-}" || exit 0   # -i: GIT PUSH (R27)
   hook_block "jq not found (needed to read this command and the config); install jq or run it without the dev-framework hooks"
 }
 
@@ -116,31 +116,55 @@ hook_parse() {
 }
 
 # hook_opaque_rows <jq-regex> [<alias-regex>]: rulings R20/R25, the ONE place opaque scope facts are read. From
-# $PARSED, every opaque segment matching <jq-regex> (case-insensitive), plus every git/gh alias call whose
+# $PARSED, every opaque segment matching <jq-regex> (case-insensitive) or flagged `any` (R30: an alias defined by
+# injected config, whose expansion the hook cannot read), plus every git/gh alias call whose
 # expansion matches <alias-regex> (default: <jq-regex>), becomes a row "<unknown 0|1><TAB><dir>" in the array HOOK_OPQ_ROWS (dir empty = the hook cwd). Scope pass: no
 # network (git config / gh alias list are local; gh is bounded by hook_net). An alias of a dir the parser cannot
 # read is looked up from the hook cwd (global aliases). A failing `gh alias list` makes each gh alias call a row of
 # kind 2 ("2<TAB>": unresolved), in scope only when the hook cwd is (R25). Never call it inside $( ... ).
+# R29: an alias is followed step by step (repo config then global for git; `gh alias list` for gh), at most 10
+# steps. The call is a row when any step's expansion starts with `!` (a shell command), matches <alias-regex>,
+# starts with an option, or names a next word that is neither an alias nor a command (parser's gitCommands /
+# ghCommands), or when the chain is longer than 10. A name that is no alias at its FIRST step is not a row (git /
+# gh fail, or run an external git-<name>; as before).
 hook_opaque_rows() {
-  local re="$1" are="${2:-$1}" row tool name dir unk d val ghl="" ghrc=-1
+  local re="$1" are="${2:-$1}" row tool name dir unk d val ghl="" ghrc=-1 n nx depth hit w
+  local -A cmds=()
   HOOK_OPQ_ROWS=()
   while IFS= read -r row; do
     [ -n "$row" ] && HOOK_OPQ_ROWS+=("$row")
-  done < <(jq -r --arg re "$re" '[.opaque, (.opaqueDirs // [])] | transpose[] | select((.[0] // "") | test($re; "i"))
+  done < <(jq -r --arg re "$re" '[.opaque, (.opaqueDirs // [])] | transpose[]
+      | select(((.[0] // "") | test($re; "i")) or (.[1].any == true))
       | "\(if .[1].unknown == false then 0 else 1 end)\t\(.[1].dir // "")"' <<<"$PARSED" | tr -d '\r')
+  while IFS= read -r w; do
+    [ -n "$w" ] && cmds["$w"]=1
+  done < <(jq -r '((.gitCommands // [])[] | "git:\(.)"), ((.ghCommands // [])[] | "gh:\(.)")' <<<"$PARSED" | tr -d '\r')
   while IFS=$'\037' read -r tool name dir unk; do   # \037: an empty dir must not collapse (tab is IFS whitespace)
     [ -n "$tool" ] || continue
     if [ "$unk" = true ] || [ -z "$dir" ]; then d="${HOOK_CWD:-.}"; else d=$(hook_abs "$dir"); fi
-    val=""
-    if [ "$tool" = git ]; then
-      val=$(git -C "$(devfw_path "$d")" config --get "alias.$name" 2>/dev/null | tr -d '\r') || val=""
-    else
-      if [ "$ghrc" -lt 0 ]; then ghrc=0; hook_net ghl null 5 gh alias list || ghrc=$?; ghl="${ghl//$'\r'/}"; fi
-      if [ "$ghrc" -ne 0 ]; then HOOK_OPQ_ROWS+=("2"$'\t'); continue; fi   # cannot list gh aliases: kind 2
-      val=$(awk -v n="$name" 'index($0, n ":") == 1 { print substr($0, length(n) + 2); exit }' <<<"$ghl")
+    if [ "$tool" = gh ] && [ "$ghrc" -lt 0 ]; then
+      ghrc=0; hook_net ghl null 5 gh alias list || ghrc=$?; ghl="${ghl//$'\r'/}"
     fi
-    [ -n "$val" ] || continue
-    jq -en --arg v "$val" --arg re "$are" '$v | test($re; "i")' >/dev/null 2>&1 || continue
+    if [ "$tool" = gh ] && [ "$ghrc" -ne 0 ]; then HOOK_OPQ_ROWS+=("2"$'\t'); continue; fi   # cannot list gh aliases: kind 2
+    n="$name"; depth=0; hit=0
+    while :; do
+      depth=$((depth + 1))
+      if [ "$depth" -gt 10 ]; then hit=1; break; fi                 # too deep (or a loop)
+      if [ "$tool" = git ]; then
+        val=$(git -C "$(devfw_path "$d")" config --get "alias.$n" 2>/dev/null | tr -d '\r') || val=""
+      else
+        val=$(awk -v n="$n" 'index($0, n ":") == 1 { print substr($0, length(n) + 2); exit }' <<<"$ghl")
+        val="${val# }"
+      fi
+      if [ -z "$val" ]; then [ "$depth" -eq 1 ] || hit=1; break; fi  # later step: names an alias that does not resolve
+      case "$val" in '!'*) hit=1; break ;; esac                       # a shell alias: unreadable
+      if jq -en --arg v "$val" --arg re "$are" '$v | test($re; "i")' >/dev/null 2>&1; then hit=1; break; fi
+      read -r nx _ <<<"$val"
+      case "$nx" in -*|'') hit=1; break ;; esac                       # options first: not read here
+      [ -z "${cmds["$tool:${nx,,}"]:-}" ] || break                    # a command the regex did not match: harmless
+      n="$nx"
+    done
+    [ "$hit" -eq 1 ] || continue
     HOOK_OPQ_ROWS+=("$([ "$unk" = true ] && echo 1 || echo 0)"$'\t'"$dir")
   done < <(jq -r '(.aliases // [])[] | [.tool, .name, (.dir // ""), (.unknown | tostring)] | join("\u001f")' <<<"$PARSED" | tr -d '\r')
 }

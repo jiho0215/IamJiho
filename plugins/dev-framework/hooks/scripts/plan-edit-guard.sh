@@ -11,9 +11,9 @@
 # verify (a 124 timeout, DEVFW_HOOK_NET_TIMEOUT, default 20s, lands here). (6) allow.
 # Opaque scope (R9, R20, R25): an unreadable commit (an opaque segment mentioning commit, or a git alias whose
 # expansion mentions commit) is in scope if the parser cannot read its dir (dynamic cd/pushd/-C, popd, ~user, a
-# glob), its literal dir or the cwd is in core, or the command text names the core path. RESIDUAL, accepted: an
-# eval / sh -c string with no core path in its text, run from a cwd outside core, is not seen; other projects
-# must not be blocked. jq missing (R24): a Bash call mentioning commit, or an edit naming core's basename, blocks.
+# glob, an eval / sh -c / python -c ... string mentioning git: R28), its literal dir or the cwd is in core, or the
+# command text names the core path. RESIDUAL (README item 3): a string that hides the verb. jq missing (R24): a
+# Bash call mentioning commit, or an edit naming core's basename, blocks.
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_v6-hook.sh"
 hook_init plan-edit-guard 25
 [ -n "$HOOK_CORE" ] || exit 0
@@ -61,12 +61,12 @@ case "$HOOK_TOOL" in
     ;;
   Bash)
     CMD=$(hook_field .tool_input.command)
-    # `git` too: a git alias (git ci = commit) or a wrapper names no `commit` (ruling R25)
-    grep -Eq 'commit|\bgit\b' <<<"$CMD" || exit 0
+    # `git` too: a git alias (git ci = commit) or a wrapper names no `commit` (ruling R25); -i: GIT ci (R27)
+    grep -Eiq 'commit|\bgit\b' <<<"$CMD" || exit 0
     hook_parse "$CMD"
     if [ -z "$PARSED" ]; then
       # the parser failed: a command that mentions commit cannot be told apart, so check the lease
-      grep -q 'commit' <<<"$CMD" || exit 0
+      grep -iq 'commit' <<<"$CMD" || exit 0
       IN_SCOPE=1
     else
       # R9 + R20 + R25: an unreadable commit (an opaque segment, or a git alias expanding to commit) is in scope
