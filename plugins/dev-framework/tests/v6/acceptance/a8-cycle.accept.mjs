@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { openRun, closeRun, eventually } from './harness.mjs';
-import { gh, syncTickets, claimCommitPr, gate } from './ticket-flow.mjs';
+import { ghRead, syncTickets, claimCommitPr, gate, mergePr } from './ticket-flow.mjs';
 
 test('A8: cycle', async () => {
   const run = await openRun();
@@ -20,7 +20,7 @@ test('A8: cycle', async () => {
     assert.equal(g.code, 0);
 
     // Sandbox code repo only (openRun verified it). Never --auto, never --delete-branch.
-    gh(['pr', 'merge', String(pr), '--repo', run.codeRepo, '--squash']);
+    mergePr(run, pr);
 
     // Wait (read-only dry run) until reconcile derives done, then apply once.
     await eventually(() => {
@@ -32,18 +32,18 @@ test('A8: cycle', async () => {
     const rec = run.exec('reconcile', ['--core-dir', run.coreDir, '--apply']);
     assert.equal(rec.code, 0, `reconcile --apply: ${rec.stdout} ${rec.stderr}`);
     await eventually(() => {
-      const iss = JSON.parse(gh(['api', `repos/${run.coreRepo}/issues/${issue}`]));
+      const iss = JSON.parse(ghRead(['api', `repos/${run.coreRepo}/issues/${issue}`]));
       assert.equal(iss.state, 'closed');
       assert.deepEqual(iss.labels.map((l) => l.name).filter((l) => l.startsWith('state:')), ['state:done']);
     });
 
-    // Dry run (no --apply). Earlier runs' merged PRs sit in the same sandbox repo and belong to other plans, so judge
-    // THIS PR: it is in neither list; the exit is 0 unless some other run's PR is listed.
+    // Dry run (no --apply). Merges went into this run's own base branch, so only this run's PR is judged: clean, exit 0.
+    // Non-vacuity: the merged PR really is a merged t/* PR whose base is the run branch, so the script had it to judge.
+    const merged = JSON.parse(ghRead(['api', `repos/${run.codeRepo}/pulls/${pr}`]));
+    assert.ok(merged.merged_at && merged.base.ref === run.config.repos.api.default && merged.head.ref.startsWith('t/'), 'PR merged into the run base');
     const pm = run.exec('reconcile', ['--core-dir', run.coreDir, '--post-merge']);
-    assert.ok(pm.json && Array.isArray(pm.json.staleMerges), `post-merge: ${pm.stdout} ${pm.stderr}`);
-    const mine = (x) => x.repo === run.codeRepo && x.pr === pr;
-    assert.deepEqual(pm.json.staleMerges.filter(mine), []);
-    assert.deepEqual(pm.json.unverifiable.filter(mine), []);
-    assert.equal(pm.code, pm.json.staleMerges.length + pm.json.unverifiable.length ? 9 : 0);
+    assert.equal(pm.code, 0, `post-merge: ${pm.stdout} ${pm.stderr}`);
+    assert.deepEqual(pm.json.staleMerges, []);
+    assert.deepEqual(pm.json.unverifiable, []);
   } finally { await closeRun(run); }
 });

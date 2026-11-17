@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { openRun, closeRun, execAsyncIn, eventually } from './harness.mjs';
-import { gh, syncTickets } from './ticket-flow.mjs';
+import { ghRead, syncTickets } from './ticket-flow.mjs';
 
 test('A2: claim race', async () => {
   const run = await openRun();
@@ -15,7 +15,7 @@ test('A2: claim race', async () => {
     const clones = [];
     for (let k = 0; k < 6; k++) {
       const dir = path.join(run.tmp, `race-${k}`);
-      gh(['repo', 'clone', run.codeRepo, dir, '--', '-q']);
+      ghRead(['repo', 'clone', run.codeRepo, dir, '--', '-q']);
       clones.push(dir);
     }
     // The six claims start together; each is one write against GitHub and runs exactly once.

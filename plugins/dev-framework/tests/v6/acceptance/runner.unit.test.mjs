@@ -81,3 +81,17 @@ test('an expected red that passes is UNEXPECTED green', () => {
   assert.equal(r.code, 1, r.out);
   assert.match(r.out, /A1 UNEXPECTED green/);
 });
+
+// ticket-flow writes must refuse a run object that openRun did not verify (network-free: the guard fires first).
+test('ticket-flow writes refuse a hand-built run', async () => {
+  const { SandboxError, gitWrite } = await import('./harness.mjs');
+  const tf = await import('./ticket-flow.mjs');
+  const forged = { runId: 'rforged000aaa', coreDir: '.', codeDir: '.', coreRepo: 'o/core', codeRepo: 'o/code', env: process.env,
+    config: { repos: { api: { default: 'main' } } }, exec: () => { throw new Error('must not exec'); } };
+  assert.throws(() => tf.postAck(forged, 1, 'abcdef0', 'x'), SandboxError);
+  assert.throws(() => tf.mergePr(forged, 1), SandboxError);
+  await assert.rejects(() => tf.claimCommitPr(forged, 1, 'slug', 'f.js'), SandboxError);
+  assert.throws(() => gitWrite(forged, '.', ['push']), SandboxError);
+  assert.throws(() => tf.ghRead(['api', '-X', 'POST', 'x']), /non-read/);
+  assert.throws(() => tf.gitRead('.', ['push']), /refuses push/);
+});

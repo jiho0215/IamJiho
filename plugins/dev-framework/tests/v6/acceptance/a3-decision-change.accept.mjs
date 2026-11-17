@@ -1,10 +1,10 @@
-// A3: a cited decision changes -> needs-ack and merge refusal; an owner ack clears both.
+// A3: a cited decision changes -> needs-ack and merge refusal; a STALE-sha ack changes nothing; the right ack clears both.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { openRun, closeRun, eventually } from './harness.mjs';
-import { gh, git, syncTickets, claimCommitPr, gate } from './ticket-flow.mjs';
+import { openRun, closeRun, eventually, gitWrite } from './harness.mjs';
+import { gitRead, syncTickets, claimCommitPr, gate, postAck } from './ticket-flow.mjs';
 
 test('A3: decision change', async () => {
   const run = await openRun();
@@ -26,35 +26,50 @@ test('A3: decision change', async () => {
     const file = path.join(run.coreDir, 'docs', 'plan', 'DECISIONS.md');
     const text = fs.readFileSync(file, 'utf8');
     assert.ok(text.includes('The ping endpoint answers with the text ok.'));
-    git(run.coreDir, ['checkout', '-q', `run/${run.runId}`]);
+    gitRead(run.coreDir, ['checkout', '-q', `run/${run.runId}`]);
+    const oldSha = gitRead(run.coreDir, ['rev-parse', 'HEAD']).trim();           // the plan before the change
     fs.writeFileSync(file, text.replace('The ping endpoint answers with the text ok.', 'The ping endpoint answers with JSON {"ok":true}.'));
-    git(run.coreDir, ['add', 'docs/plan/DECISIONS.md']);
-    git(run.coreDir, ['commit', '-q', '-m', `change D-1 ${run.runId}`]);
-    git(run.coreDir, ['push', '-q', 'origin', `run/${run.runId}`]);
-    const newSha = git(run.coreDir, ['rev-parse', 'HEAD']).trim();
+    gitRead(run.coreDir, ['add', 'docs/plan/DECISIONS.md']);
+    gitRead(run.coreDir, ['commit', '-q', '-m', `change D-1 ${run.runId}`]);
+    gitWrite(run, run.coreDir, ['push', '-q', 'origin', `run/${run.runId}`]);
+    const newSha = gitRead(run.coreDir, ['rev-parse', 'HEAD']).trim();
+    assert.notEqual(oldSha, newSha);
 
-    const rec = await eventually(() => {
+    const row = () => {
       const r = run.exec('reconcile', ['--core-dir', run.coreDir]);
-      const row = r.json && r.json.items && r.json.items.find((i) => i.id === id);
-      assert.ok(row, `reconcile: ${r.stdout} ${r.stderr}`);
-      assert.equal(row.state, 'needs-ack', `state after the change: ${JSON.stringify(row)}`);
-      return row;
-    });
-    assert.match(rec.why, /D-1/, 'why names D-1');
-    const g1 = gate(run, pr);
-    assert.equal(g1.json && g1.json.pass, false, `gate after change: ${g1.stdout}`);
-    assert.equal(g1.code, 6);
-    assert.ok(g1.json.reasons.some((x) => x.startsWith('cites:') && x.includes('D-1')), `reasons: ${g1.json.reasons}`);
+      const x = r.json && r.json.items && r.json.items.find((i) => i.id === id);
+      assert.ok(x, `reconcile: ${r.stdout} ${r.stderr}`);
+      return x;
+    };
+    const needsAck = () => {
+      const x = row();
+      assert.equal(x.state, 'needs-ack', `state: ${JSON.stringify(x)}`);
+      assert.match(x.why, /D-1/, 'why names D-1');
+    };
+    const refused = () => {
+      const g = gate(run, pr);
+      assert.equal(g.json && g.json.pass, false, `gate: ${g.stdout}`);
+      assert.equal(g.code, 6);
+      assert.ok(g.json.reasons.some((x) => x.startsWith('cites:') && x.includes('D-1')), `reasons: ${g.json.reasons}`);
+    };
+    await eventually(needsAck);
+    refused();
 
-    // The owner's ack (a write: once), posted as the authenticated user, who owns the sandbox repo.
-    gh(['api', '-X', 'POST', `repos/${run.coreRepo}/issues/${issue}/comments`, '-f', `body=ack ${issue} ${newSha}: no impact`]);
+    // A stale ack (the plan sha from BEFORE the change hashes D-1 to the old value) must not clear anything.
+    // One write, outside eventually(). Then a read-only stable window: both must stay refused.
+    postAck(run, issue, oldSha, 'stale');
+    for (let i = 0; i < 4; i++) {
+      await new Promise((r) => setTimeout(r, 2500));
+      needsAck();
+      refused();
+    }
 
+    // The right ack (the new plan sha), also one write.
+    postAck(run, issue, newSha, 'no impact');
     await eventually(() => {
-      const r = run.exec('reconcile', ['--core-dir', run.coreDir]);
-      const row = r.json && r.json.items && r.json.items.find((i) => i.id === id);
-      assert.ok(row, `reconcile: ${r.stdout} ${r.stderr}`);
-      assert.notEqual(row.state, 'needs-ack', `still needs-ack: ${JSON.stringify(row)}`);
-      assert.equal(row.state, 'in-review');
+      const x = row();
+      assert.notEqual(x.state, 'needs-ack', `still needs-ack: ${JSON.stringify(x)}`);
+      assert.equal(x.state, 'in-review');
     });
     const g2 = await eventually(() => {
       const r = gate(run, pr);

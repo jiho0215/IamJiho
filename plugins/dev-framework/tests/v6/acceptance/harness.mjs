@@ -87,7 +87,11 @@ export async function openRun(opts = {}) {
   try {
   gh(['repo', 'clone', core, coreDir, '--', '-q']);
   gh(['repo', 'clone', code, codeDir, '--', '-q']);
-  const codeDefault = git(codeDir, ['rev-parse', '--abbrev-ref', 'HEAD']).trim();
+  // Run isolation: the code repo gets its own base branch for this run, cut from its default branch and pushed (guarded)
+  // before any scenario clones the code repo, so claims, PRs and merges never touch the default branch and runs cannot
+  // see each other's merges.
+  const codeDefault = `run/${runId}`;
+  git(codeDir, ['checkout', '-q', '-b', codeDefault]);
 
   git(coreDir, ['checkout', '-q', '-b', `run/${runId}`]);
   const planDir = path.join(coreDir, 'docs', 'plan');
@@ -117,6 +121,7 @@ export async function openRun(opts = {}) {
   VERIFIED.set(run, verified);
   run.exec = (script, args = []) => execIn(run, script, args);
   requireRun(run);                                       // re-check right before the push
+  git(codeDir, ['push', '-q', '-u', 'origin', codeDefault]);
   git(coreDir, ['push', '-q', '-u', 'origin', `run/${runId}`]);
   await sleep(HARNESS_DELAY_MS);
   return run;
@@ -125,6 +130,11 @@ export async function openRun(opts = {}) {
     throw e;
   }
 }
+
+// Guarded write helpers for scenarios: each refuses a run that openRun did not verify, before touching anything.
+export function ghWrite(run, args) { requireRun(run); return gh(args).stdout; }
+export function gitWrite(run, dir, args) { requireRun(run); return git(dir, args); }
+export function assertVerifiedRun(run) { requireRun(run); }
 
 export function execIn(run, script, args = []) {
   requireRun(run);                                       // scripts can write issues, PRs and merges
