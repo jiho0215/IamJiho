@@ -13,7 +13,12 @@
 // - R1: a literal `cd <dir>` is the default dir of later segments (relative to the hook cwd). A cd whose
 //   target cannot be read makes every later guarded git / gh-merge segment opaque.
 // - A gh merge with no explicit repo after a cd is opaque: Merge has no dir, so its repo would be guessed.
-// - eval, xargs, sh/bash -c and friends are opaque when the segment mentions a guarded command.
+// - eval, xargs, sh/bash -c, env -C/-S and friends are opaque when the segment mentions a guarded command.
+// - Once a call is classified as guarded (push, commit, worktree add, a branch creation, gh pr merge, a merge
+//   endpoint), an unreadable part makes it opaque UNCONDITIONALLY; the MENTION text test gates only the cases
+//   decided before we know what the call is (dynamic command word, unknown git global option, exec wrappers).
+// - push --all/--branches is opaque (pushes every branch yet names none); --tags reports refspec refs/tags/*.
+// - GIT_DIR / GIT_WORK_TREE (segment env or export) and --git-dir/--work-tree make guarded git calls opaque.
 
 const MENTION = new RegExp([
   String.raw`\bgh\b[\s\S]*\bpr\b[\s\S]*\bmerge\b`,
@@ -224,7 +229,7 @@ const PUSH_LONG_ARG = new Set(['--push-option', '--receive-pack', '--exec', '--r
 const BRANCH_CREATE_OK = /^(-f|--force|-t|--track(=.*)?|--no-track|-q|--quiet|--create-reflog|--recurse-submodules)$/;
 
 function gitPush(args, dir) {
-  let remote = null, force = false, del = false, endOpts = false, haveRemote = false;
+  let remote = null, force = false, del = false, endOpts = false, haveRemote = false, tags = false;
   const refspecs = [];
   for (let j = 0; j < args.length; j++) {
     const t = args[j].text;
@@ -233,6 +238,9 @@ function gitPush(args, dir) {
       const eq = t.indexOf('='); const name = eq < 0 ? t : t.slice(0, eq);
       if (name === '--force' || name === '--force-with-lease' || name === '--mirror') force = true;
       if (name === '--delete' || name === '--prune') del = true;
+      // --all/--branches push every branch, yet name none: refspecs [] would read as "the current branch".
+      if (name === '--all' || name === '--branches') throw new Opaque();
+      if (name === '--tags') tags = true;
       if (PUSH_LONG_ARG.has(name)) {
         const val = eq < 0 ? need(args[++j]) : (args[j].dyn ? need(null) : t.slice(eq + 1));
         if (name === '--repo' && !haveRemote) remote = val;
@@ -250,6 +258,7 @@ function gitPush(args, dir) {
     const v = need(args[j]);
     if (!haveRemote) { remote = v; haveRemote = true; } else refspecs.push(v);
   }
+  if (tags) refspecs.push('refs/tags/*');  // a non-branch destination, so a guard never reads it as "current branch"
   if (refspecs.some((r) => r.startsWith('+'))) force = true;
   if (refspecs.some((r) => r.startsWith(':'))) del = true;
   return { dir, remote, refspecs, force, del };
@@ -272,15 +281,35 @@ function gitCommit(args, dir) {
   return { dir, all };
 }
 
+// A short-option cluster (-qb, -bt/41-x, -fb x): the first char of `takes` ends the cluster; its value is the
+// rest of the cluster or, if empty, the next word. Returns { value, next } or null when no such char.
+function shortValue(args, j, takes) {
+  const a = args[j]; const t = a.text;
+  if (!t.startsWith('-') || t.startsWith('--') || t.length < 2) return null;
+  for (let k = 1; k < t.length; k++) {
+    if (takes.includes(t[k])) {
+      if (k < t.length - 1) return { value: a.dyn ? need(null) : t.slice(k + 1), next: j };
+      return { value: need(args[j + 1]), next: j + 1 };
+    }
+  }
+  return null;
+}
+
 function gitWorktreeAdd(args, dir) {
   let name = null, detach = false;
   const pos = [];
   for (let j = 0; j < args.length; j++) {
     const t = args[j].text;
-    if (t === '-b' || t === '-B') { name = need(args[++j]); continue; }
     if (t === '--reason') { j++; continue; }
-    if (t === '--detach' || t === '-d') { detach = true; continue; }
-    if (t.startsWith('-')) continue;
+    if (t === '--detach') { detach = true; continue; }
+    if (t.startsWith('--')) continue;
+    if (t.startsWith('-') && t.length > 1) {
+      const sv = shortValue(args, j, 'bB');
+      const cluster = sv ? t.slice(1, t.length - (sv.next === j ? sv.value.length : 0)) : t.slice(1);
+      if (cluster.includes('d')) detach = true;
+      if (sv) { name = sv.value; j = sv.next; }
+      continue;
+    }
     pos.push(args[j]);
   }
   if (name !== null) return { dir, name, via: 'worktree-add' };
@@ -290,48 +319,80 @@ function gitWorktreeAdd(args, dir) {
   return { dir, name: base, via: 'worktree-add' };
 }
 
-function gitNewBranchFlag(args, flags) {  // checkout -b x / switch -c x
+// checkout -b x / -qb x / -bx / --orphan x;  switch -c x / -cx / --create=x
+function gitNewBranchFlag(args, shorts, longs) {
   for (let j = 0; j < args.length; j++) {
     const t = args[j].text;
-    if (flags.includes(t)) return need(args[j + 1]);
+    if (t === '--') return null;
+    if (longs.includes(t)) return need(args[j + 1]);
     const eq = t.indexOf('=');
-    if (eq > 0 && flags.includes(t.slice(0, eq))) return args[j].dyn ? need(null) : t.slice(eq + 1);
+    if (eq > 0 && longs.includes(t.slice(0, eq))) return args[j].dyn ? need(null) : t.slice(eq + 1);
+    const sv = shortValue(args, j, shorts);
+    if (sv) return sv.value;
   }
   return null;
 }
 
+// git branch <new> [start] creates <new>; -c/-C/-m/-M [<old>] <new> copies/renames into <new>.
 function gitBranchCreate(args) {
-  const pos = [];
+  const pos = []; let copy = false;
   for (const a of args) {
-    if (a.text.startsWith('-')) { if (!BRANCH_CREATE_OK.test(a.text)) return null; continue; }
+    if (a.text.startsWith('-')) {
+      if (/^(-[cCmM]|--copy|--move)$/.test(a.text)) { copy = true; continue; }
+      if (!BRANCH_CREATE_OK.test(a.text)) return null;
+      continue;
+    }
     pos.push(a);
   }
-  return pos.length ? need(pos[0]) : null;
+  if (!pos.length) return null;
+  if (copy) return pos.length > 2 ? need(null) : need(pos[pos.length - 1]);
+  return need(pos[0]);
 }
 
-function parseGit(args, st, out) {
-  let i = 0, dir = st.dir, gitDir = false;
+// Global options git takes before the subcommand.
+const GIT_GLOBAL_VALUE = new Set(['-C', '-c', '--config-env', '--git-dir', '--work-tree', '--namespace',
+  '--super-prefix', '--attr-source', '--list-cmds']);
+const GIT_GLOBAL_FLAG = /^(-p|-P|--paginate|--no-pager|--bare|--no-replace-objects|--no-lazy-fetch|--no-optional-locks|--no-advice|--literal-pathspecs|--glob-pathspecs|--noglob-pathspecs|--icase-pathspecs|--exec-path(=.*)?|--html-path|--man-path|--info-path|--version|--help|-v|-h)$/;
+
+// Verdicts: null = handled; 'opaque' = a guarded call that cannot be read exactly (always listed);
+// 'maybe' = unreadable before we know what it is (listed only when the segment mentions a guarded verb).
+function parseGit(args, st, env, out) {
+  let i = 0, dir = st.dir, dirDyn = false;
+  let gitDir = st.gitDir || env.GIT_DIR !== undefined || env.GIT_WORK_TREE !== undefined;
   while (i < args.length) {
     const t = args[i].text;
-    if (args[i].dyn) return 'opaque';
-    if (t === '-C') { dir = joinDir(dir, need(args[i + 1])); i += 2; continue; }
-    if (t === '-c' || t === '--config-env') { i += 2; continue; }
-    if (/^--(git-dir|work-tree|namespace)(=|$)/.test(t)) { gitDir = true; i += t.includes('=') ? 1 : 2; continue; }
-    if (t.startsWith('-')) { i++; continue; }
-    break;
+    if (args[i].dyn) return 'maybe';  // values of value-taking options are skipped below, never seen here
+    if (!t.startsWith('-')) break;
+    const eq = t.indexOf('='); const name = eq < 0 ? t : t.slice(0, eq);
+    if (GIT_GLOBAL_VALUE.has(name)) {
+      const v = eq < 0 ? args[i + 1] : { text: t.slice(eq + 1), dyn: args[i].dyn };
+      if (name === '-C') { if (!v || v.dyn) dirDyn = true; else dir = joinDir(dir, v.text); }
+      if (/^--(git-dir|work-tree|namespace)$/.test(name)) gitDir = true;
+      i += eq < 0 ? 2 : 1; continue;
+    }
+    if (GIT_GLOBAL_FLAG.test(t)) { i++; continue; }
+    return 'maybe';  // an unknown global option may take a value we would misread as the subcommand
   }
   const subcmd = args[i] ? args[i].text : '';
   const rest = args.slice(i + 1);
-  const guarded = ['push', 'commit', 'checkout', 'switch', 'branch'].includes(subcmd)
-    || (subcmd === 'worktree' && rest[0] && rest[0].text === 'add');
-  if (!guarded) return null;
-  if (gitDir || st.cdOpaque || args.some((a) => a.udyn)) return 'opaque';
-  if (subcmd === 'push') out.pushes.push(gitPush(rest, dir));
-  else if (subcmd === 'commit') out.commits.push(gitCommit(rest, dir));
-  else if (subcmd === 'worktree') { const b = gitWorktreeAdd(rest.slice(1), dir); if (b) out.branches.push(b); }
-  else if (subcmd === 'checkout') { const nm = gitNewBranchFlag(rest, ['-b', '-B', '--orphan']); if (nm !== null) out.branches.push({ dir, name: nm, via: 'checkout' }); }
-  else if (subcmd === 'switch') { const nm = gitNewBranchFlag(rest, ['-c', '-C', '--create', '--force-create', '--orphan']); if (nm !== null) out.branches.push({ dir, name: nm, via: 'switch' }); }
-  else if (subcmd === 'branch') { const nm = gitBranchCreate(rest); if (nm !== null) out.branches.push({ dir, name: nm, via: 'branch' }); }
+  const blocked = () => gitDir || dirDyn || st.cdOpaque;
+  if (subcmd === 'push' || subcmd === 'commit' || (subcmd === 'worktree' && rest[0] && rest[0].text === 'add')) {
+    if (blocked() || args.some((a) => a.udyn)) return 'opaque';
+    if (subcmd === 'push') out.pushes.push(gitPush(rest, dir));
+    else if (subcmd === 'commit') out.commits.push(gitCommit(rest, dir));
+    else { const b = gitWorktreeAdd(rest.slice(1), dir); if (b) out.branches.push(b); }
+    return null;
+  }
+  if (subcmd === 'checkout' || subcmd === 'switch' || subcmd === 'branch') {
+    if (args.some((a) => a.udyn)) return 'opaque';  // word splitting could add -b
+    const name = subcmd === 'checkout' ? gitNewBranchFlag(rest, 'bB', ['--orphan'])
+      : subcmd === 'switch' ? gitNewBranchFlag(rest, 'cC', ['--create', '--force-create', '--orphan'])
+        : gitBranchCreate(rest);
+    if (name === null) return null;  // not a branch creation
+    if (blocked()) return 'opaque';
+    out.branches.push({ dir, name, via: subcmd });
+    return null;
+  }
   return null;
 }
 
@@ -341,33 +402,48 @@ const GH_MERGE_ARG = new Set(['-b', '--body', '-F', '--body-file', '-t', '--subj
 const GH_API_ARG = new Set(['-X', '--method', '-f', '--raw-field', '-F', '--field', '-H', '--header', '--input', '--hostname',
   '-q', '--jq', '-t', '--template', '--cache', '-p', '--preview']);
 
-function parseGh(args, st, env, out) {
+function parseGh(allArgs, st, env, out) {
   let repo = null, repoDyn = false;
   const envRepo = env.GH_REPO !== undefined ? env.GH_REPO : st.ghRepo;
   if (envRepo) { repo = envRepo.text; repoDyn = envRepo.dyn; }
+  // -R/--repo may sit anywhere (gh --repo o/n pr merge 5, gh pr -R o/n merge 5): take it out first.
+  const args = [];
+  for (let j = 0; j < allArgs.length; j++) {
+    const a = allArgs[j]; const t = a.text;
+    if (t === '-R' || t === '--repo') { const v = allArgs[++j]; repo = v ? v.text : null; repoDyn = !v || v.dyn; continue; }
+    if (t.startsWith('--repo=')) { repo = t.slice(7); repoDyn = a.dyn; continue; }
+    if (t.startsWith('-R') && t.length > 2) { repo = t.slice(2); repoDyn = a.dyn; continue; }
+    args.push(a);
+  }
   const groupIdx = args.findIndex((a) => !a.text.startsWith('-'));
   if (groupIdx < 0) return null;
   const group = args[groupIdx];
-  if (group.dyn) return 'opaque';
-  let kind = null;
+  if (group.dyn) return 'maybe';
+  let kind = null, startIdx = groupIdx + 1;
   if (group.text === 'api') kind = 'api';
-  else if (group.text === 'pr' && args[groupIdx + 1] && args[groupIdx + 1].text === 'merge') kind = 'merge';
-  else if (group.text === 'pr' && args[groupIdx + 1] && args[groupIdx + 1].dyn) return 'opaque';
+  else if (group.text === 'pr') {
+    const subIdx = args.findIndex((a, j) => j > groupIdx && !a.text.startsWith('-'));
+    if (subIdx < 0) return null;
+    if (args[subIdx].dyn) return 'maybe';
+    if (args[subIdx].text !== 'merge') return null;
+    kind = 'merge'; startIdx = subIdx + 1;
+  }
   if (!kind) return null;
   const argSet = kind === 'api' ? GH_API_ARG : GH_MERGE_ARG;
-  const pos = []; const flags = new Set(); let method = null;
-  for (let j = groupIdx + (kind === 'merge' ? 2 : 1); j < args.length; j++) {
+  const pos = []; const flags = new Set(); let method = null, methodDyn = false;
+  for (let j = startIdx; j < args.length; j++) {
     const a = args[j]; const t = a.text;
-    if (t === '-R' || t === '--repo') { const v = args[++j]; repo = v ? v.text : null; repoDyn = !v || v.dyn; continue; }
-    if (t.startsWith('--repo=')) { repo = t.slice(7); repoDyn = a.dyn; continue; }
-    if (t.startsWith('-R') && t.length > 2) { repo = t.slice(2); repoDyn = a.dyn; continue; }
-    if (kind === 'api' && (t === '-X' || t === '--method')) { method = need(args[++j]).toUpperCase(); continue; }
-    if (kind === 'api' && /^(-X|--method=)./.test(t)) { method = need(a).replace(/^(-X|--method=)/, '').toUpperCase(); continue; }
+    if (kind === 'api' && (t === '-X' || t === '--method')) {
+      const v = args[++j]; if (!v || v.dyn) methodDyn = true; else method = v.text.toUpperCase(); continue;
+    }
+    if (kind === 'api' && /^(-X|--method=)./.test(t)) {
+      if (a.dyn) methodDyn = true; else method = t.replace(/^(-X|--method=)/, '').toUpperCase(); continue;
+    }
     if (t.startsWith('-')) { flags.add(t.split('=')[0]); if (!t.includes('=') && argSet.has(t)) j++; continue; }
     pos.push(a);
   }
-  if (args.some((a) => a.udyn)) return 'opaque';
-  if (kind === 'api') return ghApi(args, pos, method, repo, repoDyn, st, out);
+  if (kind === 'api') return ghApi(allArgs, pos, method, methodDyn, repo, repoDyn, st, out);
+  if (allArgs.some((a) => a.udyn)) return 'opaque';
   if (flags.has('--disable-auto')) return null;
   if (st.cdOpaque || repoDyn) return 'opaque';
   let pr = null;
@@ -383,14 +459,17 @@ function parseGh(args, st, env, out) {
   return null;
 }
 
-function ghApi(args, pos, method, repo, repoDyn, st, out) {
+function ghApi(args, pos, method, methodDyn, repo, repoDyn, st, out) {
   if (!pos.length) return null;
-  const endpoint = need(pos[0]);
+  if (pos[0].dyn) return 'maybe';
+  const endpoint = pos[0].text;
   if (endpoint === 'graphql') {
     return args.some((a) => /mergePullRequest|enablePullRequestAutoMerge/.test(a.text)) ? 'opaque' : null;
   }
   const m = /^\/?repos\/([^/]+)\/([^/]+)\/pulls\/(\d+)\/merge\/?$/.exec(endpoint);
-  if (!m || method !== 'PUT') return null;
+  if (!m) return null;
+  if (methodDyn || args.some((a) => a.udyn)) return 'opaque';
+  if (method !== 'PUT') return null;
   if (st.cdOpaque) return 'opaque';
   let r = `${m[1]}/${m[2]}`;
   if (m[1] === '{owner}' || m[2] === '{repo}') {
@@ -430,11 +509,17 @@ function segment(it, st, out) {
     const t = k < ws.length ? ws[k].text : '';
     if (ws[k] && ws[k].dyn) return opaque();
     if (t === 'command' || t === 'nohup' || t === 'builtin' || t === 'sudo') {
-      k++; while (k < ws.length && ws[k].text.startsWith('-')) k++; continue;
+      k++;
+      while (k < ws.length && ws[k].text.startsWith('-')) k += t === 'sudo' && /^-[ugpCDhrtUTR]$/.test(ws[k].text) ? 2 : 1;
+      continue;
     }
     if (t === 'env') {
       k++;
-      while (k < ws.length && ws[k].text.startsWith('-')) k += ws[k].text === '-u' ? 2 : 1;
+      while (k < ws.length && ws[k].text.startsWith('-')) {
+        // -C/--chdir moves the command elsewhere; -S re-splits a string into a command: unreadable.
+        if (/^(-[a-zA-Z]*[CS]|--chdir|--split-string)/.test(ws[k].text)) return opaque();
+        k += ws[k].text === '-u' ? 2 : 1;
+      }
       continue;
     }
     if (t === 'timeout' || t === 'nice') {
@@ -454,20 +539,22 @@ function segment(it, st, out) {
     let next = null;
     for (const a of args) {
       if (a.text.startsWith('GH_REPO=')) next = { ...(next || st), ghRepo: { text: a.text.slice(8), dyn: a.dyn } };
+      if (/^(GIT_DIR|GIT_WORK_TREE)(=|$)/.test(a.text)) next = { ...(next || st), gitDir: true };
     }
     return next;
   }
   if (name === 'unset' && args.some((a) => a.text === 'GH_REPO')) return { ...st, ghRepo: null };
   if (EXECS.has(name)) return opaque();
+  let verdict = null;
   try {
-    let verdict = null;
-    if (name === 'git') verdict = parseGit(args, st, out);
+    if (name === 'git') verdict = parseGit(args, st, env, out);
     else if (name === 'gh') verdict = parseGh(args, st, env, out);
-    if (verdict === 'opaque') opaque();
   } catch (e) {
     if (!(e instanceof Opaque)) throw e;
-    opaque();
+    verdict = 'opaque';  // need() throws only inside an already-classified guarded call
   }
+  if (verdict === 'opaque') out.opaque.push(it.raw);  // guarded and unreadable: listed even with no MENTION hit
+  else if (verdict === 'maybe') opaque();
   return null;
 }
 
@@ -489,7 +576,7 @@ function walk(src, out, initial) {
 
 function parseCommand(cmd) {
   const out = { merges: [], pushes: [], branches: [], commits: [], opaque: [] };
-  walk(String(cmd == null ? '' : cmd), out, { dir: null, cdOpaque: false, ghRepo: null });
+  walk(String(cmd == null ? '' : cmd), out, { dir: null, cdOpaque: false, ghRepo: null, gitDir: false });
   return out;
 }
 

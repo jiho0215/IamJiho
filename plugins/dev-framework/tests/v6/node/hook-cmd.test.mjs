@@ -221,6 +221,66 @@ test('comments are ignored', () => {
   assert.deepEqual(parseCommand('ls # git push'), r({}));
 });
 
+// --- fix round 1 (review): every probed command gets a row ---
+test('F1: -R/--repo before pr or between pr and merge', () => {
+  const m5 = r({ merges: [merge({ pr: 5, repo: 'acme/api' })] });
+  assert.deepEqual(parseCommand('gh --repo acme/api pr merge 5'), m5);
+  assert.deepEqual(parseCommand('gh -R acme/api pr merge 5'), m5);
+  assert.deepEqual(parseCommand('gh pr --repo acme/api merge 5'), m5);
+  assert.deepEqual(parseCommand('gh --repo=acme/api pr merge 5'), m5);
+  assert.deepEqual(parseCommand('gh -Racme/api pr merge 5'), m5);
+  assert.deepEqual(parseCommand('gh -R acme/api pr view 5'), r({}));
+});
+test('F2: an unreadable guarded call is opaque even when the raw text misses MENTION', () => {
+  assert.deepEqual(parseCommand('git checkout -q -b "$B"'), r({ opaque: ['git checkout -q -b "$B"'] }));
+  assert.deepEqual(parseCommand('git switch -q -c $B'), r({ opaque: ['git switch -q -c $B'] }));
+  assert.deepEqual(parseCommand('cd $D && git checkout -q -b t/41-x'), r({ opaque: ['git checkout -q -b t/41-x'] }));
+  // not a branch creation: still nothing, even after an unreadable cd
+  assert.deepEqual(parseCommand('cd $D && git checkout main'), r({}));
+  assert.deepEqual(parseCommand('git checkout "$B"'), r({}));
+});
+test('F3: stuck short flags', () => {
+  assert.deepEqual(parseCommand('git checkout -bt/41-x'), r({ branches: [branch({ name: 't/41-x', via: 'checkout' })] }));
+  assert.deepEqual(parseCommand('git switch -ct/41-x'), r({ branches: [branch({ name: 't/41-x', via: 'switch' })] }));
+  assert.deepEqual(parseCommand('git checkout -qb t/41-x'), r({ branches: [branch({ name: 't/41-x', via: 'checkout' })] }));
+  assert.deepEqual(parseCommand('git worktree add -bt/41-x ../wt'), r({ branches: [branch({ name: 't/41-x', via: 'worktree-add' })] }));
+  assert.deepEqual(parseCommand('git worktree add -fB t/41-x ../wt'), r({ branches: [branch({ name: 't/41-x', via: 'worktree-add' })] }));
+});
+test('F4: git branch copy/move creates the new name', () => {
+  assert.deepEqual(parseCommand('git branch -c main t/41-x'), r({ branches: [branch({ name: 't/41-x', via: 'branch' })] }));
+  assert.deepEqual(parseCommand('git branch -M t/41-x'), r({ branches: [branch({ name: 't/41-x', via: 'branch' })] }));
+  assert.deepEqual(parseCommand('git branch --move old t/41-x'), r({ branches: [branch({ name: 't/41-x', via: 'branch' })] }));
+});
+test('F5: push --all/--branches is opaque; --tags names refs/tags/*', () => {
+  assert.deepEqual(parseCommand('git push --all origin'), r({ opaque: ['git push --all origin'] }));
+  assert.deepEqual(parseCommand('git push --branches origin'), r({ opaque: ['git push --branches origin'] }));
+  assert.deepEqual(parseCommand('git push --tags origin'), r({ pushes: [push({ remote: 'origin', refspecs: ['refs/tags/*'] })] }));
+});
+test('F6: GIT_DIR / GIT_WORK_TREE make a guarded git call opaque', () => {
+  assert.deepEqual(parseCommand('GIT_DIR=../x/.git git push origin main'), r({ opaque: ['GIT_DIR=../x/.git git push origin main'] }));
+  assert.deepEqual(parseCommand('GIT_WORK_TREE=../x git commit -m y'), r({ opaque: ['GIT_WORK_TREE=../x git commit -m y'] }));
+  assert.deepEqual(parseCommand('export GIT_DIR=../x/.git; git push'), r({ opaque: ['git push'] }));
+  assert.deepEqual(parseCommand('git --git-dir=../x/.git push'), r({ opaque: ['git --git-dir=../x/.git push'] }));
+});
+test('F7: global options that take a value; unknown ones are opaque', () => {
+  assert.deepEqual(parseCommand('git --attr-source HEAD push origin main'),
+    r({ pushes: [push({ remote: 'origin', refspecs: ['main'] })] }));
+  assert.deepEqual(parseCommand('git --exec-path=/x push origin main'),
+    r({ pushes: [push({ remote: 'origin', refspecs: ['main'] })] }));
+  assert.deepEqual(parseCommand('git --frobnicate HEAD push origin main'), r({ opaque: ['git --frobnicate HEAD push origin main'] }));
+  assert.deepEqual(parseCommand('git --frobnicate HEAD status'), r({}));
+});
+test('F8: env -C/--chdir/-S are opaque; sudo -u consumes its value', () => {
+  assert.equal(parseCommand('env -C ../api git push').opaque.length, 1);
+  assert.equal(parseCommand('env --chdir=../api git push').opaque.length, 1);
+  assert.equal(parseCommand("env -S 'git push'").opaque.length, 1);
+  assert.deepEqual(parseCommand('sudo -u bob git push origin x'), r({ pushes: [push({ remote: 'origin', refspecs: ['x'] })] }));
+});
+test('F11: gh -R x pr merge; git --no-pager push', () => {
+  assert.deepEqual(parseCommand('gh -R acme/api pr merge 12 --auto'), r({ merges: [merge({ pr: 12, repo: 'acme/api', auto: true })] }));
+  assert.deepEqual(parseCommand('git --no-pager push origin t/41-x'), r({ pushes: [push({ remote: 'origin', refspecs: ['t/41-x'] })] }));
+});
+
 test('bin/hook-parse prints parseCommand as JSON', () => {
   const out = execFileSync(process.execPath, [join(here, '../../../bin/hook-parse')],
     { input: 'git -C ../api push origin t/41-x', encoding: 'utf8' });
