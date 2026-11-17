@@ -78,5 +78,20 @@ grep -q 'only the lease holder merges plan PRs' <<<"$ERR" || fail "lease text: $
 : > "$LOG"; STUB_LEASE_RC=4 run 'gh pr merge 2 --repo acme/api'; expect 0 "lease not consulted for code repos"
 : > "$LLOG"; run 'gh pr merge 2 --repo acme/api'; [ ! -s "$LLOG" ] || fail "lease called for code repo"
 
+# fix round 1
+run 'gh api graphql -f query="mutation{enablePullRequestAutoMerge(input:{pullRequestId:\"x\"}){clientMutationId}}"'; expect 2 "graphql auto-merge is opaque and blocks"
+run 'g=gh; $g pr merge 2 --repo acme/api'; expect 2 "R12 dynamic command word"
+run 'gh pr merge 2 --repo github.com/acme/api'; expect 0 "repo as github.com/acme/api"
+run 'gh pr merge 1 --repo https://github.com/acme/api.git'; expect 2 "repo as https URL is gated (refused PR)"
+run 'gh pr merge --repo acme/api'; expect 2 "no PR number"
+grep -q 'give the PR number' <<<"$ERR" || fail "no-pr text: $ERR"
+# a broken parser: a fake node first on PATH
+mkdir -p "$TMP/badnode"; printf '#!/bin/bash\nexit 1\n' > "$TMP/badnode/node"; chmod +x "$TMP/badnode/node"
+OLDP="$PATH"; PATH="$TMP/badnode:$PATH"
+run 'gh pr merge 2 --repo acme/api'; expect 2 "parser failure on a merge-ish command blocks"
+run 'echo right'; expect 0 "parser failure on an unrelated command"
+run 'gh pr view 3'; expect 0 "parser failure on gh non-merge"
+PATH="$OLDP"
+
 unset DEVFW_CORE_DIR; run 'gh pr merge 1 --repo acme/api'; expect 0 "DEVFW_CORE_DIR unset"
 echo "PASS: merge-gate-hook"

@@ -288,3 +288,9 @@ test('bin/hook-parse prints parseCommand as JSON', () => {
     { input: 'git -C ../api push origin t/41-x', encoding: 'utf8' });
   assert.deepEqual(JSON.parse(out), r({ pushes: [push({ dir: '../api', remote: 'origin', refspecs: ['t/41-x'] })] }));
 });
+
+test('R12: dynamic command word with a guarded verb is opaque without a MENTION hit', () => {
+  assert.deepEqual(parseCommand('g=gh; $g pr merge 5 --repo acme/api').opaque, ['$g pr merge 5 --repo acme/api']);
+  assert.deepEqual(parseCommand('$(echo gh) PR MERGE 5').opaque, ['$(echo gh) PR MERGE 5']);
+  assert.deepEqual(parseCommand('$g status').opaque, []);
+});

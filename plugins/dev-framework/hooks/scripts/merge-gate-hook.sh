@@ -11,14 +11,18 @@ hook_init merge-gate-hook
 [ -n "$HOOK_CORE" ] || exit 0
 [ "$HOOK_TOOL" = Bash ] || exit 0
 CMD=$(hook_field .tool_input.command)
-grep -Eq 'gh|pulls/' <<<"$CMD" || exit 0
+grep -Eiq 'gh|pulls/|merge' <<<"$CMD" || exit 0
 
 PARSED=$(node "$(devfw_path "$HOOK_LIB_DIR/../../bin/hook-parse")" <<<"$CMD" | tr -d '\r') || PARSED=""
 PARSER_OK=1
-if [ -z "$PARSED" ] || ! jq -e . >/dev/null 2>&1 <<<"$PARSED"; then PARSER_OK=0; fi
+if [ -z "$PARSED" ] || ! jq -e . >/dev/null 2>&1 <<<"$PARSED"; then
+  PARSER_OK=0
+  # the parser failed: only a command that looks like a merge is in scope
+  grep -Eiq 'merge|pulls/' <<<"$CMD" || exit 0
+fi
 if [ "$PARSER_OK" -eq 1 ]; then
   NMERGE=$(jq -r '.merges | length' <<<"$PARSED" | tr -d '\r')
-  NOPAQUE=$(jq -r '[.opaque[] | select(test("gh.*merge|pulls/.*merge"))] | length' <<<"$PARSED" | tr -d '\r')
+  NOPAQUE=$(jq -r '[.opaque[] | select(test("merge";"i"))] | length' <<<"$PARSED" | tr -d '\r')
   [ "$NMERGE" -gt 0 ] || [ "$NOPAQUE" -gt 0 ] || exit 0
 fi
 
@@ -30,14 +34,19 @@ MANAGED=$(hook_managed_repos) || hook_block "cannot read the config; not allowin
 PLAN_REPO=$(hook_cfg '.plan.repo') || hook_block "cannot read the config; not allowing a merge"
 BIN="${DEVFW_BIN_DIR:-$HOOK_LIB_DIR/../../bin}"
 CORE_W=$(devfw_path "$HOOK_CORE")
-ERRF=$(mktemp); trap 'rm -f "$ERRF"' EXIT
+ERRF=$(mktemp)
+_done() { rm -f "$ERRF"; }
+eval "$(declare -f hook_block | sed '1s/hook_block/_hb_orig/')"
+hook_block() { rm -f "$ERRF"; _hb_orig "$@"; }
 
 while IFS= read -r m; do
   [ -n "$m" ] || continue
   pr=$(jq -r '.pr' <<<"$m" | tr -d '\r'); repo=$(jq -r '.repo // empty' <<<"$m" | tr -d '\r')
   auto=$(jq -r '.auto' <<<"$m" | tr -d '\r')
+  [ "$pr" != null ] || hook_block "give the PR number: gh pr merge <n> --repo <owner/name>"
   [ "$auto" != true ] || hook_block "never use gh pr merge --auto (it merges at once here)"
   [ -n "$repo" ] || hook_block "pass --repo <owner/name>; the repo is not inferred"
+  repo=${repo#https://}; repo=${repo#http://}; repo=${repo#github.com/}; repo=${repo%/}; repo=${repo%.git}
   managed=0
   while IFS= read -r r; do [ -n "$r" ] && [ "${r,,}" = "${repo,,}" ] && managed=1; done <<<"$MANAGED"
   [ "$managed" -eq 1 ] || continue
@@ -61,4 +70,5 @@ while IFS= read -r m; do
   [ "${#reasons[@]}" -gt 0 ] || reasons=("merge-gate refused PR $pr in $repo")
   hook_block "${reasons[0]}" "${reasons[@]:1}"
 done < <(jq -c '.merges[]' <<<"$PARSED" | tr -d '\r')
+_done
 exit 0

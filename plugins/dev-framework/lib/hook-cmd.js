@@ -508,7 +508,12 @@ function segment(it, st, out) {
       k++;
     }
     const t = k < ws.length ? ws[k].text : '';
-    if (ws[k] && ws[k].dyn) return opaque();
+    if (ws[k] && ws[k].dyn) {
+      // R12: a dynamic command word (g=gh; $g pr merge) hides the program: listed whenever a later word is a
+      // verb we guard, even with no MENTION hit.
+      if (ws.slice(k + 1).some((w) => /^(merge|push|commit|checkout|switch|worktree|branch)$/i.test(w.text))) { out.opaque.push(it.raw); return null; }
+      return opaque();
+    }
     if (t === 'command' || t === 'nohup' || t === 'builtin' || t === 'sudo') {
       k++;
       while (k < ws.length && ws[k].text.startsWith('-')) k += t === 'sudo' && /^-[ugpCDhrtUTR]$/.test(ws[k].text) ? 2 : 1;
