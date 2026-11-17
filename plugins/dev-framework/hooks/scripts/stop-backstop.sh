@@ -5,10 +5,20 @@
 # or no <git-dir>/devfw/run.json -> exit 0 (run.json's presence is the scope; DEVFW_CORE_DIR is not needed).
 # (3) stop-check exit 0 (continue) -> exit 0. (4) exit 10: a handback.json with the same code and round -> exit 0,
 # else block. (5) exit 1/2, unreadable output, or a malformed run.json -> block once with the error.
+# (6) jq missing (ruling R24): stop_hook_active true or no run.json -> exit 0, else block once.
 # Not fail-closed: the worst it can do is make the session continue once.
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_v6-hook.sh"
 hook_init stop-backstop 25
-command -v jq >/dev/null 2>&1 || exit 0
+if [ "$HOOK_HAVE_JQ" -eq 0 ]; then
+  # R24 (I2): without jq, read the raw input. Never twice in a row: stop_hook_active true -> allow; no run.json in
+  # the cwd's git dir -> allow; else block ONCE (the retry carries stop_hook_active true).
+  grep -Eq '"stop_hook_active"[[:space:]]*:[[:space:]]*true' <<<"${HOOK_JSON:-}" && exit 0
+  RAWCWD=$(hook_raw_str cwd)
+  [ -n "$RAWCWD" ] || exit 0
+  GD=$(git -C "$(devfw_path "$RAWCWD")" rev-parse --absolute-git-dir 2>/dev/null) || exit 0
+  [ -f "${GD//$'\r'/}/devfw/run.json" ] || exit 0
+  hook_block "jq not found: cannot check this cycle run's stop state; install jq, then post the hand-back if one is due"
+fi
 [ "$(hook_field .stop_hook_active)" != true ] || exit 0
 [ -n "$HOOK_CWD" ] || exit 0
 GD=$(git -C "$(devfw_path "$HOOK_CWD")" rev-parse --absolute-git-dir 2>/dev/null) || exit 0

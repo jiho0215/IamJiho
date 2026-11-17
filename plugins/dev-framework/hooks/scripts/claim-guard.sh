@@ -3,12 +3,13 @@
 # checkout -b, git switch -c, git branch <new>) in a managed repo unless origin holds a claim for issue <n>
 # (a commit in base..branch carrying "Claim-Issue: <n>"). Design 7a B1: it checks the claim exists and names this
 # ticket, not who made it.
-# Rules: (1) no DEVFW_CORE_DIR, or no worktree|checkout|switch|branch in the command -> allow. (2) scope, with no
-# network and nothing that can fail: each parsed branch named ^t/[1-9][0-9]*- whose dir (else HOOK_CWD) has a raw
-# origin URL naming a managed repo; none -> allow. An opaque segment that would create/check out a branch is in
-# scope when HOOK_CWD is managed, a cd / -C argument is non-literal, or the text names a managed slug; in scope +
-# opaque + (the text mentions t/ or the segment is non-literal) blocks. A parser failure blocks only when the
-# text also mentions t/. (3) fail closed; hook_claim_ok: 3 blocks "no claim", 1 blocks "cannot verify".
+# Rules: (1) no DEVFW_CORE_DIR, or no worktree|checkout|switch|branch|git in the command -> allow (jq missing: a
+# branch verb blocks, else allow; ruling R24). (2) scope, with no network and nothing that can fail: each parsed
+# branch named ^t/[1-9][0-9]*- whose dir (else HOOK_CWD) has a raw origin URL naming a managed repo; none -> allow.
+# An unreadable branch command (an opaque segment naming a branch verb, or a git alias whose expansion is a
+# creation form; rulings R20, R25) is in scope when the parser cannot read its dir, when its literal dir or
+# HOOK_CWD is managed, or when the text names a managed slug; in scope + unreadable + (the text mentions t/ or a
+# segment is non-literal) blocks. A parser failure blocks only when the text also mentions t/. (3) fail closed; hook_claim_ok: 3 blocks "no claim", 1 blocks "cannot verify".
 # Rule 4 (EnterWorktree) is NOT implemented: Q5 (is it hookable) was never measured (controller ruling R5).
 # KNOWN GAP: the parser emits creation forms only; a plain `git checkout t/41-x` / `git switch t/41-x` of an
 # existing branch is not a Branch entry, so it is not seen here. Network calls are bounded by
@@ -16,22 +17,24 @@
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_v6-hook.sh"
 hook_init claim-guard 25
 [ -n "$HOOK_CORE" ] || exit 0
+hook_need_jq 'worktree|checkout|switch|branch'
 [ "$HOOK_TOOL" = Bash ] || exit 0
 CMD=$(hook_field .tool_input.command)
-grep -Eiq 'worktree|checkout|switch|branch' <<<"$CMD" || exit 0
+# `git` too: a git alias (git co = checkout -b) or a wrapper names no branch verb (ruling R25)
+grep -Eiq 'worktree|checkout|switch|branch|\bgit\b' <<<"$CMD" || exit 0
 
-PARSED=$(node "$(devfw_path "$HOOK_LIB_DIR/../../bin/hook-parse")" <<<"$CMD" | tr -d '\r') || PARSED=""
-if [ -z "$PARSED" ] || ! jq -e . >/dev/null 2>&1 <<<"$PARSED"; then
+hook_parse "$CMD"
+if [ -z "$PARSED" ]; then
   grep -q 't/' <<<"$CMD" || exit 0
   hook_fail_closed
   hook_block "cannot read this branch command exactly; write it as: git worktree add <dir> -b t/<n>-<slug>"
 fi
 
-_abs() {
-  case "$1" in
-    /*|[A-Za-z]:*) printf '%s\n' "$1" ;;
-    *) if [ -n "$HOOK_CWD" ]; then printf '%s/%s\n' "$HOOK_CWD" "$1"; else printf '%s\n' "$1"; fi ;;
-  esac
+# _managed_dir <dir>: 0 when <dir>'s origin is a managed repo, or the config cannot be read (in scope).
+_managed_dir() {
+  local r
+  r=$(hook_repo_of "$1") || return 0
+  [ -n "$r" ]
 }
 
 # Scope pass: ticket-named branches in a managed repo (an unreadable config counts as in scope).
@@ -41,18 +44,20 @@ while IFS= read -r b; do
   name=$(jq -r '.name // empty' <<<"$b" | tr -d '\r')
   [[ "$name" =~ ^t/[1-9][0-9]*- ]] || continue
   d=$(jq -r '.dir // empty' <<<"$b" | tr -d '\r')
-  if [ -n "$d" ]; then d=$(_abs "$d"); else d="${HOOK_CWD:-.}"; fi
+  if [ -n "$d" ]; then d=$(hook_abs "$d"); else d="${HOOK_CWD:-.}"; fi
   rc=0; repo=$(hook_repo_of "$d") || rc=1
   if [ "$rc" -ne 0 ] || [ -n "$repo" ]; then INSCOPE+=("$d"$'\t'"$name"); fi
 done < <(jq -c '.branches[]' <<<"$PARSED" | tr -d '\r')
 
+# R20 + R25: an unreadable branch command (opaque segment, or a git alias expanding to one) is in scope when the
+# parser cannot read its dir, when its literal dir or the hook cwd is managed, or when the text names a managed
+# slug; in scope, it matters only when it could name a ticket branch (the text mentions t/, or a segment is
+# non-literal).
 OPAQUE_HIT=0
-OPQ=$(jq -r '.opaque[] | select(test("worktree|checkout|switch|branch";"i"))' <<<"$PARSED" | tr -d '\r')
-if [ -n "$OPQ" ]; then
-  rc=0; orepo=$(hook_repo_of "${HOOK_CWD:-.}") || rc=1
-  if [ "$rc" -ne 0 ] || [ -n "$orepo" ]; then OPAQUE_HIT=1; fi
-  grep -Eq '(^|[;&|({[:space:]])cd[[:space:]]+[^;&|]*[$`(]' <<<"$CMD" && OPAQUE_HIT=1
-  grep -Eq '(^|[[:space:]])-C[[:space:]]*[^;&|[:space:]]*[$`(]' <<<"$CMD" && OPAQUE_HIT=1
+# an alias counts only when its expansion is a creation form (an alias for plain `checkout` is the DWIM gap, README)
+hook_opaque_rows 'worktree|checkout|switch|branch' 'worktree|-[bBcC]\b|--(force-)?create|--orphan|^\s*branch\b|^!.*(checkout|switch|branch)'
+if [ "${#HOOK_OPQ_ROWS[@]}" -gt 0 ]; then
+  hook_opaque_hit _managed_dir && OPAQUE_HIT=1
   rc=0; mrepos=$(hook_managed_repos) || rc=1
   if [ "$rc" -ne 0 ]; then OPAQUE_HIT=1; fi
   while IFS= read -r m; do
@@ -60,7 +65,7 @@ if [ -n "$OPQ" ]; then
     if [[ "${CMD,,}" == *"${m,,}"* ]]; then OPAQUE_HIT=1; fi
   done <<<"$mrepos"
   if [ "$OPAQUE_HIT" -eq 1 ]; then
-    # in scope: it matters only when it could name a ticket branch (mentions t/, or the name is non-literal)
+    OPQ=$(jq -r '.opaque[], (.aliases // [])[].raw' <<<"$PARSED" | tr -d '\r')
     if ! grep -q 't/' <<<"$CMD" && ! grep -Eq '[$`(]' <<<"$OPQ"; then OPAQUE_HIT=0; fi
   fi
 fi

@@ -224,6 +224,16 @@ GH_MODE=otherissue run "$W/src/a.js"; expect 2 "comment belongs to issue 42"
 echo '{"plan":{"repo":"acme/core"},"repos":{"api":{"github":"acme/api"}},"github":{"trustedAuthors":["Trusty"]}}' > "$TMP/trust.json"
 DEVFW_CONFIG="$TMP/trust.json" GH_MODE=login run "$W/src/a.js"; expect 0 "NONE but listed in github.trustedAuthors"
 
+# I2 / R24: jq missing blocks only an edit on a claim branch; elsewhere it allows
+. "$DIR/nojq-path.sh"; NOJQ_PATH=$(nojq_path "$TMP/nojq") || fail "setup: a PATH without jq"
+NB="$(P "$TMP")/NB"; g init -q "$NB"
+nojq() { ERR=$(printf '{"tool_name":"Edit","cwd":"%s","tool_input":{"file_path":"%s"}}' "$2" "$1" | TMPDIR="$TMP/hooktmp" PATH="$NOJQ_PATH" bash "$HOOK" 2>&1 >/dev/null); RC=$?; ERR="${ERR//$'\r'/}"; }
+nojq "$W/src/a.js" "$W"; expect 2 "R24: no jq, edit on a claim branch"
+says 'devfw freeze-gate: jq not found' "R24 text"
+nojq "src/new/x.js" "$W"; expect 2 "R24: no jq, relative path of a new file on a claim branch"
+nojq "$NB/src/a.js" "$NB"; expect 0 "R24: no jq, repo not on a claim branch"
+nojq "$(P "$TMP")/loose.txt" "$(P "$TMP")"; expect 0 "R24: no jq, not in a git repo"
+
 # HOOK_CLEANUP: no run (allowed, blocked, cached, gh failure, timeout) left its temp copy of the doc behind
 left=$(ls -A "$TMP/hooktmp"); [ -z "$left" ] || fail "temp files left behind: $left"
 echo "PASS freeze-gate"

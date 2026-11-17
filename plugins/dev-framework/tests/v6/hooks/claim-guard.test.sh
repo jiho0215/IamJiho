@@ -38,6 +38,22 @@ expect() { [ "$RC" = "$1" ] || fail "$2: rc=$RC want $1 (stderr: $ERR)"; }
 says() { grep -q -- "$1" <<<"$ERR" || fail "$2: stderr lacks '$1': $ERR"; }
 W="$TMP/W"; U="$TMP/U"
 
+# --- final-review fences first (fail fast). C1 / R20: unreadable dirs from an UNMANAGED cwd; one per trigger ---
+HOME="$TMP" run "$U" 'cd ~/W && git checkout -b t/43-z'; expect 2 "C1: cd ~/<managed> resolves (home)"
+says 't/43-… has no claim on origin' "C1: ~ read exactly"
+HOME="$TMP" run "$U" 'cd ~/W && git checkout -b t/41-x origin/t/41-x'; expect 0 "C1: cd ~/<managed>, claimed"
+run "$U" 'cd ~nosuchuser/W && git checkout -b t/43-z'; expect 2 "R20 trigger: unknown dir (~user)"
+says 'cannot read this branch command exactly' "unknown-dir text"
+run "$U" 'pushd $D && git switch -c t/43-z'; expect 2 "R20 trigger: pushd <dynamic>"
+run "$U" "cd '$TMP'/W* && git switch -c t/43-z"; expect 2 "R20 trigger: glob"
+run "$U" "xargs git -C '$W' switch -c t/43-z < /dev/null"; expect 2 "R20 trigger: opaque segment's literal -C is managed"
+run "$U" "xargs git -C '$U' switch -c t/43-z < /dev/null"; expect 0 "opaque segment's literal -C is unmanaged"
+run "$U" "stdbuf -oL git -C '$W' checkout -b t/43-z"; expect 2 "R25: unknown wrapper"
+git -C "$W" config alias.nb 'checkout -b'; git -C "$W" config alias.co checkout
+run "$W" 'git nb t/43-z'; expect 2 "R25: alias for checkout -b"
+run "$W" 'git co t/41-x'; expect 0 "R25: alias for plain checkout is the documented DWIM gap, not a creation"
+git -C "$W" config --unset alias.nb; git -C "$W" config --unset alias.co
+
 run "$W" 'git worktree add ../wt -b t/41-x origin/t/41-x'; expect 0 "claimed worktree add"
 run "$W" 'git checkout -b t/41-x origin/t/41-x'; expect 0 "claimed checkout -b"
 run "$W" 'git worktree add ../wt -b t/43-z origin/main'; expect 2 "unclaimed worktree add"

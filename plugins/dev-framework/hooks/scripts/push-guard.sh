@@ -2,41 +2,41 @@
 # push-guard: PreToolUse hook (v6). Blocks, per `git push` in a managed repo: force / delete (unless
 # hooks.pushGuard.allowForce), a push to the repo's default branch, a t/<n>-... push with no claim, and a push
 # of a t/<n>-... branch while issue <n> carries `needs-ack`.
-# Rules: (1) no DEVFW_CORE_DIR, or no `push` in the command -> allow. Scope, with no network and nothing that
-# can fail: a parsed push whose remote (the push's, else the branch's upstream remote, else origin) has a raw
-# URL naming a managed repo; an opaque segment mentioning push is in scope when HOOK_CWD is managed. RESIDUAL,
-# accepted: an opaque command run from an unmanaged cwd that pushes elsewhere is not seen. A parser failure on
-# a push-looking command blocks. (2) fail closed. (3) force/del blocks. (4) destination: the refspec's dst, or
-# the current branch (HEAD / no refspec; detached blocks); refs/tags/* and other non-branch refs skip 5-7.
-# (5) default branch blocks. (6) t/<n>-... needs `hook_claim_ok`. (7) the issue must not be `needs-ack`.
+# Rules: (1) no DEVFW_CORE_DIR, or no `push`/`git` word in the command -> allow (jq missing: a `push` word
+# blocks, else allow; ruling R24). Scope, with no network and nothing that can fail: a parsed push whose remote
+# (the push's, else the branch's upstream remote, else origin) has a raw URL naming a managed repo. An unreadable
+# push (an opaque segment mentioning push, or a git alias whose expansion mentions push; rulings R20, R25) is in
+# scope when the parser cannot read its dir (dynamic cd/pushd/-C, popd, ~user, glob, GIT_DIR), when its literal
+# dir or HOOK_CWD is managed, or when the text names a managed slug. RESIDUAL, accepted: an eval/sh -c string
+# that pushes elsewhere, run from an unmanaged cwd and naming nothing managed, is not seen. A parser failure on a
+# push-looking command blocks. (2) fail closed. (3) force/del blocks. (4) destination (ruling R21, git's way):
+# the refspec's dst, or the current branch (no refspec; HEAD and @; detached blocks); refs/tags/* and
+# refs/devfw/* skip 5-7; other refs/* block; heads/<x> is checked as <x> and as heads/<x>; a dst that is not a
+# valid branch name blocks. (5) default branch blocks. (6) t/<n>-... needs `hook_claim_ok`. (7) the issue must
+# not be `needs-ack`.
 # Network calls (claim fetch, gh) are bounded by DEVFW_HOOK_NET_TIMEOUT (20s); a timeout blocks.
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_v6-hook.sh"
 hook_init push-guard 25
 [ -n "$HOOK_CORE" ] || exit 0
+hook_need_jq '\bpush\b'
 [ "$HOOK_TOOL" = Bash ] || exit 0
 CMD=$(hook_field .tool_input.command)
-grep -Eiq '\bpush\b' <<<"$CMD" || exit 0
+# `git` too: a git alias (git p = push) or a wrapper (stdbuf git ...) names no `push` (ruling R25)
+grep -Eiq '\bpush\b|\bgit\b' <<<"$CMD" || exit 0
 
-PARSED=$(node "$(devfw_path "$HOOK_LIB_DIR/../../bin/hook-parse")" <<<"$CMD" | tr -d '\r') || PARSED=""
-if [ -z "$PARSED" ] || ! jq -e . >/dev/null 2>&1 <<<"$PARSED"; then
+hook_parse "$CMD"
+if [ -z "$PARSED" ]; then
+  grep -Eiq '\bpush\b' <<<"$CMD" || exit 0
   hook_fail_closed
   hook_block "cannot read this push command exactly; write it as: git push <remote> <branch>"
 fi
-
-# _abs <path>: absolute against HOOK_CWD when relative.
-_abs() {
-  case "$1" in
-    /*|[A-Za-z]:*|\*) printf '%s\n' "$1" ;;
-    *) if [ -n "$HOOK_CWD" ]; then printf '%s/%s\n' "$HOOK_CWD" "$1"; else printf '%s\n' "$1"; fi ;;
-  esac
-}
 
 # _resolve <push-json>: sets P_DIR, P_REMOTE, P_REPO (managed owner/name or empty). Returns 1 on any error.
 _resolve() {
   local d r br
   d=$(jq -r '.dir // empty' <<<"$1" | tr -d '\r') || return 1
   r=$(jq -r '.remote // empty' <<<"$1" | tr -d '\r') || return 1
-  if [ -n "$d" ]; then P_DIR=$(_abs "$d"); else P_DIR="${HOOK_CWD:-.}"; fi
+  if [ -n "$d" ]; then P_DIR=$(hook_abs "$d"); else P_DIR="${HOOK_CWD:-.}"; fi
   if [ -z "$r" ]; then
     br=$(git -C "$(devfw_path "$P_DIR")" symbolic-ref -q --short HEAD 2>/dev/null) || br=""
     [ -z "$br" ] || r=$(git -C "$(devfw_path "$P_DIR")" config --get "branch.$br.remote" 2>/dev/null) || r=""
@@ -48,20 +48,25 @@ _resolve() {
   P_REPO="${P_REPO//$'\r'/}"
 }
 
+# _managed_dir <dir>: 0 when <dir>'s origin is a managed repo, or the config cannot be read (in scope).
+_managed_dir() {
+  local r
+  r=$(hook_repo_of "$1") || return 0
+  [ -n "$r" ]
+}
+
 # Scope pass.
 INSCOPE=()
 while IFS= read -r p; do
   [ -n "$p" ] || continue
   if _resolve "$p"; then [ -z "$P_REPO" ] || INSCOPE+=("$p"); else INSCOPE+=("$p"); fi
 done < <(jq -c '.pushes[]' <<<"$PARSED" | tr -d '\r')
+# R15 + R20: an unreadable push (an opaque segment, or a git alias that expands to push) is in scope when the
+# parser cannot read its dir, when its dir or the hook cwd is managed, or when the text names a managed slug/URL.
 OPAQUE_HIT=0
-if [ "$(jq -r '[.opaque[] | select(test("push";"i"))] | length' <<<"$PARSED" | tr -d '\r')" -gt 0 ]; then
-  # R15 (mirrors R9): an opaque push is in scope when cwd is managed, a cd / -C argument is non-literal
-  # (unknowable dir), or the command text names a managed repo's slug or URL.
-  rc=0; orepo=$(hook_repo_of "${HOOK_CWD:-.}") || rc=1
-  if [ "$rc" -ne 0 ] || [ -n "$orepo" ]; then OPAQUE_HIT=1; fi
-  grep -Eq '(^|[;&|({[:space:]])cd[[:space:]]+[^;&|]*[$`(]' <<<"$CMD" && OPAQUE_HIT=1
-  grep -Eq '(^|[[:space:]])-C[[:space:]]*[^;&|[:space:]]*[$`(]' <<<"$CMD" && OPAQUE_HIT=1
+hook_opaque_rows 'push'
+if [ "${#HOOK_OPQ_ROWS[@]}" -gt 0 ]; then
+  hook_opaque_hit _managed_dir && OPAQUE_HIT=1
   rc=0; mrepos=$(hook_managed_repos) || rc=1
   if [ "$rc" -ne 0 ]; then OPAQUE_HIT=1; fi
   while IFS= read -r m; do
@@ -146,17 +151,26 @@ for p in "${INSCOPE[@]}"; do
     s="${s#+}"
     if [[ "$s" == *:* ]]; then dst="${s#*:}"; else dst="$s"; fi
     [ -n "$dst" ] || hook_block "cannot tell what this push updates"
-    if [ "$dst" = HEAD ]; then   # HEAD names the current branch, whatever push.default says
+    # R21: resolve the destination the way git does. @ and HEAD name the current branch, whatever push.default says.
+    if [ "$dst" = HEAD ] || [ "$dst" = @ ]; then
       dst=$(_current_branch "$P_DIR") || dst=""
       [ -n "$dst" ] || hook_block "cannot tell what this push updates"
+      dst="refs/heads/$dst"
     fi
     case "$dst" in
-      refs/tags/*) continue ;;
-      refs/heads/*) dst="${dst#refs/heads/}" ;;
+      refs/tags/*|refs/devfw/*) continue ;;   # not a branch
+      refs/heads/*) names=("${dst#refs/heads/}") ;;
       refs/*) hook_block "unsupported destination $dst; push a branch or a tag" ;;
+      # a short dst DWIMs against refs/<dst> first: heads/main is refs/heads/main (and, were that missing on the
+      # remote, refs/heads/heads/main): check every branch it can name
+      heads/*) names=("${dst#heads/}" "$dst") ;;
+      *) names=("$dst") ;;
     esac
-    case "$dst" in *\**|*\?*) hook_block "cannot tell what this push updates" ;; esac
-    _check_dst "$P_DIR" "$P_REPO" "$dst" "$P_REMOTE"
+    for b in "${names[@]}"; do
+      # anything git would not take as a branch name (~ ^ : ? * [ \, a glob, @{...}) cannot be resolved here
+      git check-ref-format "refs/heads/$b" >/dev/null 2>&1 || hook_block "cannot tell what this push updates ($dst); name the branch"
+      _check_dst "$P_DIR" "$P_REPO" "$b" "$P_REMOTE"
+    done
   done
 done
 exit 0

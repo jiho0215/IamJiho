@@ -18,29 +18,44 @@
 # it. It does not prove the owner typed it (the worker posts it with the owner's token; v6-design C1): convention.
 # Paths compare case-insensitively on Windows (msys/cygwin), like hook_under. codePaths entries are normalised
 # lexically; one that is empty, ".", absolute or climbs out with ".." blocks in-scope edits as a config error.
+# jq missing (ruling R24): an Edit-family call whose target's repo is on t/<n>-... blocks; anything else is allowed.
+# Bash file writes (cat >, sed -i, cp, ...) are NOT seen: this hook is wired to the Edit tools only (ruling R26).
 # Removed from v5: the SESSION_DIR pointer, bypass.json, the §11 prerequisites check (order is now `depends:`
 # plus the claim). gh is bounded by DEVFW_HOOK_NET_TIMEOUT (default 20s); a timeout blocks.
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_v6-hook.sh"
 hook_init freeze-gate 25
 [ -n "$HOOK_CORE" ] || exit 0
+
+# _parent_dir <path>: the nearest existing directory holding <path> (the file may be new); exits 0 when none.
+_parent_dir() {
+  local d up
+  d=$(dirname "$1")
+  while [ ! -d "$d" ]; do
+    up=$(dirname "$d"); [ "$up" != "$d" ] || exit 0; d="$up"
+  done
+  P_D="$d"
+}
+
+if [ "$HOOK_HAVE_JQ" -eq 0 ]; then
+  # R24: without jq, read the raw input; an edit whose repo is on a claim branch t/<n>-... blocks, anything else
+  # is allowed (the code-path and managed-repo tests need the config, which needs jq).
+  grep -Eq '"tool_name"[[:space:]]*:[[:space:]]*"(Edit|Write|MultiEdit|NotebookEdit)"' <<<"${HOOK_JSON:-}" || exit 0
+  RT=$(hook_raw_str file_path); [ -n "$RT" ] || RT=$(hook_raw_str notebook_path)
+  [ -n "$RT" ] || exit 0
+  RC_=$(hook_raw_str cwd)
+  _parent_dir "$(_hook_norm "$(hook_abs "$RT" "${RC_:-$PWD}")")"
+  RB=$(git -C "$(devfw_path "$P_D")" symbolic-ref -q --short HEAD 2>/dev/null) || exit 0
+  [[ "${RB//$'\r'/}" =~ ^t/[1-9][0-9]*- ]] || exit 0
+  hook_block "jq not found: cannot check the freeze doc for a code edit on ${RB//$'\r'/}; install jq"
+fi
+
 case "$HOOK_TOOL" in Edit|Write|MultiEdit|NotebookEdit) ;; *) exit 0 ;; esac
 TARGET=$(hook_field '.tool_input.file_path // .tool_input.notebook_path')
 [ -n "$TARGET" ] || exit 0
 
-# _abs <path>: absolute against HOOK_CWD when relative.
-_abs() {
-  case "$1" in
-    /*|[A-Za-z]:*|\\*) printf '%s\n' "$1" ;;
-    *) printf '%s/%s\n' "${HOOK_CWD:-$PWD}" "$1" ;;
-  esac
-}
-
 # ---- scope: local reads only ----
-TARGET=$(_hook_norm "$(_abs "$TARGET")")
-D=$(dirname "$TARGET")
-while [ ! -d "$D" ]; do
-  up=$(dirname "$D"); [ "$up" != "$D" ] || exit 0; D="$up"
-done
+TARGET=$(_hook_norm "$(hook_abs "$TARGET" "${HOOK_CWD:-$PWD}")")
+_parent_dir "$TARGET"; D="$P_D"
 TOP=$(git -C "$(devfw_path "$D")" rev-parse --show-toplevel 2>/dev/null) || exit 0
 TOP=$(_hook_norm "${TOP//$'\r'/}")
 [ -n "$TOP" ] && hook_under "$TARGET" "$TOP" || exit 0

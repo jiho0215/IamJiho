@@ -59,6 +59,19 @@ run "$(bash_ "git -C '$CORE' commit -m x" "$TMP")"; expect 2 "git -C core commit
 g init -q "$TMP/other"; mkdir -p "$TMP/other/docs/plan"; echo o > "$TMP/other/docs/plan/f"; g -C "$TMP/other" add docs/plan/f
 run "$(bash_ "git -C '$TMP/other' commit -m x")"; expect 0 "cwd in core, -C outside repo"
 run "$(bash_ 'cd "$D" && git commit -m x' "$TMP")"; expect 2 "R9: non-literal cd, cwd outside core"
+# C1 / R20: one fence per opaque-scope trigger, cwd outside core (the old regex missed ~, globs, pushd, popd)
+HOME="$TMP" run "$(bash_ 'cd ~/core && git commit -m x' "$TMP")"; expect 2 "C1: cd ~/core resolves into core (home)"
+grep -q lease <<<"$ERR" || fail "C1 ~ text: $ERR"
+run "$(bash_ 'cd ~nosuchuser/core && git commit -m x' "$TMP")"; expect 2 "R20 trigger: unknown dir (~user)"
+run "$(bash_ 'pushd $D && git commit -m x' "$TMP")"; expect 2 "R20 trigger: pushd <dynamic>"
+run "$(bash_ 'popd && git commit -m x' "$TMP")"; expect 2 "R20 trigger: popd"
+run "$(bash_ "cd '$TMP'/cor* && git commit -m x" "$TMP")"; expect 2 "R20 trigger: glob"
+run "$(bash_ "stdbuf -oL git -C '$CORE' commit -m x" "$TMP")"; expect 2 "R20 trigger: opaque segment's literal dir is core"
+run "$(bash_ "stdbuf -oL git -C '$TMP/other' commit -m x" "$TMP")"; expect 0 "opaque segment's literal dir outside core"
+git -C "$CORE" config alias.ci commit
+run "$(bash_ 'git ci -m x')"; expect 2 "R25: alias for commit in core"
+run "$(bash_ "git -C '$CORE' ci -m x" "$TMP")"; expect 2 "R25: alias of -C core, cwd outside"
+git -C "$CORE" config --unset alias.ci
 CM=$(cygpath -m "$CORE" 2>/dev/null || echo "$CORE")
 run "$(bash_ "cd '$CM' && eval \"git commit -m x\"" "$TMP")"; expect 2 "R9: opaque naming core path (C:/ form)"
 if command -v cygpath >/dev/null 2>&1; then

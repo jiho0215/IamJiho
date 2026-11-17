@@ -44,7 +44,40 @@ run() {  # run <cwd> <command>
 }
 expect() { [ "$RC" = "$1" ] || fail "$2: rc=$RC want $1 (stderr: $ERR)"; }
 says() { grep -q -- "$1" <<<"$ERR" || fail "$2: stderr lacks '$1': $ERR"; }
-W="$TMP/W"
+W="$TMP/W"; U="$TMP/U"
+
+# --- final-review fences first (they fail fast) ---
+# C1 / R20: forms whose dir the old regex triggers missed, run from an UNMANAGED cwd. With HOME=$TMP, ~/W is W.
+HOME="$TMP" run "$U" 'cd ~/W && git push origin main'; expect 2 "C1: cd ~/<managed> (home resolves it)"
+says 'merge to main goes through the merge gate' "C1: ~ is resolved, not just opaque"
+HOME="$TMP" run "$U" 'git -C ~/W push origin main'; expect 2 "C1: -C ~/<managed>"
+HOME="$TMP" run "$U" 'cd ~/U && git push --force origin main'; expect 0 "C1: cd ~/<unmanaged> resolves out of scope"
+run "$U" 'cd ~nosuchuser/W && git push origin main'; expect 2 "R20 trigger: ~user dir is unknown"
+says 'cannot read this push command exactly' "R20 unknown-dir text"
+run "$U" 'pushd $D && git push origin main'; expect 2 "R20 trigger: pushd <dynamic>"
+run "$U" 'popd && git push origin main'; expect 2 "R20 trigger: popd"
+run "$U" "cd '$TMP'/W* && git push origin main"; expect 2 "R20 trigger: glob in cd"
+run "$U" "cd '$TMP'/{W,X} && git push origin main"; expect 2 "R20 trigger: brace in cd"
+run "$U" "exec git -C '$W' push origin main"; expect 2 "C1: exec with a literal -C scopes against that dir"
+says 'merge to main goes through the merge gate' "exec is read exactly"
+# I4 / R25: unknown wrappers and aliases
+run "$U" "stdbuf -oL git -C '$W' push origin main"; expect 2 "R20 trigger: opaque segment's literal -C dir is managed"
+run "$U" "stdbuf -oL git -C '$U' push --force origin main"; expect 0 "opaque segment's literal -C dir is unmanaged"
+run "$W" 'winpty git push origin main'; expect 2 "R25: unknown wrapper in a managed cwd"
+git -C "$W" config alias.p push; git -C "$W" config alias.s status
+run "$W" 'git p origin main'; expect 2 "R25: git alias for push"
+says 'cannot read this push command exactly' "alias text"
+run "$U" "git -C '$W' p origin main"; expect 2 "R25: alias of the -C repo, unmanaged cwd"
+run "$W" 'git s'; expect 0 "R25: alias that is not a push"
+git -C "$W" config --unset alias.p; git -C "$W" config --unset alias.s
+# C2 / R21: destinations as git resolves them (W is on main)
+run "$W" 'git push origin @'; expect 2 "C2: @ is the current branch (main)"
+says 'merge to main goes through the merge gate' "@ text"
+run "$W" 'git push origin heads/main'; expect 2 "C2: heads/main DWIMs to refs/heads/main"
+run "$W" 'git push origin t/41-x:heads/main'; expect 2 "C2: src:heads/main"
+run "$W" 'git push origin t/41-x:refs/devfw/x'; expect 0 "refs/devfw/* is not a branch"
+run "$W" 'git push origin t/41-x:a..b'; expect 2 "R21: a dst git would not take as a branch"
+says 'cannot tell what this push updates' "unresolvable dst text"
 
 run "$W" 'git push origin t/41-x'; expect 0 "claimed, no needs-ack"
 run "$W" 'git push -u origin t/41-x:t/41-x'; expect 0 "claimed src:dst"

@@ -21,6 +21,16 @@ expect() { [ "$RC" = "$1" ] || fail "$2: rc=$RC want $1 (stderr: $ERR)"; }
 clean() { rm -f "$GD/devfw/handback.json"; }
 
 setrun
+# I2 / R24: jq missing (with DEVFW_CORE_DIR set) must never block twice in a row, and never outside a cycle run
+. "$DIR/nojq-path.sh"; NOJQ_PATH=$(nojq_path "$TMP/nojq") || fail "setup: a PATH without jq"
+nojq() {  # nojq <stop_hook_active> <cwd>
+  ERR=$(printf '{"hook_event_name":"Stop","stop_hook_active":%s,"cwd":"%s"}' "$1" "$2" | DEVFW_CORE_DIR="$TMP" PATH="$NOJQ_PATH" bash "$HOOK" 2>&1 >/dev/null); RC=$?; ERR="${ERR//$'\r'/}"
+}
+RP=$(cygpath -m "$REPO" 2>/dev/null || echo "$REPO")
+nojq false "$RP"; expect 2 "I2: no jq, run.json present: block once"
+grep -q '^devfw stop-backstop: jq not found' <<<"$ERR" || fail "I2 text: $ERR"
+nojq true "$RP"; expect 0 "I2: no jq, the retry (stop_hook_active true) ends the session"
+nojq false "$(cygpath -m "$TMP" 2>/dev/null || echo "$TMP")"; expect 0 "I2: no jq, no git repo / no run.json"
 { R 1 t1 '["a","b"]'; R 2 t2 '["a"]'; } > "$L";  run false; expect 0 "progressing"
 { R 1 t1 '["a"]'; R 2 t1 '["a"]'; } > "$L"
 clean; run false; expect 2 "stalled, no hand-back"

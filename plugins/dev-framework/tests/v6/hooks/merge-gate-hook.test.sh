@@ -15,7 +15,9 @@ LOG="$TMP/gate.log"; LLOG="$TMP/lease.log"; : > "$LOG"; : > "$LLOG"
 cat > "$TMP/bin/merge-gate" <<'STUB'
 #!/bin/bash
 echo "$*" >> "$STUB_LOG"
-pr=""; while [ $# -gt 0 ]; do [ "$1" = --pr ] && pr="$2"; shift; done
+pr=""; repo=""; while [ $# -gt 0 ]; do [ "$1" = --pr ] && pr="$2"; [ "$1" = --repo ] && repo="$2"; shift; done
+# I1 fence: this gate refuses every repo but the code repo, so a call for the plan repo cannot pass by accident
+[ "$repo" = acme/api ] || { echo "{\"pass\":false,\"reasons\":[\"stub gate: not the code repo: $repo\"]}"; exit 0; }
 case "$pr" in
   1) echo '{"pass":false,"reasons":["cites: stale P-1@abc","size: 400s > 300s"]}' ;;
   2) echo '{"pass":true,"reasons":[]}' ;;
@@ -34,7 +36,9 @@ STUB
 chmod +x "$TMP/bin/merge-gate" "$TMP/bin/lease"
 export DEVFW_CORE_DIR="$CORE" DEVFW_BIN_DIR="$TMP/bin" STUB_LOG="$LOG" STUB_LLOG="$LLOG"
 
-run() { ERR=$(jq -cn --arg c "$1" --arg cwd "$TMP" '{tool_name:"Bash",cwd:$cwd,tool_input:{command:$c}}' | bash "$HOOK" 2>&1 >/dev/null); RC=$?; ERR="${ERR//$'\r'/}"; }
+mkdir -p "$TMP/hooktmp"
+runin() { ERR=$(jq -cn --arg c "$2" --arg cwd "$1" '{tool_name:"Bash",cwd:$cwd,tool_input:{command:$c}}' | TMPDIR="$TMP/hooktmp" bash "$HOOK" 2>&1 >/dev/null); RC=$?; ERR="${ERR//$'\r'/}"; }
+run() { runin "$TMP" "$1"; }
 expect() { [ "$RC" = "$1" ] || fail "$2: rc=$RC want $1 (stderr: $ERR)"; }
 
 run 'gh pr merge 1 --repo acme/api --squash'; expect 2 "refused PR"
@@ -63,16 +67,44 @@ run 'gh pr view 1 --repo acme/api'; expect 0 "non-merge gh command"
 run 'git status'; expect 0 "no gh at all"
 run 'gh api -X PUT repos/acme/api/pulls/1/merge'; expect 2 "gh api merge of a refused PR"
 run 'gh api -X PUT repos/acme/api/pulls/2/merge'; expect 0 "gh api merge of a passing PR"
+# C3 / R22: gh takes the endpoint as a full URL too
+run 'gh api -X PUT https://api.github.com/repos/acme/api/pulls/1/merge'; expect 2 "C3: full-URL merge of a refused PR"
+grep -q '^devfw merge-gate-hook: cites: stale P-1@abc' <<<"$ERR" || fail "C3: gated, not just blocked: $ERR"
+run 'gh api --method put https://ghe.example/api/v3/repos/acme/api/pulls/2/merge'; expect 0 "C3: GHE URL, passing PR"
+run 'gh api -X PUT https://api.github.com/repos/acme/api/pulls/5/merge/x'; expect 2 "C3: a merge endpoint that does not read exactly"
+# R25: gh aliases (gh alias set m 'pr merge') and unknown wrappers
+mkdir -p "$TMP/ghbin"
+cat > "$TMP/ghbin/gh" <<'STUB'
+#!/bin/bash
+[ "$*" = "alias list" ] || exit 1
+[ "${GH_ALIAS:-ok}" = ok ] || exit 1
+printf 'co: pr checkout\nm: pr merge\n'
+STUB
+chmod +x "$TMP/ghbin/gh"
+OLDP="$PATH"; PATH="$TMP/ghbin:$PATH"
+run 'gh m 2 --repo acme/api'; expect 2 "R25: gh alias expanding to pr merge"
+grep -q 'cannot read this merge command exactly' <<<"$ERR" || fail "alias text: $ERR"
+run 'gh co 2'; expect 0 "R25: gh co is a gh command (pr checkout)"
+run 'gh xyz 2'; expect 0 "R25: unknown gh command that is no alias"
+GH_ALIAS=fail run 'gh xyz 2'; expect 0 "R25: gh alias list fails, unmanaged cwd"
+git init -q "$TMP/M"; git -C "$TMP/M" remote add origin https://github.com/acme/api.git
+GH_ALIAS=fail runin "$TMP/M" 'gh xyz 2'; expect 2 "R25: gh alias list fails, managed cwd"
+PATH="$OLDP"
+run 'winpty gh pr merge 2 --repo acme/api'; expect 2 "R25: unknown wrapper before gh"
+[ -z "$(ls -A "$TMP/hooktmp")" ] || fail "M4: temp files left behind: $(ls -A "$TMP/hooktmp")"
 run 'eval "gh pr merge 2 --repo acme/api"'; expect 2 "opaque merge"
 grep -q 'cannot read this merge command exactly' <<<"$ERR" || fail "opaque text: $ERR"
 run 'eval "gh pr view 2"'; expect 0 "opaque non-merge"
 run 'gh pr merge 2 --repo acme/api && gh pr merge 1 --repo acme/api'; expect 2 "second merge refused"
 run 'gh pr merge 1 --repo ACME/API'; expect 2 "repo case-insensitive match"
 
-# Plan repo: lease first, then the gate.
+# Plan repo: the lease alone decides (ruling R23); bin/merge-gate is never called for it.
 : > "$LOG"; : > "$LLOG"
-run 'gh pr merge 2 --repo acme/core'; expect 0 "plan repo, lease ok"
+run 'gh pr merge 2 --repo acme/core'; expect 0 "I1: plan repo, lease ok"
 grep -q 'check' "$LLOG" || fail "lease not consulted: $(cat "$LLOG")"
+[ ! -s "$LOG" ] || fail "I1: merge-gate called for the plan repo: $(cat "$LOG")"
+run 'gh api -X PUT repos/acme/core/pulls/7/merge'; expect 0 "I1: plan repo via gh api, lease ok"
+[ ! -s "$LOG" ] || fail "I1: merge-gate called for the plan repo (gh api): $(cat "$LOG")"
 STUB_LEASE_RC=4 run 'gh pr merge 2 --repo acme/core'; expect 2 "plan repo, lease mismatch"
 grep -q 'only the lease holder merges plan PRs' <<<"$ERR" || fail "lease text: $ERR"
 : > "$LOG"; STUB_LEASE_RC=4 run 'gh pr merge 2 --repo acme/api'; expect 0 "lease not consulted for code repos"
