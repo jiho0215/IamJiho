@@ -61,8 +61,43 @@ const REVERIFY_MS = 10 * 60 * 1000;
 function verifyPair(core, code, read = readMarker) {
   const text = read(core);
   if (text === null) throw new SandboxError(`${core} has no ${MARKER} file on its default branch (or gh could not read it): refusing to write`);
-  if (!allowedRepos(text).includes(code)) throw new SandboxError(`${code} is not listed in the ${MARKER} file of ${core}: refusing to write`);
-  return { core, code, at: Date.now() };
+  const allowed = allowedRepos(text);
+  if (!allowed.includes(code)) throw new SandboxError(`${code} is not listed in the ${MARKER} file of ${core}: refusing to write`);
+  return { core, code, allowed, at: Date.now() };
+}
+
+// Where a script call will actually write: its EFFECTIVE config (DEVFW_CONFIG, else <coreDir>/orchestrator.json, the
+// same rule as lib/config.js). plan.repo must be the verified core and every repos.*.github must be in the marker's
+// allow-list; an unreadable config refuses.
+export function checkExecTarget(rec, env, coreDir) {
+  const file = env.DEVFW_CONFIG || (coreDir ? path.join(coreDir, 'orchestrator.json') : '');
+  let cfg;
+  try { cfg = JSON.parse(fs.readFileSync(file, 'utf8').replace(/^﻿/, '')); } catch (e) {
+    throw new SandboxError(`cannot read the effective config ${file || '(none)'}: ${e.message}: refusing to write`);
+  }
+  const planRepo = cfg && cfg.plan && cfg.plan.repo;
+  if (planRepo !== rec.core) throw new SandboxError(`config plan.repo ${JSON.stringify(planRepo)} is not the verified core ${rec.core}: refusing to write`);
+  for (const [key, r] of Object.entries((cfg && cfg.repos) || {})) {
+    const target = r && r.github;
+    if (!rec.allowed.includes(target)) throw new SandboxError(`config repos.${key}.github ${JSON.stringify(target)} is not in the ${MARKER} allow-list: refusing to write`);
+  }
+}
+
+// A harness gh write may target only the verified pair: every repos/<owner>/<name> endpoint and every --repo/-R value.
+// A write naming no target at all is refused (gh would fall back to the cwd's repo).
+export function checkGhWriteTargets(rec, args) {
+  const pair = [rec.core, rec.code];
+  const targets = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = String(args[i]);
+    const m = /^\/?repos\/([^/?\s]+)\/([^/?\s]+)(?:[/?]|$)/.exec(a);
+    if (m) targets.push(`${m[1]}/${m[2]}`);
+    else if (a === '--repo' || a === '-R') targets.push(String(args[++i]));
+    else if (a.startsWith('--repo=')) targets.push(a.slice(7));
+  }
+  if (!targets.length) throw new SandboxError(`gh ${args.slice(0, 3).join(' ')}: names no repo (no repos/<o>/<n> path, no --repo): refusing to write`);
+  const bad = targets.filter((t) => !pair.includes(t));
+  if (bad.length) throw new SandboxError(`gh ${args.slice(0, 3).join(' ')} targets ${bad.join(', ')}, outside the verified pair: refusing to write`);
 }
 // Read-only check for scripts that write outside openRun (the manual two-machine race): env names, then the marker.
 export function verifySandboxPair(opts = {}) {
@@ -74,6 +109,7 @@ function requireRun(run) {
   const rec = VERIFIED.get(run);
   if (!rec || rec.core !== run.coreRepo || rec.code !== run.codeRepo) throw new SandboxError('run was not verified by openRun: refusing to write');
   if (Date.now() - rec.at > REVERIFY_MS) VERIFIED.set(run, verifyPair(rec.core, rec.code));
+  return VERIFIED.get(run);
 }
 
 function runIdNow() {
@@ -137,17 +173,18 @@ export async function openRun(opts = {}) {
 }
 
 // Guarded write helpers for scenarios: each refuses a run that openRun did not verify, before touching anything.
-export function ghWrite(run, args) { requireRun(run); return gh(args).stdout; }
+export function ghWrite(run, args) { checkGhWriteTargets(requireRun(run), args); return gh(args).stdout; }
 export function gitWrite(run, dir, args) { requireRun(run); return git(dir, args); }
 export function assertVerifiedRun(run) { requireRun(run); }
 
 // opts.env: extra environment for this one call (e.g. DEVFW_CONFIG pointing at a config variant).
 export function execIn(run, script, args = [], opts = {}) {
-  requireRun(run);                                       // scripts can write issues, PRs and merges
+  const env = { ...run.env, ...(opts.env || {}) };
+  checkExecTarget(requireRun(run), env, run.coreDir);  // scripts can write issues, PRs and merges: check where
   const file = path.join(PLUGIN, 'bin', script);
   const cmd = NODE_SCRIPTS.has(script) ? ['node', [file, ...args]] : BASH_SCRIPTS.has(script) ? ['bash', [file, ...args]] : null;
   if (!cmd) throw new Error(`unknown plugin script: ${script}`);
-  const r = spawnSync(cmd[0], cmd[1], { env: { ...run.env, ...(opts.env || {}) }, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  const r = spawnSync(cmd[0], cmd[1], { env, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
   const stdout = r.stdout || '';
   let json = null;
   const last = stdout.split('\n').map((l) => l.trim()).filter(Boolean).pop();
@@ -157,7 +194,7 @@ export function execIn(run, script, args = [], opts = {}) {
 
 // Same guard and result shape as execIn, but asynchronous: for scenarios that run several scripts at once.
 export function execAsyncIn(run, script, args = []) {
-  requireRun(run);
+  checkExecTarget(requireRun(run), run.env, run.coreDir);
   const file = path.join(PLUGIN, 'bin', script);
   const cmd = NODE_SCRIPTS.has(script) ? ['node', [file, ...args]] : BASH_SCRIPTS.has(script) ? ['bash', [file, ...args]] : null;
   if (!cmd) throw new Error(`unknown plugin script: ${script}`);

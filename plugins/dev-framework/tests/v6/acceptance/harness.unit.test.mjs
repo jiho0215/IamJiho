@@ -198,3 +198,69 @@ test('I3: sweep() closes exactly the selected items, in both repos', async () =>
   assert.deepEqual(closed.sort(), [`${CODE}#3`, `${CORE}#1`]);
   assert.equal(r.closed.length, 2);
 });
+
+// ---------------------------------------------------------------- M3: where a write actually goes
+const REC = { core: CORE, code: CODE, allowed: [CODE, 'o/code2'], at: 0 };
+const cfgFile = (cfg) => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'devfw-m3-'));
+  const f = path.join(d, 'orchestrator.json');
+  fs.writeFileSync(f, JSON.stringify(cfg));
+  return { d, f };
+};
+const goodCfg = () => ({ plan: { repo: CORE, path: 'docs/plan', branch: 'run/x' }, repos: { api: { github: CODE, default: 'run/x', label: 'api', ci: 'none', tests: ['npm test'] } }, stages: { A: 'A' } });
+
+test('M3: the effective config (DEVFW_CONFIG) must point plan.repo at the verified core', () => {
+  const ok = cfgFile(goodCfg());
+  assert.doesNotThrow(() => H.checkExecTarget(REC, { DEVFW_CONFIG: ok.f }, ok.d));
+  const c = goodCfg(); c.plan.repo = 'o/real-core';
+  const bad = cfgFile(c);
+  assert.throws(() => H.checkExecTarget(REC, { DEVFW_CONFIG: bad.f }, bad.d), (e) => e instanceof SandboxError && /plan\.repo/.test(e.message));
+});
+
+test('M3: every repos.*.github must be in the verified allow-list', () => {
+  const c = goodCfg(); c.repos.web = { github: 'o/real-web', default: 'main', label: 'web', ci: 'none', tests: ['npm test'] };
+  const bad = cfgFile(c);
+  assert.throws(() => H.checkExecTarget(REC, { DEVFW_CONFIG: bad.f }, bad.d), (e) => e instanceof SandboxError && /o\/real-web/.test(e.message));
+  const c2 = goodCfg(); c2.repos.web = { github: 'o/code2', default: 'main', label: 'web', ci: 'none', tests: ['npm test'] };
+  const ok = cfgFile(c2);
+  assert.doesNotThrow(() => H.checkExecTarget(REC, { DEVFW_CONFIG: ok.f }, ok.d), 'a second allow-listed code repo is fine');
+});
+
+test('M3: an unreadable or missing effective config refuses', () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'devfw-m3-'));
+  assert.throws(() => H.checkExecTarget(REC, { DEVFW_CONFIG: path.join(d, 'nope.json') }, d), SandboxError);
+  fs.writeFileSync(path.join(d, 'broken.json'), '{');
+  assert.throws(() => H.checkExecTarget(REC, { DEVFW_CONFIG: path.join(d, 'broken.json') }, d), SandboxError);
+});
+
+test('M3: with no DEVFW_CONFIG the <coreDir>/orchestrator.json is the effective config', () => {
+  const c = goodCfg(); c.plan.repo = 'o/real-core';
+  const bad = cfgFile(c);
+  assert.throws(() => H.checkExecTarget(REC, {}, bad.d), /plan\.repo/);
+});
+
+test('M3: ghWrite targets only the verified pair (repos/<o>/<n>/ paths and --repo)', () => {
+  for (const args of [
+    ['api', '-X', 'PATCH', `repos/${CORE}/issues/3`, '-f', 'state=closed'],
+    ['api', '-X', 'POST', `repos/${CODE}/issues/3/comments`, '-f', 'body=x'],
+    ['pr', 'merge', '7', '--repo', CODE, '--squash'],
+    ['pr', 'create', '--repo', CODE, '--base', 'run/x', '--head', 't/1-x', '--title', `t repos/${CORE}/`, '--body', 'b'],
+  ]) assert.doesNotThrow(() => H.checkGhWriteTargets(REC, args), args.join(' '));
+  for (const args of [
+    ['api', '-X', 'PATCH', 'repos/o/real/issues/3', '-f', 'state=closed'],
+    ['api', '-X', 'POST', '/repos/o/real/issues/3/comments', '-f', 'body=x'],
+    ['api', '-X', 'PATCH', 'repos/o/code2/issues/3'],               // allow-listed for configs, but not the verified pair
+    ['pr', 'merge', '7', '--repo', 'o/real', '--squash'],
+    ['pr', 'merge', '7', '--repo=o/real'],
+    ['pr', 'merge', '7', '-R', 'o/real'],
+    ['pr', 'merge', '7', '--squash'],                                  // no target at all: refused, never the cwd's repo
+  ]) assert.throws(() => H.checkGhWriteTargets(REC, args), SandboxError, args.join(' '));
+});
+
+test('M3: execIn, execAsyncIn and ghWrite all route through the target checks', () => {
+  const src = fs.readFileSync(path.join(HERE, 'harness.mjs'), 'utf8');
+  const body = (name) => { const i = src.indexOf(`export function ${name}(`); return src.slice(i, src.indexOf('\n}\n', i)); };
+  assert.match(body('execIn'), /checkExecTarget\(/);
+  assert.match(body('execAsyncIn'), /checkExecTarget\(/);
+  assert.match(body('ghWrite'), /checkGhWriteTargets\(/);
+});
