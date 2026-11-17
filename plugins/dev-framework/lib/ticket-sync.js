@@ -165,6 +165,15 @@ function sync(o, config, gh) {
     return d;
   };
   const drift0 = computeDrift();
+  // Existing issues whose Cites line lacks an ID of the item: reported, never filled in (needs --refresh-cites).
+  const citesMissing = [];
+  for (const item of items) {
+    const iss = byId.get(item.id);
+    if (!iss || o.refresh.has(item.id)) continue;
+    const have = parseCites(iss.body);
+    const ids = [item.id, ...item.decisions].filter((id) => !have.has(id));
+    if (ids.length) citesMissing.push({ issue: iss.number, ids });
+  }
 
   const labels = gh.paginate(`repos/${planRepo}/labels`);
   const have = new Set(labels.map((l) => l.name.toLowerCase()));
@@ -174,13 +183,13 @@ function sync(o, config, gh) {
   const labelsMissing = [...wanted.keys()].filter((n) => !have.has(n.toLowerCase()));
 
   const publicDrift = (d) => d.map(({ id, issue, diff }) => ({ id, issue, diff }));
-  const result = { missing, extra, drift: publicDrift(drift0), labelsMissing, ok: items.filter((i) => byId.has(i.id)).length - drift0.length };
+  const result = { missing, extra, drift: publicDrift(drift0), citesMissing, labelsMissing, ok: items.filter((i) => byId.has(i.id)).length - drift0.length };
 
   if (!o.apply) {
     let wrote = 0;
     if (o.writeback) wrote = writebackPlan(o.coreDir, config, numbers);
     if (o.writeback) result.writeback = wrote;
-    return { exitCode: missing.length || drift0.length ? 7 : 0, result };
+    return { exitCode: missing.length || drift0.length || citesMissing.length ? 7 : 0, result };
   }
 
   // --apply

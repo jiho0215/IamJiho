@@ -71,70 +71,81 @@ function insertItem(text, o, id, body) {
   return lines.join(eol);
 }
 
+// The working tree must be clean: --apply commits from it, and a local edit would ride along unvalidated.
+function assertClean(coreDir) {
+  const dirty = git(coreDir, ['status', '--porcelain', '--untracked-files=no']).trim();
+  if (dirty) throw new ConfigError(`the core working tree is dirty; commit or stash first:\n${dirty}`);
+}
+
+// Where HEAD was: a branch name, or a sha when detached. Restored in finally.
+function headOf(coreDir) {
+  try { return { branch: git(coreDir, ['symbolic-ref', '-q', '--short', 'HEAD']).trim() }; } catch {
+    return { sha: git(coreDir, ['rev-parse', 'HEAD']).trim() };
+  }
+}
+function restoreHead(coreDir, start) {
+  if (start.branch) git(coreDir, ['checkout', '-q', start.branch]);
+  else git(coreDir, ['checkout', '-q', '--detach', start.sha]);
+}
+
 function run({ argv, gh, env = process.env }) {
   try {
     const o = parseArgs(argv);
     const config = loadConfig({ coreDir: o.coreDir, env });
     if (!config.plan.repo) throw new ConfigError('plan.repo is not configured');
+    if (o.apply) assertClean(o.coreDir); // before anything else
     const lease = leaseStatus(o.coreDir, env);
     if (lease !== 0) {
       const why = lease === 4 ? 'the orchestrator lease is held by another token' : lease === 3 ? 'the lease is missing (no lease line on origin or no local token)' : `lease check failed unexpectedly (exit ${lease})`;
       return { exitCode: 4, result: { error: `lease not held: ${why}` } };
     }
-    const ref = resolvePlanRef({ coreDir: o.coreDir, config }); // the plan of record, fetched fresh
+    // One read of the fetched tip: the ID, the validated text and the committed text all come from it.
+    const ref = resolvePlanRef({ coreDir: o.coreDir, config });
     const body = fs.readFileSync(o.bodyFile, 'utf8');
-    const planFile = path.join(o.coreDir, config.plan.path, 'PLAN.md');
-    const render = () => {
-      const text = fs.readFileSync(planFile, 'utf8');
-      const id = nextId(text, o.epic);
-      return { id, planText: insertItem(text, o, id, body), text: itemLines(o, id, body).join('\n') };
-    };
+    const tip = git(o.coreDir, ['show', `${ref}:${config.plan.path}/PLAN.md`]);
+    const id = nextId(tip, o.epic);
+    const planText = insertItem(tip, o, id, body);
     // Validate before any write: the new plan must parse, the stage must exist, decision IDs must exist.
-    const validate = (planText) => {
-      if (!config.stages || !(o.stage in config.stages)) throw new ConfigError(`stage "${o.stage}" is not in config.stages`);
-      parsePlan(planText, config);
-      const wanted = planList(o.decisions);
-      if (wanted.length) {
-        const known = planHashes(o.coreDir, ref, config);
-        for (const d of wanted) if (!known.has(d)) throw new ConfigError(`decision ${d} does not exist in the plan`);
-      }
-    };
-    validate(render().planText);
-    if (!o.apply) {
-      const r = render();
-      return { exitCode: 0, result: { id: r.id, text: r.text, planText: r.planText } };
+    if (!config.stages || !(o.stage in config.stages)) throw new ConfigError(`stage "${o.stage}" is not in config.stages`);
+    parsePlan(planText, config);
+    const wanted = planList(o.decisions);
+    if (wanted.length) {
+      const known = planHashes(o.coreDir, ref, config);
+      for (const d of wanted) if (!known.has(d)) throw new ConfigError(`decision ${d} does not exist in the plan`);
     }
-    return apply(o, config, gh, env, planFile, render, validate, ref);
+    if (!o.apply) return { exitCode: 0, result: { id, text: itemLines(o, id, body).join('\n'), planText } };
+    return apply(o, config, gh, env, { ref, id, planText });
   } catch (e) {
     if (e instanceof ConfigError || e instanceof PlanError) return { exitCode: 2, result: { error: e.message } };
     throw e;
   }
 }
 
-function apply(o, config, gh, env, planFile, render, validate, ref) {
+// planText: exactly the text run() validated; it is what gets committed.
+function apply(o, config, gh, env, { ref, id, planText }) {
   const planRepo = config.plan.repo;
   const base = config.plan.branch;
+  const planRel = path.join(config.plan.path, 'PLAN.md');
   const token = fs.readFileSync(path.join(o.coreDir, '.orchestrator', 'lease'), 'utf8').trim();
-  const start = git(o.coreDir, ['rev-parse', '--abbrev-ref', 'HEAD']).trim();
-  // The branch name needs the ID, which needs the freshest plan: allocate on origin's tip (fetched by resolvePlanRef).
-  const tip = git(o.coreDir, ['show', `${ref}:${config.plan.path}/PLAN.md`]);
-  const id = nextId(tip, o.epic);
+  const start = headOf(o.coreDir);
   const branch = `plan/new-${id}`;
-  validate(insertItem(tip, o, id, fs.readFileSync(o.bodyFile, 'utf8'))); // the tip is what will be merged onto
   git(o.coreDir, ['checkout', '-q', '-b', branch, ref]);
   let pr;
+  let committed = false;
   try {
-    const r = render();
-    fs.writeFileSync(planFile, r.planText);
-    git(o.coreDir, ['add', '--', path.join(config.plan.path, 'PLAN.md')]);
+    fs.writeFileSync(path.join(o.coreDir, planRel), planText);
+    git(o.coreDir, ['add', '--', planRel]);
     git(o.coreDir, ['commit', '-q', '-m', `plan: add ${id} · ${o.title}`]);
+    committed = true;
     git(o.coreDir, ['push', '-q', 'origin', branch]); // never forced
     pr = gh.api('POST', `repos/${planRepo}/pulls`, {
       title: `plan: add ${id} · ${o.title}`, head: branch, base,
       body: `Adds plan item ${id}.\n\nlease: ${token}\n`,
     }).number;
   } finally {
-    git(o.coreDir, ['checkout', '-q', start]);
+    // An uncommitted write is ours alone (the tree was clean): drop it so the checkout back cannot carry it.
+    if (!committed) { try { git(o.coreDir, ['checkout', '-q', '--', planRel]); } catch { /* reported by the throw */ } }
+    restoreHead(o.coreDir, start);
   }
 
   const im = impact.run({ argv: ['--core-dir', o.coreDir, '--pr', String(pr), '--apply'], gh, env });

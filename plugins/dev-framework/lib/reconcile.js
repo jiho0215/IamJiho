@@ -86,9 +86,12 @@ function reconcile(o, config, gh) {
         facts.branch = rf.branches.get(iss.number);
         facts.cites = parseCites(iss.body);
         facts.current = hashes;
+        facts.expected = [item.id, ...item.decisions];
         facts.acked = new Set();
-        // Every cited ID (the item and each decision) is checked on its own.
-        for (const { id, cur } of staleCites(facts)) {
+        // Every cited ID (the item and each decision) is checked on its own. A removed or missing cite has no
+        // current hash to ack, so no ack can clear it.
+        for (const { id, cur, removed, missing } of staleCites(facts)) {
+          if (removed || missing) continue;
           if (ackCovers({ coreDir: o.coreDir, config, comments, issue: iss.number, id, hash: cur })) facts.acked.add(id);
         }
       }

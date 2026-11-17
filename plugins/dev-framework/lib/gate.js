@@ -6,7 +6,7 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { loadConfig, ConfigError } = require('./config');
 const { planHashes, PlanError } = require('./plan');
-const { parseCitesStrict } = require('./ticket-body');
+const { parseCites, parseCitesStrict } = require('./ticket-body');
 const { ackCovers } = require('./acks');
 const { resolvePlanRef, PlanFetchError } = require('./fetch-plan');
 
@@ -65,9 +65,10 @@ function checkCi({ repoConfig, runs, statuses, evidence }) {
 // (b) cites. hashes: Map of the plan to judge against; loadComments(issue): the linked issue's comments.
 function checkCites({ body, planRepo, hashes, coreDir, config, loadComments }) {
   if (!hashes) return ['cites: plan fetch failed'];
-  const { cites, malformed } = parseCitesStrict(body);
+  const { cites, malformed, conflicts } = parseCitesStrict(body);
   if (!cites.size && !malformed.length) return ['cites: PR body has no Cites: line'];
   if (malformed.length) return malformed.map((raw) => `cites: malformed entry ${raw}`);
+  if (conflicts.length) return conflicts.map((x) => `cites: ${x.id} is cited with different hashes (${x.hashes.join(', ')})`);
   const issue = linkedIssue(body, planRepo);
   if (issue === null) return [`cites: PR body has no "Fixes ${planRepo}#<n>" line`];
   const reasons = [];
@@ -81,6 +82,25 @@ function checkCites({ body, planRepo, hashes, coreDir, config, loadComments }) {
       reasons.push(`cites: ${id}@${hash} is stale (plan has ${cur}) and issue #${issue} has no covering ack`);
     }
   }
+  return reasons;
+}
+
+// (b2) ticket: the PR belongs to the issue it names. The head branch is that issue's claim branch (t/<n>-…), and
+// the PR cites every ID the issue's own Cites line carries (the item and its decisions). Anything unreadable refuses.
+function checkTicket({ headRef, body, planRepo, loadIssue }) {
+  const n = linkedIssue(body, planRepo);
+  if (n === null) return []; // checkCites already refuses a missing Fixes line
+  const reasons = [];
+  if (!new RegExp(`^t/${n}-`).test(String(headRef || ''))) {
+    reasons.push(`ticket: head branch "${headRef || ''}" is not a claim branch of issue #${n} (want t/${n}-…)`);
+  }
+  let iss;
+  try { iss = loadIssue(n); } catch (e) { return [...reasons, `ticket: cannot read issue ${planRepo}#${n}: ${e.message}`]; }
+  const want = parseCites(iss && iss.body);
+  if (!want.size) return [...reasons, `ticket: issue #${n} has no Cites: line to check the PR against`];
+  const { cites } = parseCitesStrict(body);
+  const missing = [...want.keys()].filter((id) => !cites.has(id));
+  if (missing.length) reasons.push(`ticket: PR does not cite ${missing.join(', ')} (cited by issue #${n})`);
   return reasons;
 }
 
@@ -143,10 +163,15 @@ function evaluate({ gh, config, coreDir, repo, pr, env = process.env, hashes }) 
   const files = gh.paginate(`repos/${repo}/pulls/${pr}/files`);
   const current = hashes === undefined ? currentPlanHashes(coreDir, config) : hashes;
   const loadComments = (n) => gh.paginate(`repos/${config.plan.repo}/issues/${n}/comments`);
+  const loadIssue = (n) => gh.api('GET', `repos/${config.plan.repo}/issues/${n}`);
+  const headRef = prObj.head && prObj.head.ref;
 
   const parts = {
     ci: checkCi({ repoConfig: entry, runs, statuses, evidence }),
-    cites: checkCites({ body, planRepo: config.plan.repo, hashes: current, coreDir, config, loadComments }),
+    cites: [
+      ...checkCites({ body, planRepo: config.plan.repo, hashes: current, coreDir, config, loadComments }),
+      ...checkTicket({ headRef, body, planRepo: config.plan.repo, loadIssue }),
+    ],
     evidence: checkEvidence({ evidence }),
     size: checkSize({ files, coreDir, env }),
     coverage: checkCoverage({ config, evidence }),
@@ -187,4 +212,4 @@ function run({ argv, gh, env = process.env }) {
   }
 }
 
-module.exports = { run, evaluate, checkCi, checkCites, checkEvidence, checkSize, checkCoverage, evidenceBlock, linkedIssue, currentPlanHashes };
+module.exports = { run, evaluate, checkCi, checkCites, checkTicket, checkEvidence, checkSize, checkCoverage, evidenceBlock, linkedIssue, currentPlanHashes };

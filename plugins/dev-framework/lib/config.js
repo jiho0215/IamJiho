@@ -14,7 +14,7 @@ const DEFAULTS = {
   stages: {},
   project: { owner: '', number: 0, fields: {} },
   coverage: { enforce: false, min: 90 },
-  github: { writeDelayMs: 1000 },
+  github: { writeDelayMs: 1000, trustedAuthors: [] }, // trustedAuthors: logins whose comments count besides OWNER/MEMBER/COLLABORATOR
   reconcile: { lookbackDays: 14 },
 };
 

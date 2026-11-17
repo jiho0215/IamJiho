@@ -52,11 +52,14 @@ const logicFiles = (n) => [{ filename: 'src/a.cs', additions: n, deletions: 0, s
 
 function routes({ repo = 'acme/api', prBody, runs = [{ name: 'build', status: 'completed', conclusion: 'success' }], statuses = [], files = logicFiles(10), comments = [] }) {
   return {
-    [`GET repos/${repo}/pulls/50`]: { number: 50, body: prBody, head: { sha: 'abc123' } },
+    [`GET repos/${repo}/pulls/50`]: { number: 50, body: prBody, head: { sha: 'abc123', ref: 't/12-swagger' } },
     [`GET repos/${repo}/commits/abc123/check-runs`]: { total_count: runs.length, check_runs: runs },
     [`GET repos/${repo}/commits/abc123/status`]: { state: statuses.length ? 'success' : 'pending', statuses },
     [`GET repos/${repo}/pulls/50/files`]: files,
     'GET repos/acme/core/issues/12/comments': comments,
+    // The linked issue's own Cites line (IDs matter for the gate's ticket check; hashes are the issue's own).
+    'GET repos/acme/core/issues/12': { number: 12, state: 'open', body: `- **Cites:** P-0-4@${'a'.repeat(12)}, D-8@${'b'.repeat(12)}
+` },
   };
 }
 

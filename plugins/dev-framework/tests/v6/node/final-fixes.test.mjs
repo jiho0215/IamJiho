@@ -450,3 +450,262 @@ test('I3: the fetch names its refspec, so origin/<branch> advances even with no 
   assert.equal(resolvePlanRef({ coreDir: c.dir, config }), 'origin/main');
   assert.equal(c.g('rev-parse', 'origin/main').trim(), up);
 });
+
+// ---------------------------------------------------------------- I2
+function gateWorld(c, { n = 41, headRef = `t/${n}-swagger`, cites, issueCites, issueBody, noIssue = false } = {}) {
+  const h = planHashes(c.dir, 'HEAD', CONFIG);
+  const cur = (id) => `${id}@${h.get(id)}`;
+  const prCites = cites ?? [cur('P-0-4'), cur('D-8'), cur('RL-7')].join(', ');
+  const iss = issueBody ?? `- **Cites:** ${issueCites ?? [cur('P-0-4'), cur('D-8'), cur('RL-7')].join(', ')}\n`;
+  const r = {
+    'GET repos/acme/api/pulls/50': { number: 50, body: `Fixes acme/core#${n}\nCites: ${prCites}\n\nEvidence:\ndotnet test: 120 passed\n`, head: { sha: 'abc123', ref: headRef } },
+    'GET repos/acme/api/commits/abc123/check-runs': { total_count: 1, check_runs: [run_('build', 'success')] },
+    'GET repos/acme/api/commits/abc123/status': { state: 'pending', statuses: [] },
+    'GET repos/acme/api/pulls/50/files': [{ filename: 'src/a.cs', additions: 10, deletions: 0, status: 'modified' }],
+    [`GET repos/acme/core/issues/${n}/comments`]: [],
+  };
+  if (!noIssue) r[`GET repos/acme/core/issues/${n}`] = { number: n, state: 'open', body: iss };
+  return { r, h };
+}
+const gateRun = (c, r) => gate.run({ argv: ['--core-dir', c.dir, '--repo', 'acme/api', '--pr', '50'], gh: fakeGh(r).gh, env: {} });
+
+test('I2: positive control - head t/41-…, Fixes acme/core#41, cites cover the issue: pass', () => {
+  const c = core();
+  const out = gateRun(c, gateWorld(c).r);
+  assert.equal(out.exitCode, 0, JSON.stringify(out.result));
+});
+
+test('I2: Fixes acme/core#41 on head t/42-x refuses', () => {
+  const c = core();
+  const out = gateRun(c, gateWorld(c, { headRef: 't/42-x' }).r);
+  assert.equal(out.exitCode, 6);
+  assert.ok(out.result.reasons.some((x) => /head branch "t\/42-x"/.test(x) && /#41/.test(x)), out.result.reasons.join(' | '));
+  assert.equal(gateRun(c, gateWorld(c, { headRef: 't/410-x' }).r).exitCode, 6, 't/410- is not t/41-');
+  assert.equal(gateRun(c, gateWorld(c, { headRef: 'feature/t/41-x' }).r).exitCode, 6);
+});
+
+test('I2: the PR cites only D-8 while issue #41 cites P-0-4 and D-8: refuse, naming P-0-4', () => {
+  const c = core();
+  const { h } = gateWorld(c);
+  const out = gateRun(c, gateWorld(c, { cites: `D-8@${h.get('D-8')}`, issueCites: `P-0-4@${h.get('P-0-4')}, D-8@${h.get('D-8')}` }).r);
+  assert.equal(out.exitCode, 6);
+  assert.ok(out.result.reasons.some((x) => /does not cite P-0-4/.test(x) && !/D-8/.test(x)), out.result.reasons.join(' | '));
+});
+
+test('I2: the linked issue unreadable, or without a Cites line, refuses (fail closed)', () => {
+  const c = core();
+  const gone = gateRun(c, gateWorld(c, { noIssue: true }).r);
+  assert.equal(gone.exitCode, 6);
+  assert.ok(gone.result.reasons.some((x) => /cannot read issue acme\/core#41/.test(x)), gone.result.reasons.join(' | '));
+  const bare = gateRun(c, gateWorld(c, { issueBody: 'someone deleted the Cites line\n' }).r);
+  assert.equal(bare.exitCode, 6);
+  assert.ok(bare.result.reasons.some((x) => /issue #41 has no Cites/.test(x)), bare.result.reasons.join(' | '));
+});
+
+test('I2: duplicate IDs carrying different hashes refuse (P-0-4@stale, P-0-4@current)', () => {
+  const c = core();
+  const { h } = gateWorld(c);
+  const dup = `P-0-4@${'f'.repeat(12)}, P-0-4@${h.get('P-0-4')}, D-8@${h.get('D-8')}, RL-7@${h.get('RL-7')}`;
+  const out = gateRun(c, gateWorld(c, { cites: dup }).r);
+  assert.equal(out.exitCode, 6);
+  assert.ok(out.result.reasons.some((x) => /P-0-4 is cited with different hashes/.test(x)), out.result.reasons.join(' | '));
+  // the same order reversed: the last one no longer silently wins
+  const rev = `P-0-4@${h.get('P-0-4')}, P-0-4@${'f'.repeat(12)}, D-8@${h.get('D-8')}, RL-7@${h.get('RL-7')}`;
+  assert.equal(gateRun(c, gateWorld(c, { cites: rev }).r).exitCode, 6);
+  const { parseCitesStrict } = require('../../../lib/ticket-body.js');
+  const same = parseCitesStrict(`Cites: P-0-4@${'a'.repeat(12)}, P-0-4@${'a'.repeat(12)}`);
+  assert.deepEqual(same.conflicts, [], 'a repeated identical entry is not a conflict');
+});
+
+// ---------------------------------------------------------------- I8
+test('I8: a cited ID removed from the plan is needs-ack in reconcile and a refusal in the gate (same input)', () => {
+  const c = core();
+  const h0 = planHashes(c.dir, 'HEAD', CONFIG);
+  const issueBody = bodyOf(c.dir, 'P-0-4'); // cites P-0-4, D-8, RL-7 at their current hashes
+  // RL-7 is removed from RULINGS.md; PLAN.md is untouched, so P-0-4 and D-8 keep their hashes.
+  writeFileSync(join(c.dir, 'docs/plan/RULINGS.md'), '# R\n');
+  c.g('commit', '-qam', 'remove RL-7'); c.g('push', '-q', 'origin', 'main');
+  const removedAt = c.g('rev-parse', 'HEAD').trim();
+  const h1 = planHashes(c.dir, 'HEAD', CONFIG);
+  assert.equal(h1.get('P-0-4'), h0.get('P-0-4'), 'seed: P-0-4 unchanged');
+  assert.equal(h1.has('RL-7'), false, 'seed: RL-7 gone');
+
+  const rc = (comments) => reconcile.run({
+    argv: ['--core-dir', c.dir, '--ref', 'HEAD'],
+    gh: fakeGh({
+      'GET repos/acme/core/issues?state=all': [issue(41, 'P-0-4', issueBody)],
+      [SINCE]: comments,
+      'GET repos/acme/api/git/matching-refs/heads/t/': [], 'GET repos/acme/api/pulls?state=all': [],
+    }).gh,
+    env: {},
+  });
+  const r = stateOf(rc([]), 'P-0-4');
+  assert.equal(r.state, 'needs-ack');
+  assert.match(r.why, /RL-7 removed from plan/);
+  // An ack at the plan where RL-7 no longer exists cannot cover it.
+  const acked = stateOf(rc([{ issue_url: 'https://api.github.com/repos/acme/core/issues/41', body: `ack 41 ${removedAt}: fine`, author_association: 'OWNER' }]), 'P-0-4');
+  assert.equal(acked.state, 'needs-ack');
+
+  const cites = `P-0-4@${h0.get('P-0-4')}, D-8@${h0.get('D-8')}, RL-7@${h0.get('RL-7')}`;
+  const g = gateRun(c, gateWorld(c, { cites, issueCites: cites }).r);
+  assert.equal(g.exitCode, 6);
+  assert.ok(g.result.reasons.includes('cites: RL-7 is not in the plan'), g.result.reasons.join(' | '));
+});
+
+// ---------------------------------------------------------------- I9
+function tsWorld(c, p4Body) {
+  const nums = new Map([['P-0-3', 1], ['P-0-4', 2], ['P-0-5', 3]]);
+  const config = loadConfig({ coreDir: c.dir, env: {} });
+  const items = parsePlan(fixture, config);
+  const hashes = planHashes(c.dir, 'HEAD', config);
+  const body = (id) => renderBody(items.find((i) => i.id === id), { hashes, issueNumbers: nums, planSha: c.sha, config });
+  const bodies = { 'P-0-3': body('P-0-3'), 'P-0-4': p4Body(body('P-0-4'), hashes), 'P-0-5': body('P-0-5') };
+  return { hashes, issues: [...nums].map(([id, n]) => issue(n, id, bodies[id])) };
+}
+const dropCitesLine = (b) => b.split('\n').filter((l) => !l.startsWith('- **Cites:**')).join('\n');
+const dropD8 = (b, h) => b.replace(`, D-8@${h.get('D-8')}`, '');
+
+test('I9: an existing issue whose Cites line was deleted: --check reports citesMissing; --apply writes no current hash', () => {
+  const c = core();
+  const w = tsWorld(c, dropCitesLine);
+  const dry = ticketSync.run({ argv: ['--core-dir', c.dir, '--ref', 'HEAD'], gh: fakeGh({ ...TS_BASE, 'GET repos/acme/core/issues?state=all': w.issues }).gh, env: {} });
+  assert.equal(dry.exitCode, 7);
+  assert.deepEqual(dry.result.citesMissing, [{ issue: 2, ids: ['P-0-4', 'D-8', 'RL-7'] }]);
+  const f = fakeGh({ ...TS_BASE, 'GET repos/acme/core/issues?state=all': w.issues });
+  ticketSync.run({ argv: ['--core-dir', c.dir, '--ref', 'HEAD', '--apply'], gh: f.gh, env: {} });
+  for (const p of f.calls.filter((x) => x.method === 'PATCH')) {
+    for (const id of ['P-0-4', 'D-8', 'RL-7']) assert.ok(!p.body.body.includes(`${id}@${w.hashes.get(id)}`), `${id} got the current hash silently`);
+  }
+});
+
+test('I9: one ID deleted from the Cites line: the rewrite keeps the line without it; only --refresh-cites restores it', () => {
+  const c = core();
+  const w = tsWorld(c, dropD8);
+  const dry = ticketSync.run({ argv: ['--core-dir', c.dir, '--ref', 'HEAD'], gh: fakeGh({ ...TS_BASE, 'GET repos/acme/core/issues?state=all': w.issues }).gh, env: {} });
+  assert.deepEqual(dry.result.citesMissing, [{ issue: 2, ids: ['D-8'] }]);
+  assert.deepEqual(dry.result.drift, [], 'the line without D-8 is what the rewrite keeps');
+  assert.equal(dry.exitCode, 7);
+  const f = fakeGh({ ...TS_BASE, 'GET repos/acme/core/issues?state=all': w.issues });
+  ticketSync.run({ argv: ['--core-dir', c.dir, '--ref', 'HEAD', '--apply'], gh: f.gh, env: {} });
+  assert.equal(f.calls.filter((x) => x.method === 'PATCH').length, 0);
+  const g = fakeGh({ ...TS_BASE, 'GET repos/acme/core/issues?state=all': w.issues });
+  ticketSync.run({ argv: ['--core-dir', c.dir, '--ref', 'HEAD', '--apply', '--refresh-cites', 'P-0-4'], gh: g.gh, env: {} });
+  const patch = g.calls.find((x) => x.method === 'PATCH');
+  assert.ok(patch && patch.body.body.includes(`D-8@${w.hashes.get('D-8')}`));
+});
+
+test('I9: reconcile shows needs-ack for an issue whose Cites line lacks an ID', () => {
+  const c = core();
+  for (const [fn, re] of [[dropCitesLine, /P-0-4 missing from Cites/], [dropD8, /D-8 missing from Cites/]]) {
+    const w = tsWorld(c, fn);
+    const r = reconcile.run({
+      argv: ['--core-dir', c.dir, '--ref', 'HEAD'],
+      gh: fakeGh({ 'GET repos/acme/core/issues?state=all': w.issues.map((x) => ({ ...x, created_at: '2026-11-01T00:00:00Z' })), [SINCE]: [],
+        'GET repos/acme/api/git/matching-refs/heads/t/': [], 'GET repos/acme/api/pulls?state=all': [],
+        'GET repos/acme/mobile/git/matching-refs/heads/t/': [], 'GET repos/acme/mobile/pulls?state=all': [] }).gh,
+      env: {},
+    });
+    const s = stateOf(r, 'P-0-4');
+    assert.equal(s.state, 'needs-ack', fn.name);
+    assert.match(s.why, re);
+    assert.notEqual(stateOf(r, 'P-0-3').state, 'needs-ack', 'a complete Cites line is not affected');
+  }
+});
+
+// ---------------------------------------------------------------- I7
+const newTicket = require('../../../lib/new-ticket.js');
+const NT_CFG = { ...CONFIG, repos: { 'acme-api': CONFIG.repos['acme-api'] }, stages: { A: 'Stage A — Gates' } };
+const NT_TOKEN = '00000000000000aa';
+const ntItem = (id, title) => `### ${id} · ${title}\n- stage: A\n- kind: code\n- state: ready\n- area: acme-api — \`src/x.cs\`\n- depends: —\n- decisions: —\n- ticket: —\n\nBody of ${id}.\n`;
+const NT_PLAN = ['# Plan', '', '## P-3 · Epic three', '', ntItem('P-3-1', 'First'), ntItem('P-3-2', 'Second'), '## P-4 · Epic four', '', ntItem('P-4-1', 'Other'), ''].join('\n');
+
+function ntCore() {
+  const c = core({ config: NT_CFG, plan: NT_PLAN });
+  writeFileSync(join(c.dir, '.gitignore'), '.orchestrator/\n');
+  c.g('add', '-A'); c.g('commit', '-qm', 'ignore'); c.g('push', '-q', 'origin', 'main');
+  mkdirSync(join(c.dir, '.orchestrator'), { recursive: true });
+  writeFileSync(join(c.dir, '.orchestrator/lease'), NT_TOKEN + '\n');
+  const bf = join(mkdtempSync(join(tmpdir(), 'devfw-ff-body-')), 'b.md');
+  writeFileSync(bf, 'Do the new thing.\n');
+  const argv = ['--core-dir', c.dir, '--epic', '3', '--title', 'New thing', '--area', 'acme-api — `src/new.cs`', '--kind', 'code', '--stage', 'A', '--body-file', bf, '--apply'];
+  return { ...c, argv, bf };
+}
+
+// A GitHub that merges the plan PR by moving origin/main to the pushed branch.
+function ntGh(c, branch) {
+  const { gh, calls } = fakeGh({
+    'POST repos/acme/core/pulls': { number: 7 },
+    'GET repos/acme/core/pulls/7/files': [{ filename: 'docs/plan/PLAN.md' }],
+    'GET repos/acme/core/issues?state=all': [],
+    'GET repos/acme/api/pulls?state=open': [],
+    'GET repos/acme/core/issues/7/comments': [],
+    'GET repos/acme/core/labels': [], 'GET repos/acme/core/milestones?state=all': [],
+    'POST repos/acme/core/issues': { number: 99 }, 'POST repos/acme/core/milestones': { number: 1 },
+    get 'GET repos/acme/core/pulls/7'() {
+      const base = execFileSync('git', ['-C', c.bare, 'rev-parse', 'refs/heads/main'], { encoding: 'utf8' }).trim();
+      const head = execFileSync('git', ['-C', c.bare, 'rev-parse', `refs/heads/${branch}`], { encoding: 'utf8' }).trim();
+      return { number: 7, body: `lease: ${NT_TOKEN}`, base: { sha: base }, head: { sha: head } };
+    },
+  });
+  const wrapped = { ...gh, raw: (args, input) => {
+    if (args[0] === 'pr' && args[1] === 'merge') {
+      const sha = execFileSync('git', ['-C', c.bare, 'rev-parse', `refs/heads/${branch}`], { encoding: 'utf8' }).trim();
+      execFileSync('git', ['-C', c.bare, 'update-ref', 'refs/heads/main', sha]);
+    }
+    return gh.raw(args, input);
+  } };
+  return { gh: wrapped, calls };
+}
+
+test('I7: a dirty PLAN.md refuses before anything: exit 2, no branch, no gh call', () => {
+  const c = ntCore();
+  const p = join(c.dir, 'docs/plan/PLAN.md');
+  writeFileSync(p, readFileSync(p, 'utf8') + '\nlocal scribble\n');
+  const { gh, calls } = fakeGh({});
+  const out = newTicket.run({ argv: c.argv, gh, env: {} });
+  assert.equal(out.exitCode, 2, JSON.stringify(out.result));
+  assert.match(out.result.error, /dirty/);
+  assert.equal(c.g('branch', '--list', 'plan/new-*').trim(), '');
+  assert.equal(calls.length, 0);
+  assert.match(readFileSync(p, 'utf8'), /local scribble/, 'the local edit is untouched');
+});
+
+test('I7: the committed PLAN.md is exactly the validated text (insertItem over the fetched tip), not the stale local file', () => {
+  const c = ntCore();
+  // origin moves on (another item P-3-5 lands upstream); the local clone is clean but behind.
+  const other = mkdtempSync(join(tmpdir(), 'devfw-ff-nt-other-'));
+  execFileSync('git', ['clone', '-q', '-c', 'core.autocrlf=false', '-b', 'main', c.bare, other]);
+  const op = join(other, 'docs/plan/PLAN.md');
+  writeFileSync(op, readFileSync(op, 'utf8').replace(ntItem('P-3-2', 'Second'), ntItem('P-3-2', 'Second') + '\n' + ntItem('P-3-5', 'Upstream')));
+  execFileSync('git', ['-C', other, '-c', 'user.name=a', '-c', 'user.email=a@acme.test', 'commit', '-qam', 'upstream item']);
+  execFileSync('git', ['-C', other, 'push', '-q', 'origin', 'main']);
+  const tip = execFileSync('git', ['-C', other, 'show', 'HEAD:docs/plan/PLAN.md'], { encoding: 'utf8' });
+  const expected = newTicket.insertItem(tip, { epic: '3', title: 'New thing', stage: 'A', kind: 'code', area: 'acme-api — `src/new.cs`', depends: '—', decisions: '—' }, 'P-3-6', 'Do the new thing.\n');
+  const { gh } = ntGh(c, 'plan/new-P-3-6');
+  const out = newTicket.run({ argv: c.argv, gh, env: {} });
+  assert.equal(out.exitCode, 0, JSON.stringify(out.result));
+  assert.equal(out.result.id, 'P-3-6');
+  const committed = execFileSync('git', ['-C', c.bare, 'show', 'refs/heads/plan/new-P-3-6:docs/plan/PLAN.md'], { encoding: 'utf8' });
+  assert.equal(committed, expected);
+  assert.match(committed, /### P-3-5 · Upstream/);
+});
+
+test('I7: run from a detached HEAD, new-ticket returns to the same sha (still detached)', () => {
+  const c = ntCore();
+  c.g('checkout', '-q', '--detach', 'HEAD');
+  const sha = c.g('rev-parse', 'HEAD').trim();
+  const { gh } = ntGh(c, 'plan/new-P-3-3');
+  const out = newTicket.run({ argv: c.argv, gh, env: {} });
+  assert.equal(out.exitCode, 0, JSON.stringify(out.result));
+  assert.equal(c.g('rev-parse', 'HEAD').trim(), sha);
+  assert.throws(() => c.g('symbolic-ref', '-q', 'HEAD'), 'HEAD is still detached');
+});
+
+test('I7: run from a branch, new-ticket returns to that branch', () => {
+  const c = ntCore();
+  c.g('checkout', '-q', '-b', 'work');
+  const { gh } = ntGh(c, 'plan/new-P-3-3');
+  const out = newTicket.run({ argv: c.argv, gh, env: {} });
+  assert.equal(out.exitCode, 0, JSON.stringify(out.result));
+  assert.equal(c.g('symbolic-ref', '--short', 'HEAD').trim(), 'work');
+});
