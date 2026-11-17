@@ -267,19 +267,26 @@ Each item is a path on which a rule above does NOT block. They are accepted resi
    path). For every segment it cannot read exactly, the parser (`lib/hook-cmd.js`) also reports where it runs: dir
    unknown (a dynamic `cd`/`pushd`/`-C`, `popd`, `cd -`, `~user`, a glob or brace in the dir, `GIT_DIR`/`--git-dir`,
    a relative `cd`/`pushd` other than `.`, `..`, `./x`, `../x` while `CDPATH` is set in the command or in the hook's
-   own environment, and any code-running word whose arguments mention `git`/`gh` as a word: `eval`, `xargs`,
-   `sh`/`bash -c`, `script`, `python`, `perl`, `node`, `sudo`, `nohup`, `wsl`, ... — the `CODE_RUNNERS` set), else a
-   literal `-C`/`--chdir` in the segment, else the cd dir. All Bash guards share one rule (`_v6-hook.sh`
-   `hook_opaque_rows` / `hook_opaque_hit`): an unreadable guarded segment is in scope when its dir is unknown, when its
-   literal dir or the hook cwd is managed / in core, or when the text names a managed slug / the core path. So an
-   unknown dir blocks from ANY cwd (a false block outside v6 repos, e.g. `bash -c 'git push ...'` anywhere, or any
-   relative `cd` before a guarded call when `CDPATH` is exported; workaround: run git plainly and write the path
-   literally). Residuals: an opaque segment counts for a guard only when its text names the guard's verb (`push`,
-   `commit`, `merge`/`pulls/`, a branch verb; case-insensitive), so a script that hides the verb (`bash -c "git $V"`,
-   an alias called from inside a `python -c` string, `pu""sh`) is not seen; a code-running word missing from
-   `CODE_RUNNERS` that is followed by a literal `git`/`gh` word is item 20's wrapper rule (dir as written), and one
-   that mentions git only inside a string (`npx foo -c 'git push'`) is not seen; `sudo` and `nohup` are no longer
-   read through, so `sudo git push ...` blocks as unreadable from any cwd.
+   own environment (a bare `CDPATH=...` assignment counts too), a `cd`/`pushd`/`popd` behind a wrapper (`env cd x`,
+   `timeout 5 cd x`, `stdbuf cd x`, `COMMAND cd x`; ruling R27a), and code that may run git from anywhere (rulings
+   R28, R28a): a segment where ANY word is a code runner (`eval`, `xargs`, `sh`/`bash -c`, `script`, `python`,
+   `perl`, `node`, `sudo`, `nohup`, `wsl`, ... — the `CODE_RUNNERS` set; so `stdbuf -oL bash -c '...'` and
+   `winpty python -c '...'` too) and any word mentions `git`/`gh`; a dynamic command word (`"$SHELL" -c '...'`) whose
+   arguments mention them; and a shell or interpreter reading its code from stdin (a pipe, heredoc, here-string or
+   `< file` into it, with `-` or no script argument) when the whole command text mentions them — that row's text is
+   the whole command), else a literal `-C`/`--chdir` in the segment, else the cd dir. A `git <x>` / `gh <x>` written
+   inside such code, where `<x>` is not a command, is looked up as an alias (item 20) from the hook cwd. All Bash
+   guards share one rule (`_v6-hook.sh` `hook_opaque_rows` / `hook_opaque_hit`): an unreadable guarded segment is in
+   scope when its dir is unknown, when its literal dir or the hook cwd is managed / in core, or when the text names a
+   managed slug / the core path. So an unknown dir blocks from ANY cwd (a false block outside v6 repos, e.g.
+   `bash -c 'git push ...'` or `echo 'git push' | bash` anywhere, or any relative `cd` before a guarded call when
+   `CDPATH` is set; workaround: run git plainly and write the path literally). Residuals: an opaque segment counts for
+   a guard only when its text names the guard's verb (`push`, `commit`, `merge`/`pulls/`, a branch verb;
+   case-insensitive), so code that deliberately hides the verb or the git word (`bash -c "git $V"`, `pu""sh`,
+   `g""it`) is not seen — no stronger than running a script file (item 18); a code runner not in `CODE_RUNNERS` that
+   mentions git only inside a string (`npx foo -c 'git push'`, `uv run x -c '...'`) is not seen; an alias inside an
+   interpreter string run from an unmanaged cwd is looked up there (only global aliases are seen); `sudo` and `nohup`
+   are not read through, so `sudo git push ...` blocks as unreadable from any cwd.
 4. **Web merges** (GitHub UI, API outside Claude's Bash tool) never pass `merge-gate-hook.sh`; they are caught after
    the fact by `bin/reconcile --post-merge` (`lib/reconcile.js`).
 5. **`owner-said` authorship**: `freeze-gate.sh` rule 8 proves an `owner-said` record for this exact plan content
@@ -317,10 +324,13 @@ Each item is a path on which a rule above does NOT block. They are accepted resi
     `gh api -X POST repos/o/n/merges`, `curl` to api.github.com, and any other HTTP client are not parsed; only
     `gh pr merge`, `gh api .../pulls/N/merge` and the GraphQL merge mutations are. Branch protection on GitHub and
     `bin/reconcile --post-merge` are the controls.
-20. **Wrappers, case and aliases** (rulings R25, R27, R29, R30): command words are compared case-insensitively by
-    basename without `.exe` (`GIT`, `Git.EXE`, `/usr/bin/git`, `C:/Program Files/Git/cmd/git.exe` are git; the same
-    for gh, cd, export, env and every word in the parser's sets), and so are git subcommands and gh command groups
-    (`git PUSH` is push), on every platform. A command word the parser does not know followed by `git`/`gh`
+20. **Wrappers, case and aliases** (rulings R25, R27, R27a, R29, R29a, R30): external command words are compared
+    case-insensitively by basename without `.exe` (`GIT`, `Git.EXE`, `/usr/bin/git`, `C:/Program Files/Git/cmd/git.exe`
+    are git; the same for gh, env, timeout, the code runners and the data commands), and so are git subcommands and gh
+    command groups (`git PUSH` is push), on every platform. Shell builtins and keywords (`cd pushd popd export unset
+    command builtin exec eval source . alias declare local readonly typeset`, `if then ...`) match only as written,
+    because bash dispatches them case-sensitively: `CD x` / `UNSET CDPATH` / `EXPORT GH_REPO=x` are "command not
+    found" and change nothing, and a `cd` behind a wrapper makes later dirs unknown (item 3). A command word the parser does not know followed by `git`/`gh`
     (`stdbuf`, `winpty`, `flock`, ...) is unreadable and handled by item 3's rule with the dir as written; `exec`,
     `command`, `builtin`, `env`, `timeout`, `nice` are read through. Commands whose arguments are data (`echo`,
     `printf`, `grep`, `rg`, `cat`, `ls`, `test`, `[`, `read`, `alias`, ... — the `DATA` set in `lib/hook-cmd.js`)
@@ -335,13 +345,20 @@ Each item is a path on which a rule above does NOT block. They are accepted resi
     `export`) is unreadable when its subcommand is a guarded verb (push, commit, worktree, checkout, switch, branch);
     when it is not a git command at all, it is unreadable for EVERY guard whatever its text says (`any`; the
     expansion may live only in that config). gh with `GH_CONFIG_DIR`/`HOME`/`XDG_CONFIG_HOME`/`APPDATA` and a
-    non-command group likewise. Costs, accepted: a git shell alias (`!...`) blocks push-guard / plan-edit-guard in
-    a managed repo / core, and merge-gate-hook from any cwd (merges have no dir); an alias step naming an external
-    `git-<name>` command (not in the parser's command list) counts as unresolved. Residuals: claim-guard counts an alias only when a step
-    is a creation form (`-b`, `-c`, `--create`, `--orphan`, `branch`, `worktree`) or a shell alias, so an alias for
-    plain `checkout` is item 12's DWIM gap; when `gh alias list` fails, a gh alias call blocks only from a managed
-    cwd; `-c` keys outside the list above (and `--exec-path`) are read as harmless; `unset GIT_CONFIG_*` does not
-    clear an earlier `export`.
+    non-command group likewise. merge-gate-hook's pre-filter takes the word `git` too (R29a), so git aliases and
+    injected config reach it; there a shell (`!`) alias step counts only when its text names `gh`, `merge` or
+    `pulls/`, or when the repo it was looked up in is managed. Costs, accepted: a git shell alias (`!...`) blocks
+    push-guard / plan-edit-guard in a managed repo / core and merge-gate-hook in a managed repo; a git alias for
+    `git merge` (expansion names `merge`) blocks merge-gate-hook from any cwd; an alias step naming an external
+    `git-<name>` command (not in the parser's command list) counts as unresolved. Residuals: claim-guard counts an
+    alias only when a step is a creation form (`-b`, `-c`, `--create`, `--orphan`, `branch`, `worktree`) or a shell
+    alias, and then only when the command text mentions `t/` or is non-literal (an `any` row from injected config is
+    never dropped), so an alias for plain `checkout` is item 12's DWIM gap and a repo `!` alias that names the ticket
+    branch only inside its expansion passes claim-guard (push-guard's claim check on the push is the control); a `!`
+    alias that hides a merge behind a script file, outside a managed repo, is not seen by merge-gate-hook (the same
+    class as running that script); when `gh alias list` fails, a gh alias call blocks only from a managed cwd; `-c`
+    keys outside the list above and `--exec-path` / `GIT_EXEC_PATH` (which can run any binary as `git-push`; item 18's
+    class) are read as harmless; `unset GIT_CONFIG_*` does not clear an earlier `export`.
 21. **jq missing** (ruling R24; not a fail-open, but visible): with `DEVFW_CORE_DIR` set and no jq, a hook never
     blocks before scope. Each one reads the raw input for its own tokens (case-insensitively, R27) and blocks only
     those calls: push-guard on
