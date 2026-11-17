@@ -1,147 +1,126 @@
 #!/bin/bash
-# push-guard.sh — PreToolUse hook: block git push until the /implement full-cycle
-# workflow is marked complete (or user has explicitly bypassed for this ticket).
-#
-# A branch that never used /implement is not guarded (no session folder). A branch
-# that has an active session must either show a pipeline-complete.md marker
-# (GATE 2 approval) or a ticket-scoped bypass.json to proceed.
-#
-# No ERR trap — this hook intentionally blocks (exit 2) on violation.
+# push-guard: PreToolUse hook (v6). Blocks, per `git push` in a managed repo: force / delete (unless
+# hooks.pushGuard.allowForce), a push to the repo's default branch, a t/<n>-... push with no claim, and a push
+# of a t/<n>-... branch while issue <n> carries `needs-ack`.
+# Rules: (1) no DEVFW_CORE_DIR, or no `push` in the command -> allow. Scope, with no network and nothing that
+# can fail: a parsed push whose remote (the push's, else the branch's upstream remote, else origin) has a raw
+# URL naming a managed repo; an opaque segment mentioning push is in scope when HOOK_CWD is managed. RESIDUAL,
+# accepted: an opaque command run from an unmanaged cwd that pushes elsewhere is not seen. A parser failure on
+# a push-looking command blocks. (2) fail closed. (3) force/del blocks. (4) destination: the refspec's dst, or
+# the current branch (HEAD / no refspec; detached blocks); refs/tags/* and other non-branch refs skip 5-7.
+# (5) default branch blocks. (6) t/<n>-... needs `hook_claim_ok`. (7) the issue must not be `needs-ack`.
+# Network calls (claim fetch, gh) are bounded by DEVFW_HOOK_NET_TIMEOUT (20s); a timeout blocks.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_v6-hook.sh"
+hook_init push-guard
+[ -n "$HOOK_CORE" ] || exit 0
+[ "$HOOK_TOOL" = Bash ] || exit 0
+CMD=$(hook_field .tool_input.command)
+grep -Eiq '\bpush\b' <<<"$CMD" || exit 0
 
-set -euo pipefail
-
-# --- Shared helpers (sourced before jq check so emit-event can no-op safely) ---
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=./_session-lib.sh
-. "$SCRIPT_DIR/_session-lib.sh"
-
-emit_push_blocked() {
-  local reason="$1"
-  bash "$SCRIPT_DIR/emit-event.sh" gate.blocked --actor "hook:push-guard" \
-    --data "$(jq -cn --arg reason "$reason" '{gate:"push",reason:$reason}' 2>/dev/null || echo '{}')" \
-    2>/dev/null || true
-}
-
-emit_push_passed() {
-  local reason="${1:-}"
-  bash "$SCRIPT_DIR/emit-event.sh" gate.passed --actor "hook:push-guard" \
-    --data "$(jq -cn --arg reason "$reason" '{gate:"push",reason:$reason}' 2>/dev/null || echo '{}')" \
-    2>/dev/null || true
-}
-
-# --- Dependency check (fail safe — block if jq missing) ---
-if ! command -v jq &>/dev/null; then
-    echo "BLOCKED: jq required for push-guard. Install jq or use --force to bypass." >&2
-    emit_push_blocked "jq not available"
-    exit 2
+PARSED=$(node "$(devfw_path "$HOOK_LIB_DIR/../../bin/hook-parse")" <<<"$CMD" | tr -d '\r') || PARSED=""
+if [ -z "$PARSED" ] || ! jq -e . >/dev/null 2>&1 <<<"$PARSED"; then
+  hook_fail_closed
+  hook_block "cannot read this push command exactly; write it as: git push <remote> <branch>"
 fi
 
-CONFIG="$DEVFW_CONFIG"
+# _abs <path>: absolute against HOOK_CWD when relative.
+_abs() {
+  case "$1" in
+    /*|[A-Za-z]:*|\*) printf '%s\n' "$1" ;;
+    *) if [ -n "$HOOK_CWD" ]; then printf '%s/%s\n' "$HOOK_CWD" "$1"; else printf '%s\n' "$1"; fi ;;
+  esac
+}
 
-INPUT=$(cat)
-COMMAND=$(echo "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null)
-[ -n "$COMMAND" ] || exit 0
+# _resolve <push-json>: sets P_DIR, P_REMOTE, P_REPO (managed owner/name or empty). Returns 1 on any error.
+_resolve() {
+  local d r br
+  d=$(jq -r '.dir // empty' <<<"$1" | tr -d '\r') || return 1
+  r=$(jq -r '.remote // empty' <<<"$1" | tr -d '\r') || return 1
+  if [ -n "$d" ]; then P_DIR=$(_abs "$d"); else P_DIR="${HOOK_CWD:-.}"; fi
+  if [ -z "$r" ]; then
+    br=$(git -C "$(devfw_path "$P_DIR")" symbolic-ref -q --short HEAD 2>/dev/null) || br=""
+    [ -z "$br" ] || r=$(git -C "$(devfw_path "$P_DIR")" config --get "branch.$br.remote" 2>/dev/null) || r=""
+    r="${r//$'\r'/}"
+    { [ -n "$r" ] && [ "$r" != . ]; } || r=origin
+  fi
+  P_REMOTE="$r"
+  P_REPO=$(hook_repo_for_remote "$P_DIR" "$r") || return 1
+  P_REPO="${P_REPO//$'\r'/}"
+}
 
-# Broader match for git push variants (git -c key=val push, etc.)
-echo "$COMMAND" | grep -qE '\bgit\b.*\bpush\b' || exit 0
-
-# Allow force pushes (escape hatch — read flags from config, default --force/-f)
-if [ -f "$CONFIG" ] && jq -e '.hooks.pushGuard.escapeFlags' "$CONFIG" &>/dev/null; then
-    ESCAPE_FLAGS=$(jq -r '.hooks.pushGuard.escapeFlags[]' "$CONFIG" 2>/dev/null | tr -d '\r')
-else
-    ESCAPE_FLAGS=$(printf '%s\n' '--force' '-f')
+# Scope pass.
+INSCOPE=()
+while IFS= read -r p; do
+  [ -n "$p" ] || continue
+  if _resolve "$p"; then [ -z "$P_REPO" ] || INSCOPE+=("$p"); else INSCOPE+=("$p"); fi
+done < <(jq -c '.pushes[]' <<<"$PARSED" | tr -d '\r')
+OPAQUE_HIT=0
+if [ "$(jq -r '[.opaque[] | select(test("push";"i"))] | length' <<<"$PARSED" | tr -d '\r')" -gt 0 ]; then
+  rc=0; orepo=$(hook_repo_of "${HOOK_CWD:-.}") || rc=1
+  if [ "$rc" -ne 0 ] || [ -n "$orepo" ]; then OPAQUE_HIT=1; fi
 fi
-while IFS= read -r flag; do
-    [ -z "$flag" ] && continue
-    # Word-boundary match so --force does NOT match --force-if-includes (a safer
-    # git flag that should NOT bypass push-guard). Flags are whitespace-separated
-    # tokens in the command string.
-    if echo " $COMMAND " | grep -qE "([[:space:]])$(printf '%s' "$flag" | sed 's/[.[\*^$()+?{|]/\\&/g')([[:space:]=])"; then
-        emit_push_passed "escape flag present"
-        exit 0
+[ "${#INSCOPE[@]}" -gt 0 ] || [ "$OPAQUE_HIT" -eq 1 ] || exit 0
+
+hook_fail_closed
+[ "$OPAQUE_HIT" -eq 0 ] || hook_block "cannot read this push command exactly; write it as: git push <remote> <branch>"
+
+PLAN_REPO=$(hook_cfg '.plan.repo') || hook_block "cannot read the config; not allowing a push"
+ALLOW_FORCE=$(hook_cfg '.hooks.pushGuard.allowForce' false) || hook_block "cannot read the config; not allowing a push"
+NET="${DEVFW_HOOK_NET_TIMEOUT:-20}"
+export HOOK_NET_TIMEOUT="$NET"
+
+_default_of() {  # _default_of <owner/name>: that repo's default branch (config), else main
+  local d
+  d=$(hook_cfg "[(.repos // {}) | .[] | select((.github // \"\") | ascii_downcase == \"${1,,}\") | .default][0], .plan.default" 2>/dev/null | head -1) || d=""
+  printf '%s\n' "${d:-main}"
+}
+
+_current_branch() {
+  git -C "$(devfw_path "$1")" symbolic-ref -q --short HEAD 2>/dev/null | tr -d '\r'
+}
+
+_check_dst() {  # _check_dst <dir> <repo> <dst-branch>
+  local dir="$1" repo="$2" b="$3" def n rc=0 out lab
+  def=$(_default_of "$repo")
+  [ "${b,,}" != "${def,,}" ] || hook_block "merge to $def goes through the merge gate, not a push"
+  [[ "$b" =~ ^t/([1-9][0-9]*)- ]] || return 0
+  n="${BASH_REMATCH[1]}"
+  hook_claim_ok "$dir" "$b" || rc=$?
+  [ "$rc" -ne 3 ] || hook_block "no claim for issue $n; run bin/claim first"
+  [ "$rc" -eq 0 ] || hook_block "cannot verify the claim (fetch failed)"
+  rc=0
+  [ -n "$PLAN_REPO" ] || hook_block "cannot read issue $n"
+  out=$(timeout "$NET" gh api "repos/$PLAN_REPO/issues/$n" 2>/dev/null) || rc=$?
+  out="${out//$'\r'/}"
+  [ "$rc" -eq 0 ] || hook_block "cannot read issue $n"
+  lab=$(jq -r '[.labels[]?.name] | join("\n")' <<<"$out" 2>/dev/null | tr -d '\r') || hook_block "cannot read issue $n"
+  if grep -qx 'needs-ack' <<<"$lab"; then
+    hook_block "issue $n needs-ack: acknowledge the plan change (ack $n <plan-sha>: …) before pushing"
+  fi
+}
+
+for p in "${INSCOPE[@]}"; do
+  _resolve "$p" || hook_block "cannot resolve this push's repository"
+  [ -n "$P_REPO" ] || continue
+  force=$(jq -r '.force' <<<"$p" | tr -d '\r'); del=$(jq -r '.del' <<<"$p" | tr -d '\r')
+  if [ "$force" = true ] || [ "$del" = true ]; then
+    [ "$ALLOW_FORCE" = true ] || hook_block "force-push and remote branch deletion are off (hooks.pushGuard.allowForce)"
+  fi
+  mapfile -t specs < <(jq -r '.refspecs[]' <<<"$p" | tr -d '\r')
+  [ "${#specs[@]}" -gt 0 ] || specs=("HEAD")
+  for s in "${specs[@]}"; do
+    s="${s#+}"
+    if [[ "$s" == *:* ]]; then dst="${s#*:}"; else dst="$s"; fi
+    if [ "$dst" = HEAD ] || [ -z "$dst" ]; then
+      dst=$(_current_branch "$P_DIR") || dst=""
+      [ -n "$dst" ] || hook_block "cannot tell what this push updates"
     fi
-done <<< "$ESCAPE_FLAGS"
-
-# Get branch (handle detached HEAD)
-BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null) || {
-    echo "WARNING: Detached HEAD. Push guard bypassed." >&2
-    exit 0
-}
-[ -n "$BRANCH" ] || {
-    echo "WARNING: Not inside a git repository. Push guard skipped." >&2
-    exit 0
-}
-
-SESSION_DIR=$(resolve_session_dir)
-MARKER="$SESSION_DIR/pipeline-complete.md"
-BYPASS_FILE="$SESSION_DIR/bypass.json"
-
-# Only guard branches that have a session folder (i.e., /implement was started for this branch or epic).
-# Branches that never used /implement are not blocked — regular development proceeds normally.
-if [ ! -d "$SESSION_DIR" ]; then
-    exit 0
-fi
-
-# Full-cycle completion marker present and branch matches exactly → allow.
-if [ -f "$MARKER" ] && grep -qxF "Pipeline completed for branch: $BRANCH" "$MARKER" 2>/dev/null; then
-    emit_push_passed "pipeline-complete marker"
-    exit 0
-fi
-
-PROGRESS_LOG="$SESSION_DIR/progress-log.json"
-ACTIVE_FEATURE=""
-MODE="full-cycle"
-STATUS="unknown"
-if [ -f "$PROGRESS_LOG" ]; then
-    ACTIVE_FEATURE=$(jq -r '.featureSlug // .ticket // empty' "$PROGRESS_LOG" 2>/dev/null)
-    MODE=$(jq -r '.mode // "full-cycle"' "$PROGRESS_LOG" 2>/dev/null)
-    STATUS=$(jq -r '.status // "unknown"' "$PROGRESS_LOG" 2>/dev/null)
-fi
-
-# Ticket-scoped bypass: only valid when bypass feature matches current session feature
-# AND the bypass has all required audit fields (feature, reason, createdAt).
-if [ -f "$BYPASS_FILE" ]; then
-    BYPASS_FEATURE=$(jq -r '.feature // empty' "$BYPASS_FILE" 2>/dev/null)
-    BYPASS_REASON=$(jq -r '.reason // empty' "$BYPASS_FILE" 2>/dev/null)
-    BYPASS_CREATED=$(jq -r '.createdAt // empty' "$BYPASS_FILE" 2>/dev/null)
-    if [ -n "$BYPASS_FEATURE" ] && [ -n "$BYPASS_REASON" ] && [ -n "$BYPASS_CREATED" ]; then
-        if [ -z "$ACTIVE_FEATURE" ]; then
-            echo "🛑 BLOCKED: bypass.json has feature '$BYPASS_FEATURE' but session has no featureSlug/ticket recorded." >&2
-            echo "   The session may not be fully initialized. Run /implement to initialize, then retry." >&2
-            emit_push_blocked "bypass feature without active session feature"
-            exit 2
-        fi
-        if [ "$BYPASS_FEATURE" = "$ACTIVE_FEATURE" ]; then
-            TS=$(iso_utc)
-            echo "[$TS] push-guard: ⚠️  ticket-scoped bypass active for '$BYPASS_FEATURE' (reason: $BYPASS_REASON, created: $BYPASS_CREATED) — push allowed under audit trail." >&2
-            emit_push_passed "ticket-scoped bypass active"
-            exit 0
-        fi
-        # Feature mismatch: spec §5.4 — cross-ticket bypass impossible.
-        echo "🛑 BLOCKED: bypass.json feature '$BYPASS_FEATURE' does not match active session feature '$ACTIVE_FEATURE'." >&2
-        echo "   Cross-ticket bypass is not permitted. Create a new bypass for this feature, or complete GATE 2." >&2
-        emit_push_blocked "cross-ticket bypass not permitted"
-        exit 2
-    elif [ -n "$BYPASS_FEATURE" ]; then
-        echo "🛑 BLOCKED: bypass.json exists but is missing required audit fields (feature, reason, createdAt)." >&2
-        echo "   Bypass must be created via 'bypass freeze' in /implement, not manually." >&2
-        emit_push_blocked "bypass missing audit fields"
-        exit 2
-    fi
-fi
-
-# Non-full-cycle modes (review/test/docs/init) are short-lived quality passes; do not
-# gate push on their completion status. A crashed/interrupted review must not
-# permanently block push on this branch.
-if [ "$MODE" != "full-cycle" ]; then
-    emit_push_passed "non-full-cycle mode ($MODE)"
-    exit 0
-fi
-
-echo "🛑 BLOCKED: /implement full-cycle workflow not completed for branch '$BRANCH'." >&2
-echo "   Normal path: complete Phase 7 (GATE 2 approval) of /implement to authorize push." >&2
-echo "   Emergency path: request 'bypass freeze' in /implement to create an audit-trailed bypass." >&2
-echo "   Escape hatch: use --force in your git push command (no audit trail)." >&2
-echo "   Session: $SESSION_DIR" >&2
-emit_push_blocked "full-cycle workflow not completed"
-exit 2
+    case "$dst" in
+      refs/heads/*) dst="${dst#refs/heads/}" ;;
+      refs/*) continue ;;
+    esac
+    case "$dst" in *\**|*\?*) hook_block "cannot tell what this push updates" ;; esac
+    _check_dst "$P_DIR" "$P_REPO" "$dst"
+  done
+done
+exit 0
