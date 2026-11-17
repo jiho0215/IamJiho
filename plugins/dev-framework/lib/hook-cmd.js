@@ -80,13 +80,28 @@ const GH_COMMANDS = new Set(('auth browse codespace cs gist issue org pr project
 const base = (t) => t.replace(/^.*[\\/]/, '').replace(/\.exe$/i, '');
 // R27: how a command word is compared: basename, no .exe, lower case.
 const cmdName = (t) => base(t).toLowerCase();
+// R27a: shell builtins and keywords are dispatched by bash case-sensitively (CD is "command not found"), so they match
+// only exactly as written; external programs (git, gh, python, env, stdbuf, ...) fold as above.
+const SHELL_BUILTINS = new Set(['cd', 'pushd', 'popd', 'export', 'unset', 'command', 'builtin', 'exec', 'eval', 'source',
+  '.', 'alias', 'declare', 'local', 'readonly', 'typeset']);
+const NOT_A_COMMAND = '\u0000';  // prefix of a mis-cased builtin: matches no set, so it is an unknown word
+function wordName(text) {
+  if (SHELL_BUILTINS.has(text) || KEYWORDS.has(text)) return text;
+  const n = cmdName(text);
+  return SHELL_BUILTINS.has(n) || KEYWORDS.has(n) ? NOT_A_COMMAND + text : n;
+}
 // R28: words that run code given as arguments or a script; EXECS plus these.
 const CODE_RUNNERS = new Set([...EXECS, 'script', 'python', 'python3', 'py', 'perl', 'ruby', 'node', 'deno', 'bun', 'php',
   'lua', 'osascript', 'busybox', 'nohup', 'setsid', 'sudo', 'doas', 'runuser', 'chroot', 'unbuffer', 'expect', 'tclsh',
   'wsl', 'start']);
 const isCodeRunner = (name) => CODE_RUNNERS.has(name) || /^(python|pypy)[0-9.]*$/.test(name);
-// R28: git or gh named as a word (git.exe too; .git, github, git-lfs are not it).
-const GIT_WORD = /(^|[^\w.-])(git|gh)(\.exe)?(?![\w-])/i;
+// R28: git or gh named as a word (git.exe too; .git, github, git-lfs and a path component like tools/git/x are not it).
+const GIT_WORD = /(^|[^\w.-])(git|gh)(\.exe)?(?![\w/-])/i;
+// R28a: runners that take code on stdin when given `-` or no script argument (a pipe, heredoc or < into them).
+const STDIN_RUNNERS = /^(sh|bash|zsh|dash|ksh|fish|pwsh|powershell|cmd|ssh|su|script|python[0-9.]*|py|pypy[0-9.]*|perl|ruby|node|deno|bun|php|lua|osascript|busybox|expect|tclsh|wsl)$/;
+// R28a (I3): `git [global options] <sub>` / `gh [-R x] <group>` written inside an interpreter string.
+const GIT_IN_TEXT = /(?:^|[^\w.\/-])git(?:\.exe)?((?:\s+-[cC]\s+\S+|\s+--?[A-Za-z][\w-]*(?:=\S*)?)*)\s+([A-Za-z][\w-]*)/gi;
+const GH_IN_TEXT = /(?:^|[^\w.\/-])gh(?:\.exe)?((?:\s+(?:-R|--repo)\s+\S+)*)\s+([A-Za-z][\w-]*)/gi;
 // R30: environment that changes which git config (and so which aliases) a call reads.
 const GIT_CONFIG_ENV = /^(GIT_CONFIG|GIT_CONFIG_COUNT|GIT_CONFIG_KEY_\w*|GIT_CONFIG_VALUE_\w*|GIT_CONFIG_PARAMETERS|GIT_CONFIG_GLOBAL|GIT_CONFIG_SYSTEM|HOME|XDG_CONFIG_HOME)$/;
 const GH_CONFIG_ENV = /^(GH_CONFIG_DIR|HOME|XDG_CONFIG_HOME|APPDATA)$/;
@@ -101,7 +116,7 @@ function scanAt(s, start, mode, opts = {}) {
   const home = typeof opts.home === 'string' && opts.home !== '' ? opts.home : null;
   const items = [];
   const n = s.length;
-  let i = start, depth = 0, broken = false, segBroken = false;
+  let i = start, depth = 0, broken = false, segBroken = false, segStdin = false;
   let words = [], subs = [], word = null, segStart = start;
   let pendingRedir = false, pendingHeredoc = null;
   const heredocs = [];
@@ -124,8 +139,8 @@ function scanAt(s, start, mode, opts = {}) {
   const endSeg = (sep, at) => {
     endWord();
     const raw = s.slice(segStart, at).trim();
-    if (words.length || raw) items.push({ kind: 'seg', words, subs, raw, sep, broken: segBroken });
-    words = []; subs = []; segBroken = false;
+    if (words.length || raw) items.push({ kind: 'seg', words, subs, raw, sep, broken: segBroken, stdin: segStdin });
+    words = []; subs = []; segBroken = false; segStdin = false;
   };
   const sub = (from) => {  // scan a $( … ) / <( … ) body starting at `from`; returns the index after ')'
     const r = scanAt(s, from, 'subst', opts);
@@ -232,6 +247,7 @@ function scanAt(s, start, mode, opts = {}) {
         ww.text += s.slice(i, end); ww.dyn = true; ww.udyn = true; i = end; continue;
       }
       if (word && /^\d+$/.test(word.text) && !word.quoted && !word.dyn) word = null; else endWord();
+      if (c === '<') segStdin = true;  // R28a: a heredoc, here-string or `< file` feeds the command's stdin
       if (c === '<' && s[i + 1] === '<' && s[i + 2] !== '<') {
         i += 2; let strip = false;
         if (s[i] === '-') { strip = true; i++; }
@@ -608,47 +624,68 @@ function segDir(ws, st, env) {
   return { dir, unknown };
 }
 
-// Returns the state after this segment (cd/export), or null when it changes nothing.
-function segment(it, st, out) {
+// R28a (I3): every `git <sub>` / `gh <group>` written inside an interpreter string whose sub/group is not a command is
+// an alias candidate with an unknown dir (the hook resolves it from its cwd: repo + global config / gh alias list).
+function aliasesInText(text, raw, out) {
+  const seen = new Set(out.aliases.map((a) => `${a.tool}:${a.name}:${a.raw}`));
+  const add = (tool, name) => {
+    const key = `${tool}:${name}:${raw}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.aliases.push({ tool, name, dir: null, unknown: true, raw });
+  };
+  for (const m of String(text).matchAll(GIT_IN_TEXT)) if (!GIT_COMMANDS.has(m[2].toLowerCase())) add('git', m[2]);
+  for (const m of String(text).matchAll(GH_IN_TEXT)) if (!GH_COMMANDS.has(m[2].toLowerCase())) add('gh', m[2]);
+}
+
+// Returns the state after this segment (cd/export), or null when it changes nothing. ctx: { text, piped } = the whole
+// command text this segment belongs to, and whether a pipe feeds this segment's stdin.
+function segment(it, st, out, ctx) {
   const mentions = MENTION.test(it.raw);
   const env = {};
-  // unknown: the dir cannot be read (R28); any: the call may be anything, so every guard reads it as its own (R30)
-  const list = (unknown, any) => {
+  // unknown: the dir cannot be read (R28); any: the call may be anything, so every guard reads it as its own (R30);
+  // raw: the text the guards match their verb against (default: the segment).
+  const list = (unknown, any, raw) => {
     const d = segDir(it.words, st, env);
-    out.opaque.push(it.raw);
+    out.opaque.push(raw === undefined ? it.raw : raw);
     out.opaqueDirs.push({ ...d, ...(unknown ? { unknown: true } : {}), ...(any ? { any: true } : {}) });
     return null;
   };
+  // R28 / R28a: code that may run git/gh from any dir; its git/gh aliases are resolved too (I3)
+  const listCode = (raw, text) => { aliasesInText(text, raw, out); return list(true, false, raw); };
   const opaque = () => (mentions ? list() : null);
   if (it.broken) return opaque();
   const ws = it.words;
-  let k = 0;
+  let k = 0, wrapped = false;
   for (;;) {
-    while (k < ws.length && !ws[k].quoted && KEYWORDS.has(cmdName(ws[k].text))) k++;
+    while (k < ws.length && !ws[k].quoted && KEYWORDS.has(ws[k].text)) k++;  // R27a: keywords as written
     while (k < ws.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(ws[k].text)) {
       const eq = ws[k].text.indexOf('=');
       env[ws[k].text.slice(0, eq)] = { text: ws[k].text.slice(eq + 1), dyn: ws[k].dyn };
       k++;
     }
-    const t = k < ws.length ? cmdName(ws[k].text) : '';
+    const t = k < ws.length ? wordName(ws[k].text) : '';
     if (ws[k] && ws[k].dyn) {
+      const rest = ws.slice(k + 1);
+      // R28a (I2): a dynamic command word may be any code runner ("$SHELL" -c '...'): mentioning git/gh, dir unknown
+      if (rest.some((w) => GIT_WORD.test(w.text))) return listCode(it.raw, rest.map((w) => w.text).join(' '));
       // R12: a dynamic command word (g=gh; $g pr merge) hides the program: listed whenever a later word is a
       // verb we guard, even with no MENTION hit.
-      if (ws.slice(k + 1).some((w) => /^(merge|push|commit|checkout|switch|worktree|branch)$/i.test(w.text))) return list();
+      if (rest.some((w) => /^(merge|push|commit|checkout|switch|worktree|branch)$/i.test(w.text))) return list();
       return opaque();
     }
-    if (t === 'command' || t === 'builtin') {  // nohup / sudo run their arguments: CODE_RUNNERS (R28)
+    if (t === 'command' || t === 'builtin') {  // run the builtin itself: its state change applies
       k++;
       while (k < ws.length && ws[k].text.startsWith('-')) k++;
       continue;
     }
     if (t === 'exec') {  // exec [-cl] [-a name] cmd: runs cmd in place of the shell, arguments as given
-      k++;
+      k++; wrapped = true;
       while (k < ws.length && ws[k].text.startsWith('-')) k += ws[k].text === '-a' ? 2 : 1;
       continue;
     }
     if (t === 'env') {
-      k++;
+      k++; wrapped = true;
       while (k < ws.length && ws[k].text.startsWith('-')) {
         // -C/--chdir moves the command elsewhere; -S re-splits a string into a command: unreadable.
         if (/^(-[a-zA-Z]*[CS]|--chdir|--split-string)/.test(ws[k].text)) return opaque();
@@ -657,19 +694,26 @@ function segment(it, st, out) {
       continue;
     }
     if (t === 'timeout' || t === 'nice') {
-      k++;
+      k++; wrapped = true;
       while (k < ws.length && ws[k].text.startsWith('-')) k += /^(-s|-k|-n)$/.test(ws[k].text) ? 2 : 1;
       if (t === 'timeout') k++;  // the duration
       continue;
     }
     break;
   }
-  if (k >= ws.length) return null;
-  const name = cmdName(ws[k].text);
+  if (k >= ws.length) {
+    // M1: a bare CDPATH=... is a shell variable, and cd reads it exported or not
+    if (env.CDPATH !== undefined) return { ...st, cdpath: env.CDPATH.dyn || env.CDPATH.text !== '' };
+    return null;
+  }
+  const name = wordName(ws[k].text);
   const args = ws.slice(k + 1);
-  if (name === 'cd' || name === 'pushd') return cdEffect(args, st, env);
+  // R27a: cd/pushd/popd/export/unset change the shell's state only as the segment's own builtin. Behind a wrapper
+  // (env, timeout, nice, exec) the program is not found and nothing changes; a cd there still makes the dir unclear.
+  if (name === 'cd' || name === 'pushd') return wrapped ? { ...st, cdOpaque: true } : cdEffect(args, st, env);
   if (name === 'popd') return { ...st, cdOpaque: true };
   if (name === 'export') {
+    if (wrapped) return null;
     let next = null;
     for (const a of args) {
       const eq = a.text.indexOf('='); const v = eq < 0 ? null : a.text.slice(eq + 1);
@@ -683,21 +727,34 @@ function segment(it, st, out) {
     return next;
   }
   if (name === 'unset') {
+    if (wrapped) return null;
     let next = null;
     if (args.some((a) => a.text === 'GH_REPO')) next = { ...st, ghRepo: null };
     if (args.some((a) => a.text === 'CDPATH')) next = { ...(next || st), cdpath: false };
     return next;
   }
-  if (isCodeRunner(name)) {
-    // R28: its arguments may run git/gh from any dir (bash -c 'cd ~/x && git push'): opaque, dir unknown
-    if (args.some((a) => GIT_WORD.test(a.text))) return list(true);
-    return EXECS.has(name) ? opaque() : null;
-  }
-  if (name !== 'git' && name !== 'gh') {
+  if (name !== 'git' && name !== 'gh' && !DATA.has(name)) {
+    const all = ws.slice(k);
+    // R28a: ANY word may be the code runner (stdbuf -oL bash -c '...', winpty python -c '...')
+    const ri = all.findIndex((w) => !w.dyn && isCodeRunner(wordName(w.text)));
+    if (ri >= 0) {
+      if (args.some((a) => GIT_WORD.test(a.text))) return listCode(it.raw, args.map((a) => a.text).join(' '));
+      // R28a (I1): a shell / interpreter reading its code from stdin (pipe, heredoc, here-string, < file) with `-` or
+      // no script argument: the code is elsewhere in the command, so the whole command text is what it may run.
+      const rargs = all.slice(ri + 1);
+      const fromStdin = (ctx.piped || it.stdin) && STDIN_RUNNERS.test(wordName(all[ri].text))
+        && (rargs.some((a) => a.text === '-') || !rargs.some((a) => !a.text.startsWith('-')));
+      if (fromStdin && GIT_WORD.test(ctx.text)) return listCode(ctx.text, ctx.text);
+      if (ri === 0) return EXECS.has(name) ? opaque() : null;
+    }
+    // R27a: a wrapper whose target is cd/pushd/popd (stdbuf cd x, COMMAND cd x): the shell's dir is not changed,
+    // but what the author meant is unclear: later dirs are unknown.
+    if (args.some((a) => !a.dyn && /^(cd|pushd|popd)$/.test(a.text))) return { ...st, cdOpaque: true };
     // R25: an unknown command word (stdbuf -oL, winpty, flock f, ...) followed by git/gh may run it: unreadable.
-    if (!DATA.has(name) && args.some((a) => !a.dyn && /^(git|gh)$/.test(cmdName(a.text)))) return opaque();
+    if (args.some((a) => !a.dyn && /^(git|gh)$/.test(cmdName(a.text)))) return opaque();
     return null;
   }
+  if (name !== 'git' && name !== 'gh') return null;  // DATA
   let verdict = null;
   try {
     if (name === 'git') verdict = parseGit(args, st, env, out, it.raw);
@@ -721,7 +778,7 @@ function walk(src, out, initial, opts) {
     if (it.kind === 'open') { stack.push(st); st = { ...st }; prevSep = null; continue; }
     if (it.kind === 'close') { if (stack.length) st = stack.pop(); prevSep = null; continue; }
     for (const body of it.subs) walk(body, out, st, opts);  // substitutions run, in the segment's cwd
-    const next = segment(it, st, out);
+    const next = segment(it, st, out, { text: src, piped: prevSep === '|' });
     // Pipelines and background jobs run in subshells: their cd/export does not carry.
     if (next && it.sep !== '|' && it.sep !== '&' && prevSep !== '|') st = next;
     prevSep = it.sep;
