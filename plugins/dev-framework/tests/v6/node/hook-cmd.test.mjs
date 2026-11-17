@@ -6,8 +6,15 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const require = createRequire(import.meta.url);
-const { parseCommand } = require('../../../lib/hook-cmd.js');
+const { parseCommand: parseFull } = require('../../../lib/hook-cmd.js');
 const here = dirname(fileURLToPath(import.meta.url));
+// The older rows compare the five original fields; the R20/R25 fields (opaqueDirs, aliases) have their own tests
+// below, and a length check here keeps opaqueDirs parallel to opaque for every row.
+const parseCommand = (c, o) => {
+  const { opaqueDirs, aliases, ...rest } = parseFull(c, o);
+  assert.equal(opaqueDirs.length, rest.opaque.length, `opaqueDirs parallel to opaque: ${c}`);
+  return rest;
+};
 
 const EMPTY = { merges: [], pushes: [], branches: [], commits: [], opaque: [] };
 const r = (over) => ({ ...EMPTY, ...over });
@@ -286,7 +293,72 @@ test('F11: gh -R x pr merge; git --no-pager push', () => {
 test('bin/hook-parse prints parseCommand as JSON', () => {
   const out = execFileSync(process.execPath, [join(here, '../../../bin/hook-parse')],
     { input: 'git -C ../api push origin t/41-x', encoding: 'utf8' });
-  assert.deepEqual(JSON.parse(out), r({ pushes: [push({ dir: '../api', remote: 'origin', refspecs: ['t/41-x'] })] }));
+  assert.deepEqual(JSON.parse(out), { ...r({ pushes: [push({ dir: '../api', remote: 'origin', refspecs: ['t/41-x'] })] }),
+    opaqueDirs: [], aliases: [] });
+  const home = execFileSync(process.execPath, [join(here, '../../../bin/hook-parse')],
+    { input: 'cd ~/api && git push origin main', encoding: 'utf8', env: { ...process.env, DEVFW_PARSE_HOME: 'C:/H' } });
+  assert.equal(JSON.parse(home).pushes[0].dir, 'C:/H/api', 'hook-parse passes DEVFW_PARSE_HOME as home');
+});
+
+// ---- final-review fixes ----
+const P = (c, o) => parseFull(c, o);
+const D = (c, o) => { const x = P(c, o); return x.opaque.map((raw, i) => ({ raw, ...x.opaqueDirs[i] })); };
+test('R20/C1: a dir the parser cannot read is reported unknown, per opaque entry', () => {
+  for (const c of ['cd $D && git push origin main', 'pushd $D && git push origin main', 'popd && git push origin main',
+    'cd - && git push origin main', 'cd /r/ap* && git push origin main', 'cd /r/{a,b} && git push origin main',
+    'git -C "$D" push origin main', 'git -C ~/api push origin main', 'cd ~/api && git push origin main',
+    'cd ~bob/api && git push origin main', 'GIT_DIR=/x/.git git push origin main', 'git --git-dir=/x/.git push origin main',
+    'cd $D && git checkout -b t/4-x', 'cd $D && git commit -m x', 'cd $D && eval "git push"']) {
+    const d = D(c);
+    assert.equal(d.length, 1, `one opaque entry: ${c}`);
+    assert.equal(d[0].unknown, true, `unknown dir: ${c}`);
+  }
+});
+test('R20/C1: a readable dir is not unknown; a literal -C in an opaque segment is its dir', () => {
+  assert.deepEqual(D('cd /r/api && git push $R main'), [{ raw: 'git push $R main', dir: '/r/api', unknown: false }]);
+  assert.deepEqual(D('git push $R main'), [{ raw: 'git push $R main', dir: null, unknown: false }]);
+  assert.deepEqual(D('xargs git -C /r/api push origin < f'), [{ raw: 'xargs git -C /r/api push origin < f', dir: '/r/api', unknown: false }]);
+  assert.deepEqual(D('cd /r && xargs git -C api push'), [{ raw: 'xargs git -C api push', dir: '/r/api', unknown: false }]);
+  assert.deepEqual(D('env --chdir=/r/api git push origin main'), [{ raw: 'env --chdir=/r/api git push origin main', dir: '/r/api', unknown: false }]);
+});
+test('R20: with a home, ~ and $HOME read as that literal path; ~user and quoted ~ do not', () => {
+  const o = { home: '/h/u' };
+  assert.equal(P('cd ~/api && git push origin main', o).pushes[0].dir, '/h/u/api');
+  assert.equal(P('cd ~ && git push origin main', o).pushes[0].dir, '/h/u');
+  assert.equal(P('git -C ~/api push origin main', o).pushes[0].dir, '/h/u/api');
+  assert.equal(P('cd $HOME/api && git push origin main', o).pushes[0].dir, '/h/u/api');
+  assert.equal(P('cd "${HOME}/api" && git push origin main', o).pushes[0].dir, '/h/u/api');
+  assert.equal(D('cd ~bob/api && git push origin main', o)[0].unknown, true);
+  assert.equal(D('cd "~/api" && git push origin main', o).length, 0, 'a quoted ~ is a literal dir named ~');
+  assert.equal(P('cd "~/api" && git push origin main', o).pushes[0].dir, '~/api');
+  assert.equal(D('cd $HOME/api && git push origin main', { home: '/h/a b' })[0].unknown, true, 'unquoted $HOME with a space splits');
+});
+test('R20: exec is a transparent wrapper', () => {
+  assert.deepEqual(P('exec git -C /r/api push origin main').pushes, [push({ dir: '/r/api', remote: 'origin', refspecs: ['main'] })]);
+  assert.deepEqual(P('exec -a x git push origin main').pushes, [push({ remote: 'origin', refspecs: ['main'] })]);
+});
+test('R25/I4: an unknown wrapper before git/gh is opaque; data commands are not', () => {
+  for (const c of ['stdbuf -oL git -C /r/api push origin main', 'winpty gh pr merge 5 --repo acme/api',
+    'flock /tmp/l git push origin main', 'ionice -c3 git commit -m x', 'unbuffer git checkout -b t/4-x']) {
+    assert.equal(P(c).opaque.length, 1, c);
+  }
+  for (const c of ['echo git push origin main', 'grep -n git push.log', 'stdbuf -oL make push']) {
+    assert.equal(P(c).opaque.length, 0, c);
+  }
+});
+test('R25/I4: non-builtin git / gh subcommands are alias candidates; builtins are not', () => {
+  assert.deepEqual(P('cd /r/api && git p origin main').aliases, [{ tool: 'git', name: 'p', dir: '/r/api', unknown: false, raw: 'git p origin main' }]);
+  assert.deepEqual(P('cd $D && git p origin main').aliases, [{ tool: 'git', name: 'p', dir: null, unknown: true, raw: 'git p origin main' }]);
+  assert.deepEqual(P('gh m 5').aliases, [{ tool: 'gh', name: 'm', dir: null, unknown: false, raw: 'gh m 5' }]);
+  assert.deepEqual(P('git status && git log && gh pr view 5 && gh issue list').aliases, []);
+});
+test('R22/C3: gh api endpoints as full URLs are normalised before matching', () => {
+  const m = [merge({ pr: 5, repo: 'acme/api', via: 'gh-api' })];
+  assert.deepEqual(P('gh api -X PUT https://api.github.com/repos/acme/api/pulls/5/merge').merges, m);
+  assert.deepEqual(P('gh api -X PUT http://ghe.example/api/v3/repos/acme/api/pulls/5/merge').merges, m);
+  assert.deepEqual(P('gh api -X PUT //repos/acme/api/pulls/5/merge').merges, m);
+  assert.equal(P('gh api -X PUT https://api.github.com/repos/acme/api/pulls/5/merge/x').opaque.length, 1, 'merge endpoint not exact + PUT');
+  assert.equal(P('gh api https://api.github.com/repos/acme/api/pulls/5/merge').opaque.length, 0, 'GET is a status read');
 });
 
 test('R12: dynamic command word with a guarded verb is opaque without a MENTION hit', () => {

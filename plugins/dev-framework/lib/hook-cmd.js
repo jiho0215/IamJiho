@@ -19,6 +19,17 @@
 //   decided before we know what the call is (dynamic command word, unknown git global option, exec wrappers).
 // - push --all/--branches is opaque (pushes every branch yet names none); --tags reports refspec refs/tags/*.
 // - GIT_DIR / GIT_WORK_TREE (segment env or export) and --git-dir/--work-tree make guarded git calls opaque.
+// - R20: every opaque entry has a parallel `opaqueDirs` entry { dir, unknown }: `unknown` is true when the dir
+//   the segment runs in cannot be read (a dynamic cd/pushd/-C, popd, cd -, a glob or brace in the dir,
+//   GIT_DIR/--git-dir/--work-tree); `dir` is a literal -C/--chdir in the segment (joined to the cd dir), else the
+//   cd dir, else null (= the hook cwd). With opts.home, a leading `~`, `~/`, `$HOME` or `${HOME}` reads as that
+//   literal path (word splitting aside), so `cd ~/x` resolves like `cd /home/u/x`.
+// - R25: a command word the parser does not know, followed later in the segment by `git`/`gh`, is unreadable
+//   (stdbuf, winpty, flock, ...); `exec` is a transparent wrapper. A git subcommand that is not a git builtin,
+//   and a gh command that is not a gh command, may be an alias: listed in `aliases` { tool, name, dir, unknown,
+//   raw } for the hook to resolve (git config alias.<name> / gh alias list).
+// - R22: a `gh api` endpoint loses a scheme+host prefix (and GHE's api/v3/) and a leading / before matching; an
+//   endpoint naming pulls/<x>/merge that still does not match exactly is opaque for PUT or an unknown method.
 
 const MENTION = new RegExp([
   String.raw`\bgh\b[\s\S]*\bpr\b[\s\S]*\bmerge\b`,
@@ -32,12 +43,32 @@ const MENTION = new RegExp([
 
 // Commands that run their arguments (or a script) as code: unreadable when they mention a guarded command.
 const EXECS = new Set(['eval', 'xargs', 'sh', 'bash', 'zsh', 'dash', 'ksh', 'fish', 'pwsh', 'powershell', 'cmd',
-  'parallel', 'watch', 'ssh', 'su', 'find', 'source', '.', 'exec']);
+  'parallel', 'watch', 'ssh', 'su', 'find', 'source', '.']);
 const KEYWORDS = new Set(['{', '}', '!', 'if', 'then', 'else', 'elif', 'do', 'while', 'until', 'time']);
+// Commands whose arguments are data, never run: a `git push` among their words is text (echo git push).
+const DATA = new Set(['echo', 'printf', 'grep', 'egrep', 'fgrep', 'rg', 'man', 'which', 'type', 'help', 'ls', 'cat',
+  'test', '[', '[[', 'true', 'false', 'read', 'local', 'declare', 'typeset', 'readonly', 'alias', 'unalias', 'hash']);
+// git builtins and the usual non-builtin main commands: never aliases (git ignores an alias that hides a command).
+const GIT_COMMANDS = new Set(('add am annotate apply archive backfill bisect blame branch bugreport bundle cat-file ' +
+  'check-attr check-ignore check-mailmap check-ref-format checkout checkout-index cherry cherry-pick clean clone ' +
+  'column commit commit-graph commit-tree config count-objects credential describe diagnose diff diff-files ' +
+  'diff-index diff-tree difftool fast-export fast-import fetch fetch-pack for-each-ref for-each-repo format-patch ' +
+  'fsck gc grep hash-object help hook index-pack init interpret-trailers log ls-files ls-remote ls-tree maintenance ' +
+  'merge merge-base merge-file merge-tree mktag mktree multi-pack-index mv name-rev notes pack-objects pack-refs ' +
+  'patch-id prune pull push range-diff read-tree rebase reflog refs remote repack replace replay rerere reset ' +
+  'restore rev-list rev-parse revert rm shortlog show show-branch show-ref sparse-checkout stage stash status ' +
+  'stripspace submodule switch symbolic-ref tag update-index update-ref var verify-commit verify-tag version ' +
+  'whatchanged worktree write-tree lfs gui citool mergetool filter-branch request-pull subtree send-email svn p4 ' +
+  'instaweb gitk').split(' '));
+const GH_COMMANDS = new Set(('auth browse codespace cs gist issue org pr project release repo cache run workflow co ' +
+  'agent-task alias api attestation completion config copilot extension ext extensions gpg-key label licenses ' +
+  'preview ruleset rs search secret ssh-key status variable help version').split(' '));
+const base = (t) => t.replace(/^.*[\\/]/, '').replace(/\.exe$/i, '');
 
 // ---------------------------------------------------------------- scanner
 
-function scanAt(s, start, mode) {
+function scanAt(s, start, mode, opts = {}) {
+  const home = typeof opts.home === 'string' && opts.home !== '' ? opts.home : null;
   const items = [];
   const n = s.length;
   let i = start, depth = 0, broken = false, segBroken = false;
@@ -67,7 +98,7 @@ function scanAt(s, start, mode) {
     words = []; subs = []; segBroken = false;
   };
   const sub = (from) => {  // scan a $( … ) / <( … ) body starting at `from`; returns the index after ')'
-    const r = scanAt(s, from, 'subst');
+    const r = scanAt(s, from, 'subst', opts);
     if (r.broken) markBroken();
     subs.push(s.slice(from, Math.max(from, r.end - 1)));
     return r.end;
@@ -92,10 +123,13 @@ function scanAt(s, start, mode) {
       ww.text += s.slice(k, end); ww.dyn = true; if (!inDq) ww.udyn = true;
       return end;
     }
+    // $HOME / ${HOME} with a known home is that literal path (unquoted only when it cannot split).
+    const homeOk = home && (inDq || !/\s/.test(home));
     if (c === '{') {
       const j = s.indexOf('}', k + 2);
       const end = j < 0 ? n : j + 1;
       if (j < 0) markBroken();
+      if (homeOk && s.slice(k + 2, j) === 'HOME') { ww.text += home; return end; }
       ww.text += s.slice(k, end); ww.dyn = true; if (!inDq) ww.udyn = true;
       return end;
     }
@@ -109,6 +143,7 @@ function scanAt(s, start, mode) {
       return Math.min(n, j + 1);
     }
     const m = /^(?:[A-Za-z_][A-Za-z0-9_]*|[0-9@*#?$!-])/.exec(s.slice(k + 1));
+    if (m && m[0] === 'HOME' && homeOk) { ww.text += home; return k + 5; }
     if (m) { ww.text += '$' + m[0]; ww.dyn = true; if (!inDq) ww.udyn = true; return k + 1 + m[0].length; }
     ww.text += '$';
     return k + 1;
@@ -191,7 +226,11 @@ function scanAt(s, start, mode) {
     if (c === '`') { i = backtick(i, false); continue; }
     if (c === '$') { i = dollar(i, false); continue; }
     const ww = w();
-    if (c === '~' && ww.text === '') ww.dyn = true;               // tilde expansion
+    if (c === '~' && ww.text === '' && !ww.quoted) {              // tilde expansion
+      const nx = s[i + 1];
+      if (home && (nx === undefined || /[/\s;&|()<>]/.test(nx))) { ww.text += home; i++; continue; }
+      ww.dyn = true;                                              // ~user, or no home given
+    }
     if (c === '*' || c === '?' || c === '[') { ww.dyn = true; ww.udyn = true; }  // globbing
     if (c === '{') ww.brace = true;                               // brace expansion (unless a bare { group)
     ww.text += c; i++;
@@ -357,7 +396,7 @@ const GIT_GLOBAL_FLAG = /^(-p|-P|--paginate|--no-pager|--bare|--no-replace-objec
 
 // Verdicts: null = handled; 'opaque' = a guarded call that cannot be read exactly (always listed);
 // 'maybe' = unreadable before we know what it is (listed only when the segment mentions a guarded verb).
-function parseGit(args, st, env, out) {
+function parseGit(args, st, env, out, raw) {
   let i = 0, dir = st.dir, dirDyn = false;
   let gitDir = st.gitDir || env.GIT_DIR !== undefined || env.GIT_WORK_TREE !== undefined;
   while (i < args.length) {
@@ -377,6 +416,11 @@ function parseGit(args, st, env, out) {
   const subcmd = args[i] ? args[i].text : '';
   const rest = args.slice(i + 1);
   const blocked = () => gitDir || dirDyn || st.cdOpaque;
+  if (args[i] && !args[i].dyn && subcmd !== '' && !GIT_COMMANDS.has(subcmd)) {
+    // R25: may be an alias (alias.<name> in the repo's or the global git config); the hook resolves it.
+    out.aliases.push({ tool: 'git', name: subcmd, dir, unknown: !!blocked(), raw });
+    return null;
+  }
   if (subcmd === 'push' || subcmd === 'commit' || (subcmd === 'worktree' && rest[0] && rest[0].text === 'add')) {
     if (blocked() || args.some((a) => a.udyn)) return 'opaque';
     if (subcmd === 'push') out.pushes.push(gitPush(rest, dir));
@@ -403,7 +447,7 @@ const GH_MERGE_ARG = new Set(['-b', '--body', '-F', '--body-file', '-t', '--subj
 const GH_API_ARG = new Set(['-X', '--method', '-f', '--raw-field', '-F', '--field', '-H', '--header', '--input', '--hostname',
   '-q', '--jq', '-t', '--template', '--cache', '-p', '--preview']);
 
-function parseGh(allArgs, st, env, out) {
+function parseGh(allArgs, st, env, out, raw) {
   let repo = null, repoDyn = false;
   const envRepo = env.GH_REPO !== undefined ? env.GH_REPO : st.ghRepo;
   if (envRepo) { repo = envRepo.text; repoDyn = envRepo.dyn; }
@@ -420,6 +464,11 @@ function parseGh(allArgs, st, env, out) {
   if (groupIdx < 0) return null;
   const group = args[groupIdx];
   if (group.dyn) return 'maybe';
+  if (!GH_COMMANDS.has(group.text)) {
+    // R25: may be a gh alias (gh alias set m 'pr merge'); the hook resolves it with `gh alias list`.
+    out.aliases.push({ tool: 'gh', name: group.text, dir: st.dir, unknown: !!st.cdOpaque, raw });
+    return null;
+  }
   let kind = null, startIdx = groupIdx + 1;
   if (group.text === 'api') kind = 'api';
   else if (group.text === 'pr') {
@@ -463,12 +512,18 @@ function parseGh(allArgs, st, env, out) {
 function ghApi(args, pos, method, methodDyn, repo, repoDyn, st, out) {
   if (!pos.length) return null;
   if (pos[0].dyn) return 'maybe';
-  const endpoint = pos[0].text;
-  if (endpoint === 'graphql') {
+  // R22: gh takes a full URL as the endpoint too; drop scheme+host (any host), GHE's api/v3/, and a leading /.
+  const endpoint = pos[0].text.replace(/^[A-Za-z][A-Za-z0-9+.-]*:\/\/[^/]*/, '').replace(/^\/+/, '')
+    .replace(/^api\/v3\//, '');
+  if (endpoint === 'graphql' || endpoint === 'api/graphql') {
     return args.some((a) => /mergePullRequest|enablePullRequestAutoMerge/.test(a.text)) ? 'opaque' : null;
   }
-  const m = /^\/?repos\/([^/]+)\/([^/]+)\/pulls\/(\d+)\/merge\/?$/.exec(endpoint);
-  if (!m) return null;
+  const m = /^repos\/([^/]+)\/([^/]+)\/pulls\/(\d+)\/merge\/?$/.exec(endpoint);
+  if (!m) {
+    // names a merge endpoint yet does not read exactly (extra path, a fragment): a PUT or an unknown method blocks
+    if (/pulls\/[^/]*\/merge/.test(endpoint) && (methodDyn || method === 'PUT')) return 'opaque';
+    return null;
+  }
   if (methodDyn || args.some((a) => a.udyn)) return 'opaque';
   if (method !== 'PUT') return null;
   if (st.cdOpaque) return 'opaque';
@@ -492,13 +547,32 @@ function cdEffect(args, st) {
   return { ...st, dir: joinDir(st.dir, t) };
 }
 
+// R20: where an unreadable segment runs. `unknown` when its dir cannot be read; else `dir` is a literal -C /
+// --chdir found among its words (joined to the cd dir), else the cd dir (null = the hook cwd).
+function segDir(ws, st, env) {
+  let dir = st.dir;
+  let unknown = !!st.cdOpaque || !!st.gitDir || env.GIT_DIR !== undefined || env.GIT_WORK_TREE !== undefined;
+  for (let j = 0; j < ws.length; j++) {
+    const t = ws[j].text;
+    if (t === '-C' || t === '--chdir') {
+      const v = ws[j + 1];
+      if (!v || v.dyn) unknown = true; else dir = joinDir(st.dir, v.text);
+      j++; continue;
+    }
+    if (t.startsWith('--chdir=')) { if (ws[j].dyn) unknown = true; else dir = joinDir(st.dir, t.slice(8)); continue; }
+    if (/^--(git-dir|work-tree)(=|$)/.test(t)) unknown = true;
+  }
+  return { dir, unknown };
+}
+
 // Returns the state after this segment (cd/export), or null when it changes nothing.
 function segment(it, st, out) {
   const mentions = MENTION.test(it.raw);
-  const opaque = () => { if (mentions) out.opaque.push(it.raw); return null; };
+  const env = {};
+  const list = () => { out.opaque.push(it.raw); out.opaqueDirs.push(segDir(it.words, st, env)); return null; };
+  const opaque = () => (mentions ? list() : null);
   if (it.broken) return opaque();
   const ws = it.words;
-  const env = {};
   let k = 0;
   for (;;) {
     while (k < ws.length && !ws[k].quoted && KEYWORDS.has(ws[k].text)) k++;
@@ -511,12 +585,17 @@ function segment(it, st, out) {
     if (ws[k] && ws[k].dyn) {
       // R12: a dynamic command word (g=gh; $g pr merge) hides the program: listed whenever a later word is a
       // verb we guard, even with no MENTION hit.
-      if (ws.slice(k + 1).some((w) => /^(merge|push|commit|checkout|switch|worktree|branch)$/i.test(w.text))) { out.opaque.push(it.raw); return null; }
+      if (ws.slice(k + 1).some((w) => /^(merge|push|commit|checkout|switch|worktree|branch)$/i.test(w.text))) return list();
       return opaque();
     }
     if (t === 'command' || t === 'nohup' || t === 'builtin' || t === 'sudo') {
       k++;
       while (k < ws.length && ws[k].text.startsWith('-')) k += t === 'sudo' && /^-[ugpCDhrtUTR]$/.test(ws[k].text) ? 2 : 1;
+      continue;
+    }
+    if (t === 'exec') {  // exec [-cl] [-a name] cmd: runs cmd in place of the shell, arguments as given
+      k++;
+      while (k < ws.length && ws[k].text.startsWith('-')) k += ws[k].text === '-a' ? 2 : 1;
       continue;
     }
     if (t === 'env') {
@@ -537,7 +616,7 @@ function segment(it, st, out) {
     break;
   }
   if (k >= ws.length) return null;
-  const name = ws[k].text.replace(/^.*[\\/]/, '').replace(/\.exe$/i, '');
+  const name = base(ws[k].text);
   const args = ws.slice(k + 1);
   if (name === 'cd' || name === 'pushd') return cdEffect(args, st);
   if (name === 'popd') return { ...st, cdOpaque: true };
@@ -551,28 +630,33 @@ function segment(it, st, out) {
   }
   if (name === 'unset' && args.some((a) => a.text === 'GH_REPO')) return { ...st, ghRepo: null };
   if (EXECS.has(name)) return opaque();
+  if (name !== 'git' && name !== 'gh') {
+    // R25: an unknown command word (stdbuf -oL, winpty, flock f, ...) followed by git/gh may run it: unreadable.
+    if (!DATA.has(name) && args.some((a) => !a.dyn && /^(git|gh)$/.test(base(a.text)))) return opaque();
+    return null;
+  }
   let verdict = null;
   try {
-    if (name === 'git') verdict = parseGit(args, st, env, out);
-    else if (name === 'gh') verdict = parseGh(args, st, env, out);
+    if (name === 'git') verdict = parseGit(args, st, env, out, it.raw);
+    else verdict = parseGh(args, st, env, out, it.raw);
   } catch (e) {
     if (!(e instanceof Opaque)) throw e;
     verdict = 'opaque';  // need() throws only inside an already-classified guarded call
   }
-  if (verdict === 'opaque') out.opaque.push(it.raw);  // guarded and unreadable: listed even with no MENTION hit
+  if (verdict === 'opaque') list();  // guarded and unreadable: listed even with no MENTION hit
   else if (verdict === 'maybe') opaque();
   return null;
 }
 
-function walk(src, out, initial) {
-  const { items } = scanAt(src, 0, 'top');
+function walk(src, out, initial, opts) {
+  const { items } = scanAt(src, 0, 'top', opts);
   let st = initial;
   const stack = [];
   let prevSep = null;
   for (const it of items) {
     if (it.kind === 'open') { stack.push(st); st = { ...st }; prevSep = null; continue; }
     if (it.kind === 'close') { if (stack.length) st = stack.pop(); prevSep = null; continue; }
-    for (const body of it.subs) walk(body, out, st);  // substitutions run, in the segment's cwd
+    for (const body of it.subs) walk(body, out, st, opts);  // substitutions run, in the segment's cwd
     const next = segment(it, st, out);
     // Pipelines and background jobs run in subshells: their cd/export does not carry.
     if (next && it.sep !== '|' && it.sep !== '&' && prevSep !== '|') st = next;
@@ -580,9 +664,10 @@ function walk(src, out, initial) {
   }
 }
 
-function parseCommand(cmd) {
-  const out = { merges: [], pushes: [], branches: [], commits: [], opaque: [] };
-  walk(String(cmd == null ? '' : cmd), out, { dir: null, cdOpaque: false, ghRepo: null, gitDir: false });
+// parseCommand(cmd, { home }): home (optional) is the literal path `~` and $HOME stand for.
+function parseCommand(cmd, opts = {}) {
+  const out = { merges: [], pushes: [], branches: [], commits: [], opaque: [], opaqueDirs: [], aliases: [] };
+  walk(String(cmd == null ? '' : cmd), out, { dir: null, cdOpaque: false, ghRepo: null, gitDir: false }, opts || {});
   return out;
 }
 

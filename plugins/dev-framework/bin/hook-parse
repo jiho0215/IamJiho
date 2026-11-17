@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 'use strict';
 // hook-parse: reads a Bash command line on stdin and prints lib/hook-cmd.js parseCommand(...) as JSON.
+// DEVFW_PARSE_HOME (set by the hooks to $HOME in a form node can use) is the literal path `~` and $HOME stand for.
 const fs = require('node:fs');
 const path = require('node:path');
 const { parseCommand } = require(path.join(__dirname, '..', 'lib', 'hook-cmd.js'));
-process.stdout.write(JSON.stringify(parseCommand(fs.readFileSync(0, 'utf8'))) + '\n');
+const home = process.env.DEVFW_PARSE_HOME || '';
+process.stdout.write(JSON.stringify(parseCommand(fs.readFileSync(0, 'utf8'), { home })) + '\n');
