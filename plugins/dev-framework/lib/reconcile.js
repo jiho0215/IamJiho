@@ -139,26 +139,44 @@ function postMerge(o, config, gh) {
   let fetchError = null;
   // Fetched so the merge-time plan commits are in the clone; a failure makes every PR unverifiable, never fine.
   try { resolvePlanRef({ coreDir: o.coreDir, config }); } catch (e) { fetchError = e.message; }
-  const hashCache = new Map();
-  const hashesAtMerge = (mergedAt) => {
+  // The plan as of merged_at: its hashes AND its items (the ticket tie reads the item's decisions from the same commit).
+  const planCache = new Map();
+  const planAtMerge = (mergedAt) => {
     if (fetchError) throw new Error(fetchError);
     const rows = gh.api('GET', `repos/${planRepo}/commits?sha=${encodeURIComponent(branch)}&until=${mergedAt}&per_page=1`);
     const sha = Array.isArray(rows) && rows[0] && rows[0].sha;
     if (!sha) throw new Error(`no ${branch} commit at or before ${mergedAt}`);
     try { gitOut(o.coreDir, ['cat-file', '-e', `${sha}^{commit}`]); } catch { throw new Error(`plan commit ${sha} is not in the core clone`); }
-    if (!hashCache.has(sha)) hashCache.set(sha, planHashes(o.coreDir, sha, config));
-    return hashCache.get(sha);
+    if (!planCache.has(sha)) {
+      const items = parsePlan(gitOut(o.coreDir, ['show', `${sha}:${config.plan.path}/PLAN.md`]), config);
+      planCache.set(sha, { sha, hashes: planHashes(o.coreDir, sha, config), items: new Map(items.map((i) => [i.id, i])) });
+    }
+    return planCache.get(sha);
+  };
+  // The current issue is read only for its plan: label (and to know it exists); what the PR must cite comes from the
+  // merge-time plan item: its ID and its decisions.
+  const wantAtMerge = (plan) => (iss, n) => {
+    const label = labelNames(iss || {}).find((x) => x.startsWith('plan:'));
+    if (!label) throw new Error(`issue #${n} has no plan: label to tie it to a plan item`);
+    const id = label.slice(5);
+    const item = plan.items.get(id);
+    if (!item) throw new Error(`${id} is not in the plan at merge time (${plan.sha.slice(0, 7)})`);
+    return [item.id, ...item.decisions];
   };
 
-  const staleMerges = []; const unverifiable = [];
+  // judged: every PR that passed the filters and was judged (clean, stale or unverifiable), so a caller can tell a clean
+  // verdict from a PR that was never looked at.
+  const staleMerges = []; const unverifiable = []; const judged = [];
   for (const repoKey of Object.keys(config.repos || {})) {
     const r = config.repos[repoKey];
     const prs = gh.paginate(`repos/${r.github}/pulls?state=closed`).filter((p) =>
       p.merged_at && Date.parse(p.merged_at) >= cutoff && p.base && p.base.ref === r.default &&
       p.head && String(p.head.ref || '').startsWith('t/'));
     for (const p of prs) {
+      judged.push({ repo: r.github, pr: p.number });
       try {
-        const hashes = hashesAtMerge(p.merged_at);
+        const plan = planAtMerge(p.merged_at);
+        const hashes = plan.hashes;
         const body = p.body || '';
         const evidence = gate.evidenceBlock(body);
         const reasons = [
@@ -167,9 +185,9 @@ function postMerge(o, config, gh) {
             // Only acks that existed when the PR merged count.
             loadComments: (n) => gh.paginate(`repos/${planRepo}/issues/${n}/comments`).filter((c) => !c.created_at || Date.parse(c.created_at) <= Date.parse(p.merged_at)),
           }),
-          // The ticket tie: the PR sits on its own issue's claim branch and cites what that issue cites. The issue
-          // is read as it is now; an unreadable issue is a ticket: reason, never silently fine.
-          ...gate.checkTicket({ headRef: p.head.ref, body, planRepo, loadIssue: (n) => gh.api('GET', `repos/${planRepo}/issues/${n}`) }),
+          // The ticket tie: the PR sits on its own issue's claim branch and cites the item and its decisions as the
+          // plan had them at merged_at. An unreadable or unlabelled issue is a ticket: reason, never silently fine.
+          ...gate.checkTicket({ headRef: p.head.ref, body, planRepo, loadIssue: (n) => gh.api('GET', `repos/${planRepo}/issues/${n}`), wantFor: wantAtMerge(plan) }),
           ...gate.checkEvidence({ evidence }),
         ];
         if (r.ci === 'required') {
@@ -221,7 +239,7 @@ function postMerge(o, config, gh) {
     }
   }
   // 9 = something merged that is stale or could not be verified and nobody has closed its issue; 0 otherwise.
-  const out = { staleMerges: pending.staleMerges, unverifiable: pending.unverifiable, resolved, created };
+  const out = { staleMerges: pending.staleMerges, unverifiable: pending.unverifiable, resolved, created, judged };
   return { exitCode: out.staleMerges.length || out.unverifiable.length ? 9 : 0, result: out };
 }
 

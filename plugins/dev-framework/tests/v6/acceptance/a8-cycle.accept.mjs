@@ -45,5 +45,7 @@ test('A8: cycle', async () => {
     assert.equal(pm.code, 0, `post-merge: ${pm.stdout} ${pm.stderr}`);
     assert.deepEqual(pm.json.staleMerges, []);
     assert.deepEqual(pm.json.unverifiable, []);
+    // The clean verdict covers this PR: post-merge actually judged it (not merely found nothing to look at).
+    assert.ok((pm.json.judged || []).some((j) => j.repo === run.codeRepo && j.pr === pr), `judged: ${JSON.stringify(pm.json.judged)}`);
   } finally { await closeRun(run); }
 });

@@ -54,13 +54,16 @@ function core() {
 const DAY = 86400000;
 const iso = (daysAgo) => new Date(Date.now() - daysAgo * DAY).toISOString();
 const EVID = 'Evidence:\ndotnet test: 120 passed\n';
-const prBody = (cite) => `Fixes acme/core#12\nCites: P-0-4@${cite}\n\n${EVID}`;
+// P-0-4 lists decisions D-8, RL-7 in the fixture; those two sections never change between day 1 and day 3.
+const DEC = (() => { const h = core().hashes1; return `D-8@${h.get('D-8')}, RL-7@${h.get('RL-7')}`; })();
+const prBody = (cite) => `Fixes acme/core#12\nCites: P-0-4@${cite}, ${DEC}\n\n${EVID}`;
 const pr = (n, mergedDaysAgo, cite, over = {}) => ({
   number: n, merged_at: iso(mergedDaysAgo), base: { ref: 'main' },
   head: { ref: 't/12-swagger', sha: `sha${n}` }, body: prBody(cite), ...over,
 });
 
 const issueBody = (...ids) => `## item\n\n- **Cites:** ${ids.join(', ')}\n`;
+const PLAN_LABEL = [{ name: 'plan:P-0-4' }, { name: 'state:done' }];
 
 function routes(c, prs, { sha, issues = [], mobile = [], issue12 } = {}) {
   const r = {
@@ -68,7 +71,7 @@ function routes(c, prs, { sha, issues = [], mobile = [], issue12 } = {}) {
     'GET repos/acme/mobile/pulls?state=closed': mobile,
     'GET repos/acme/core/issues?state=all&labels=merged-stale': issues,
     'GET repos/acme/core/issues/12/comments': [],
-    'GET repos/acme/core/issues/12': { number: 12, body: issue12 || issueBody(`P-0-4@${c.hashes1.get('P-0-4')}`) },
+    'GET repos/acme/core/issues/12': { number: 12, labels: PLAN_LABEL, body: issue12 || issueBody(`P-0-4@${c.hashes1.get('P-0-4')}`) },
   };
   for (const p of prs) {
     r[`GET repos/acme/api/commits/${p.head.sha}/check-runs`] = { total_count: 1, check_runs: [{ name: 'build', status: 'completed', conclusion: 'success' }] };
@@ -215,9 +218,9 @@ test('ack cutoff: an ack dated before merged_at clears a stale cite; the same ac
 test('ticket tie (a): a merged PR from t/42-x that fixes #41 is stale with a ticket: reason', () => {
   const c = core();
   const h = c.hashes1.get('P-0-4');
-  const p = pr(50, 12, h, { head: { ref: 't/42-x', sha: 'sha50' }, body: `Fixes acme/core#41\nCites: P-0-4@${h}\n\n${EVID}` });
+  const p = pr(50, 12, h, { head: { ref: 't/42-x', sha: 'sha50' }, body: `Fixes acme/core#41\nCites: P-0-4@${h}, ${DEC}\n\n${EVID}` });
   const r = routes(c, [p]);
-  r['GET repos/acme/core/issues/41'] = { number: 41, body: issueBody(`P-0-4@${h}`) };
+  r['GET repos/acme/core/issues/41'] = { number: 41, labels: PLAN_LABEL, body: issueBody(`P-0-4@${h}`) };
   r['GET repos/acme/core/issues/41/comments'] = [];
   const { result, exitCode } = go(c, r);
   assert.equal(exitCode, 9);
@@ -225,22 +228,71 @@ test('ticket tie (a): a merged PR from t/42-x that fixes #41 is stale with a tic
   assert.ok(result.staleMerges[0].reasons.some((x) => x.startsWith('ticket:')), result.staleMerges[0].reasons.join('|'));
 });
 
-test('ticket tie (b): the right branch but a cite the issue lists is missing is stale', () => {
+test('ticket tie (b): the right branch but a cite the merge-time plan item lists is missing is stale', () => {
   const c = core();
   const h = c.hashes1.get('P-0-4');
-  const r = routes(c, [pr(50, 12, h)], { issue12: issueBody(`P-0-4@${h}`, `D-1@${c.hashes1.get('D-1')}`) });
-  const { result } = go(c, r);
+  // The plan item at merge time lists D-8 and RL-7; the PR cites only D-8. (The issue body lists P-0-4 only: not consulted.)
+  const p = pr(50, 12, h, { body: `Fixes acme/core#12\nCites: P-0-4@${h}, D-8@${c.hashes1.get('D-8')}\n\n${EVID}` });
+  const { result } = go(c, routes(c, [p]));
   assert.equal(result.staleMerges.length, 1);
   assert.deepEqual(result.staleMerges[0].reasons.filter((x) => !x.startsWith('ticket:')), []);
-  assert.match(result.staleMerges[0].reasons.join('|'), /ticket: PR does not cite D-1/);
+  assert.match(result.staleMerges[0].reasons.join('|'), /ticket: PR does not cite RL-7/);
 });
 
 test('ticket tie (c) positive control: the right branch with every cite is not stale', () => {
   const c = core();
   const h = c.hashes1.get('P-0-4');
-  const d = c.hashes1.get('D-1');
-  const p = pr(50, 12, h, { body: `Fixes acme/core#12\nCites: P-0-4@${h}, D-1@${d}\n\n${EVID}` });
-  const { result, exitCode } = go(c, routes(c, [p], { issue12: issueBody(`P-0-4@${h}`, `D-1@${d}`) }));
+  const p = pr(50, 12, h); // cites P-0-4, D-8, RL-7: everything the merge-time plan item lists
+  const { result, exitCode } = go(c, routes(c, [p], { issue12: issueBody(`P-0-4@${h}`, DEC) }));
   assert.deepEqual(result.staleMerges, []);
   assert.equal(exitCode, 0);
+});
+
+test('M2: judged lists every PR the check actually judged (clean, stale or unverifiable), never a filtered one', () => {
+  const c = core();
+  const h = c.hashes1.get('P-0-4');
+  const prs = [
+    pr(50, 12, h),                                       // clean
+    pr(51, 5, 'cccccccccccc'),                           // stale
+    pr(52, 4, h, { head: { ref: 't/12-y', sha: 'sha52' } }), // unverifiable: no plan commit routed below
+    pr(1, 20, h),                                        // outside lookback: not judged
+    pr(2, 3, h, { base: { ref: 'dev' } }),               // other base: not judged
+  ];
+  const r = routes(c, prs);
+  r[`GET repos/acme/core/commits?sha=main&until=${prs[2].merged_at}&per_page=1`] = [];
+  const m = { number: 7, merged_at: iso(3), base: { ref: 'master' }, head: { ref: 't/12-x', sha: 'm7' }, body: prBody(h) };
+  r['GET repos/acme/mobile/pulls?state=closed'] = [m];
+  r[`GET repos/acme/core/commits?sha=main&until=${m.merged_at}&per_page=1`] = [{ sha: c.day1 }];
+  const { result } = go(c, r);
+  assert.deepEqual(result.judged, [{ repo: 'acme/api', pr: 50 }, { repo: 'acme/api', pr: 51 }, { repo: 'acme/api', pr: 52 }, { repo: 'acme/mobile', pr: 7 }]);
+  assert.deepEqual(result.staleMerges.map((s) => s.pr), [51]);
+  assert.deepEqual(result.unverifiable.map((s) => s.pr), [52]);
+});
+
+test('I4: the ticket tie judges against the plan item AT MERGE TIME: an issue body that now lists D-9 does not make it stale', () => {
+  const c = core();
+  const h = c.hashes1.get('P-0-4');
+  // The issue body was edited after the merge to cite D-9; the merge-time plan item (P-0-4: D-8, RL-7) never listed it.
+  const issue12 = issueBody(`P-0-4@${h}`, DEC, 'D-9@0123456789ab');
+  const { result, exitCode } = go(c, routes(c, [pr(50, 12, h)], { issue12 }));
+  assert.deepEqual(result.staleMerges, [], JSON.stringify(result));
+  assert.equal(exitCode, 0);
+});
+
+test('I4: an issue with no plan: label cannot be tied to a plan item: a ticket: reason, never fine', () => {
+  const c = core();
+  const r = routes(c, [pr(50, 12, c.hashes1.get('P-0-4'))]);
+  r['GET repos/acme/core/issues/12'] = { number: 12, labels: [], body: issueBody(`P-0-4@${c.hashes1.get('P-0-4')}`, DEC) };
+  const { result } = go(c, r);
+  assert.equal(result.staleMerges.length, 1);
+  assert.match(result.staleMerges[0].reasons.join('|'), /ticket: issue #12 has no plan: label/);
+});
+
+test('I4: a plan: label naming an item absent from the merge-time plan is a ticket: reason', () => {
+  const c = core();
+  const r = routes(c, [pr(50, 12, c.hashes1.get('P-0-4'))]);
+  r['GET repos/acme/core/issues/12'] = { number: 12, labels: [{ name: 'plan:P-0-99' }], body: issueBody(`P-0-4@${c.hashes1.get('P-0-4')}`, DEC) };
+  const { result } = go(c, r);
+  assert.equal(result.staleMerges.length, 1);
+  assert.match(result.staleMerges[0].reasons.join('|'), /ticket: P-0-99 is not in the plan at merge time/);
 });

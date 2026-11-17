@@ -69,6 +69,8 @@ test('A5: stale merge', async () => {
       assert.deepEqual(r.json.staleMerges.map((s) => s.pr), [second.pr]);
       return r;
     });
+    const judged = (d.json.judged || []).filter((j) => j.repo === run.codeRepo).map((j) => j.pr);
+    for (const n of [first.pr, second.pr]) assert.ok(judged.includes(n), `PR ${n} was judged: ${JSON.stringify(d.json.judged)}`);
     const why = d.json.staleMerges[0].reasons;
     assert.ok(why.length > 0 && why.every((x) => x.startsWith('ticket:')), `reasons: ${JSON.stringify(why)}`);
     assert.ok(why.some((x) => x.includes(`t/${issue3}-`)), 'names the claim branch it wanted');

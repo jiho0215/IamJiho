@@ -87,7 +87,9 @@ function checkCites({ body, planRepo, hashes, coreDir, config, loadComments }) {
 
 // (b2) ticket: the PR belongs to the issue it names. The head branch is that issue's claim branch (t/<n>-…), and
 // the PR cites every ID the issue's own Cites line carries (the item and its decisions). Anything unreadable refuses.
-function checkTicket({ headRef, body, planRepo, loadIssue }) {
+// wantFor(issue, n), optional: the IDs the PR must cite, instead of the issue's own Cites line (the post-merge check passes
+// the plan item AS OF THE MERGE, so a later issue edit cannot change the verdict). A throw is a ticket: reason.
+function checkTicket({ headRef, body, planRepo, loadIssue, wantFor }) {
   const n = linkedIssue(body, planRepo);
   if (n === null) return []; // checkCites already refuses a missing Fixes line
   const reasons = [];
@@ -96,11 +98,18 @@ function checkTicket({ headRef, body, planRepo, loadIssue }) {
   }
   let iss;
   try { iss = loadIssue(n); } catch (e) { return [...reasons, `ticket: cannot read issue ${planRepo}#${n}: ${e.message}`]; }
-  const want = parseCites(iss && iss.body);
-  if (!want.size) return [...reasons, `ticket: issue #${n} has no Cites: line to check the PR against`];
+  let want; let source;
+  if (wantFor) {
+    try { want = wantFor(iss, n); } catch (e) { return [...reasons, `ticket: ${e.message}`]; }
+    source = 'the plan item at merge time';
+  } else {
+    want = [...parseCites(iss && iss.body).keys()];
+    if (!want.length) return [...reasons, `ticket: issue #${n} has no Cites: line to check the PR against`];
+    source = `issue #${n}`;
+  }
   const { cites } = parseCitesStrict(body);
-  const missing = [...want.keys()].filter((id) => !cites.has(id));
-  if (missing.length) reasons.push(`ticket: PR does not cite ${missing.join(', ')} (cited by issue #${n})`);
+  const missing = want.filter((id) => !cites.has(id));
+  if (missing.length) reasons.push(`ticket: PR does not cite ${missing.join(', ')} (cited by ${source})`);
   return reasons;
 }
 

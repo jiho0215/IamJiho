@@ -249,7 +249,7 @@ test('I1: the post-merge check refuses an all-skipped merge the same way', () =>
   const routes = (runs) => ({
     'GET repos/acme/api/pulls?state=closed': [p], 'GET repos/acme/mobile/pulls?state=closed': [],
     'GET repos/acme/core/issues/12/comments': [],
-    'GET repos/acme/core/issues/12': { number: 12, body: `- **Cites:** P-0-4@${h.get('P-0-4')}, D-8@${h.get('D-8')}, RL-7@${h.get('RL-7')}
+    'GET repos/acme/core/issues/12': { number: 12, labels: [{ name: 'plan:P-0-4' }], body: `- **Cites:** P-0-4@${h.get('P-0-4')}, D-8@${h.get('D-8')}, RL-7@${h.get('RL-7')}
 ` },
     'GET repos/acme/core/issues?state=all&labels=merged-stale': [],
     'GET repos/acme/api/commits/sha50/check-runs': { total_count: runs.length, check_runs: runs },
