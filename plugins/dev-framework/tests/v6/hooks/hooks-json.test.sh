@@ -36,6 +36,16 @@ while IFS= read -r cmd; do
   else [ -x "$SCRIPTS/$name" ] || fail "hooks/scripts/$name is not executable"; fi
 done < <(J '.hooks[][].hooks[].command')
 
+# 1b. (I3) every file in bin/ and every hooks/scripts/*.sh is 100755 in the git index: hooks exec bin/merge-gate,
+#     bin/lease and bin/stop-check directly, and a 100644 entry works on Windows only (Git Bash ignores the bit).
+while IFS= read -r line; do
+  [ -n "$line" ] || continue
+  mode=${line%% *}; path=${line#*$'\t'}
+  [ "$mode" = 100755 ] || fail "$path is mode $mode in the git index, not 100755"
+done < <(git -C "$PLUGIN" ls-files -s -- bin hooks/scripts | tr -d '\r' | awk -F'\t' '$2 ~ /^bin\// || $2 ~ /^hooks\/scripts\/[^\/]*\.sh$/')
+n=$(git -C "$PLUGIN" ls-files -- bin | wc -l)
+[ "$n" -gt 0 ] || fail "no bin/ files in the git index (is the plugin checked out from git?)"
+
 # 2. no `if` on any PreToolUse entry or hook.
 n=$(J '[.hooks.PreToolUse // [] | .[] | select(has("if") or any(.hooks[]; has("if")))] | length')
 [ "$n" = 0 ] || fail "$n PreToolUse entr(y/ies) carry an \"if\""
