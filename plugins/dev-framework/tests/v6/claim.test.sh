@@ -57,29 +57,35 @@ N2=$(git -C "$TMP/a" log -1 --format=%B "$(jq -r .sha <<<"$OUT")" | sed -n 's/^C
 [ "$N1" != "$N2" ] || { echo "FAIL: nonces repeat"; exit 1; }
 
 PUSHLOSS=0
-# concurrency: exactly one of 8 wins, 7 lose cleanly with exit 3; three rounds
-for round in 1 2 3; do
-  rm -f "$TMP"/race.*
-  for i in 1 2 3 4 5 6 7 8; do
-    if [ $((i % 2)) -eq 0 ]; then r=a; c=ca; else r=b; c=cb; fi
-    ( set +e; "$CLAIM" "$((round * 100 + 43))" "race$round" --repo-dir "$TMP/$r" --base main --core-dir "$TMP/$c" > "$TMP/race.$i.out" 2>/dev/null; echo $? > "$TMP/race.$i.rc" ) &
+# concurrency: exactly one of 8 wins, 7 lose cleanly with exit 3; three rounds per attempt. Every round is checked
+# strictly; only the "some loser reached the push" timing condition is retried, up to 3 attempts on fresh issue numbers.
+ATTEMPTS=3
+for attempt in $(seq 1 "$ATTEMPTS"); do
+  for round in 1 2 3; do
+    N=$((attempt * 1000 + round * 100 + 43))
+    rm -f "$TMP"/race.*
+    for i in 1 2 3 4 5 6 7 8; do
+      if [ $((i % 2)) -eq 0 ]; then r=a; c=ca; else r=b; c=cb; fi
+      ( set +e; "$CLAIM" "$N" "race$round" --repo-dir "$TMP/$r" --base main --core-dir "$TMP/$c" > "$TMP/race.$i.out" 2>/dev/null; echo $? > "$TMP/race.$i.rc" ) &
+    done
+    wait
+    WIN=$(cat "$TMP"/race.*.rc | grep -c "^0$" || true); LOSE=$(cat "$TMP"/race.*.rc | grep -c "^3$" || true)
+    [ "$WIN" -eq 1 ] && [ "$LOSE" -eq 7 ] || { echo "FAIL: race $attempt.$round win=$WIN lose=$LOSE (rcs: $(cat "$TMP"/race.*.rc | tr '\n' ' '))"; exit 1; }
+    # every loser says where it lost: one of the two exits (shape); push losers are counted, not required per round (timing)
+    for f in "$TMP"/race.*.rc; do
+      [ "$(cat "$f")" = 3 ] || continue
+      LA=$(jq -r .lostAt "${f%.rc}.out")
+      [ "$LA" = precheck ] || [ "$LA" = push ] || { echo "FAIL: race $attempt.$round loser lostAt '$LA' in $(cat "${f%.rc}.out")"; exit 1; }
+      [ "$LA" = push ] && PUSHLOSS=$((PUSHLOSS + 1))
+    done
+    WSHA=$(jq -r .sha "$(grep -l '^0$' "$TMP"/race.*.rc | sed 's/\.rc$/.out/')")
+    [ "$(git -C "$TMP/a" ls-remote origin "refs/heads/t/$N-race$round" | cut -f1)" = "$WSHA" ] || { echo "FAIL: race $attempt.$round remote sha != winner"; exit 1; }
   done
-  wait
-  WIN=$(cat "$TMP"/race.*.rc | grep -c "^0$" || true); LOSE=$(cat "$TMP"/race.*.rc | grep -c "^3$" || true)
-  [ "$WIN" -eq 1 ] && [ "$LOSE" -eq 7 ] || { echo "FAIL: race$round win=$WIN lose=$LOSE (rcs: $(cat "$TMP"/race.*.rc | tr '\n' ' '))"; exit 1; }
-  # every loser says where it lost: one of the two exits (shape); push losers are counted, not required (timing)
-  for f in "$TMP"/race.*.rc; do
-    [ "$(cat "$f")" = 3 ] || continue
-    LA=$(jq -r .lostAt "${f%.rc}.out")
-    [ "$LA" = precheck ] || [ "$LA" = push ] || { echo "FAIL: race$round loser lostAt '$LA' in $(cat "${f%.rc}.out")"; exit 1; }
-    [ "$LA" = push ] && PUSHLOSS=$((PUSHLOSS + 1))
-  done
-  WSHA=$(jq -r .sha "$(grep -l '^0$' "$TMP"/race.*.rc | sed 's/\.rc$/.out/')")
-  [ "$(git -C "$TMP/a" ls-remote origin "refs/heads/t/$((round * 100 + 43))-race$round" | cut -f1)" = "$WSHA" ] || { echo "FAIL: race$round remote sha != winner"; exit 1; }
+  echo "info: attempt $attempt: losers that reached the push (lostAt=push) so far: $PUSHLOSS" >&2
+  [ "$PUSHLOSS" -ge 1 ] && break
 done
 
-echo "info: losers that reached the push (lostAt=push) across 3 races: $PUSHLOSS" >&2
-[ "$PUSHLOSS" -ge 1 ] || { echo "FAIL: no loser reached the create-only push in 3 eight-way races (lostAt=push never seen)"; exit 1; }
+[ "$PUSHLOSS" -ge 1 ] || { echo "FAIL: no loser reached the create-only push in $ATTEMPTS attempts of 3 eight-way races (lostAt=push never seen)"; exit 1; }
 
 # bad slug
 set +e; "$CLAIM" 44 Bad_Slug --repo-dir "$TMP/a" --base main >/dev/null 2>&1; rc=$?; set -e

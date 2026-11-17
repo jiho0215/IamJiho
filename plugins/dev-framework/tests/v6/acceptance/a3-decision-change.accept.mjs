@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { openRun, closeRun, eventually, gitWrite } from './harness.mjs';
-import { gitRead, syncTickets, claimCommitPr, gate, postAck } from './ticket-flow.mjs';
+import { gitRead, ghRead, syncTickets, claimCommitPr, gate, postAck } from './ticket-flow.mjs';
 
 test('A3: decision change', async () => {
   const run = await openRun();
@@ -58,6 +58,13 @@ test('A3: decision change', async () => {
     // A stale ack (the plan sha from BEFORE the change hashes D-1 to the old value) must not clear anything.
     // One write, outside eventually(). Then a read-only stable window: both must stay refused.
     postAck(run, issue, oldSha, 'stale');
+    // Non-vacuity: the window below only means something once the stale ack is readable, so wait (read-only) until a
+    // direct comments read shows it.
+    const staleBody = `ack ${issue} ${oldSha}: stale`;
+    await eventually(() => {
+      const comments = JSON.parse(ghRead(['api', `repos/${run.coreRepo}/issues/${issue}/comments?per_page=100`]));
+      assert.ok(comments.some((c) => String(c.body || '').trim() === staleBody), `stale ack not visible yet (${comments.length} comments)`);
+    });
     for (let i = 0; i < 4; i++) {
       await new Promise((r) => setTimeout(r, 2500));
       needsAck();

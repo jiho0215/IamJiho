@@ -3,6 +3,13 @@
 Drives the real `bin/` scripts against a real, throwaway GitHub sandbox. It needs the network, writes to the sandbox,
 and is **not** part of `tests/v6/run.sh`. Run it by hand.
 
+## Prerequisites
+
+- Node 20.11 or later.
+- `gh` logged in with write access to both sandbox repos, plus `git`, `bash` and `jq`.
+- `gh auth setup-git`: the harness clones and pushes over HTTPS, and under a token-only `gh` login git has no
+  credentials for that until `gh` is registered as its credential helper.
+
 ## Env
 
 | Variable | Meaning |
@@ -43,7 +50,12 @@ no marker, so pointing `DEVFW_SANDBOX_CORE` at it is a real negative test (scena
 
 `node --test --test-timeout=60000 plugins/dev-framework/tests/v6/acceptance/runner.unit.test.mjs` (no network) checks the
 runner: a SandboxError exits 2, a skip/todo never counts as green, and an expected red must carry its `reason` in the failure
-message (not the title or path). `tap-report.mjs` holds the parser.
+message (not the title or path); a SKIP/TODO subtest at any depth taints its scenario too. A scenario's own `A<n>: ...`
+log line is passed through as an `info` line. `tap-report.mjs` holds the parser.
+
+The other network-free unit tests: `harness.unit.test.mjs` (the `--init` refusals, the sweep selection, the write-target
+checks) and `a9-compare.unit.test.mjs` (A9 `--compare`). Run all three:
+`node --test --test-timeout=60000 plugins/dev-framework/tests/v6/acceptance/*.unit.test.mjs`.
 
 ## Each run
 

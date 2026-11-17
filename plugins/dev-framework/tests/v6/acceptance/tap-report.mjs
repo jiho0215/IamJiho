@@ -3,19 +3,23 @@
 import fs from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
-// -> { scenarios: Map(id -> {name, ok, directive, blocks[], dup}), crashes: block[], noise: string[] }
+// -> { scenarios: Map(id -> {name, ok, directive, blocks[], dup}), crashes: block[], noise: string[], info: string[] }
+// info: a scenario's own report lines (console.log "# A<n>: ..."), passed through to the output and never judged.
 // A block is the yaml diagnostic of one test: { error, name }. Nested subtest blocks precede their parent's
 // result line (deeper indent); a test's own block follows it at indent 2.
 export function parseTap(text) {
   const lines = String(text).replace(/\r/g, '').split('\n');
-  const scenarios = new Map(); const crashes = []; const noise = [];
-  let pending = []; let cur = null; let curOwn = false;
+  const scenarios = new Map(); const crashes = []; const noise = []; const info = [];
+  let pending = []; let cur = null; let curOwn = false; let nestedDirective = '';
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
+    // A subtest result (indented) precedes its parent's line. A SKIP/TODO at ANY depth taints the scenario it sits in.
+    const sub = /^\s+(?:not ok|ok) \d+ - .*? # (SKIP|TODO)\b/i.exec(line);
+    if (sub) { if (!nestedDirective) nestedDirective = sub[1].toUpperCase(); continue; }
     const m = /^(not ok|ok) \d+ - (.*?)(?: # (SKIP|TODO)\b.*)?$/i.exec(line);
     if (m) {
-      cur = { name: m[2], ok: m[1] === 'ok', directive: m[3] ? m[3].toUpperCase() : '', blocks: pending, dup: false };
-      pending = []; curOwn = false;
+      cur = { name: m[2], ok: m[1] === 'ok', directive: m[3] ? m[3].toUpperCase() : nestedDirective, blocks: pending, dup: false };
+      pending = []; curOwn = false; nestedDirective = '';
       const id = (/^(A\d+):/.exec(cur.name) || [])[1];
       if (id) { if (scenarios.has(id)) { scenarios.get(id).dup = true; } else scenarios.set(id, cur); }
       else if (!cur.ok) crashes.push(cur);
@@ -41,8 +45,9 @@ export function parseTap(text) {
       continue;
     }
     if (/^# \w*Error/.test(line)) noise.push(line.slice(2));
+    else if (/^#\s+A\d+: /.test(line)) info.push(line.replace(/^#\s+/, ''));
   }
-  return { scenarios, crashes, noise };
+  return { scenarios, crashes, noise, info };
 }
 
 const flat = (s) => String(s || '').replace(/\s+/g, ' ').trim();
@@ -50,7 +55,7 @@ const messageOf = (blocks) => flat(blocks.map((b) => b.error).filter(Boolean).jo
 
 // -> { lines: string[], exitCode: 0|1|2 }
 export function evaluate(tapText, expected) {
-  const { scenarios, crashes, noise } = parseTap(tapText);
+  const { scenarios, crashes, noise, info } = parseTap(tapText);
   const out = []; let bad = 0; let guard = false;
   const ids = [...new Set([...Object.keys(expected), ...scenarios.keys()])].sort((a, b) => Number(a.slice(1)) - Number(b.slice(1)));
   for (const id of ids) {
@@ -70,12 +75,13 @@ export function evaluate(tapText, expected) {
       out.push(`${id} UNEXPECTED red (wrong reason, wanted "${exp.reason}"): ${msg}`); bad = 1;
     } else out.push(`${id} red ok (until ${exp.until})`);
   }
-  return { lines: out, exitCode: guard ? 2 : bad };
+  return { lines: out, info, exitCode: guard ? 2 : bad };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const [tapFile, expFile] = process.argv.slice(2);
-  const { lines, exitCode } = evaluate(fs.readFileSync(tapFile, 'utf8'), JSON.parse(fs.readFileSync(expFile, 'utf8')));
+  const { lines, info, exitCode } = evaluate(fs.readFileSync(tapFile, 'utf8'), JSON.parse(fs.readFileSync(expFile, 'utf8')));
+  for (const l of info) console.log(`info ${l}`);
   for (const l of lines) console.log(l);
   process.exit(exitCode);
 }

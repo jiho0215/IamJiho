@@ -53,6 +53,31 @@ test('I2: a todo scenario never satisfies an expectation either', () => {
   assert.match(r.out, /A1 UNEXPECTED todo/);
 });
 
+test('M5: a SKIP or TODO subtest at any depth inside a scenario makes it UNEXPECTED, never green ok', () => {
+  const skip = runWith({
+    'a.accept.mjs': `${head}test('A1: outer', async (t) => { await t.test('real check', () => {}); await t.test('nested', async (u) => { await u.test('deep', { skip: 'later' }, () => {}); }); });\n`,
+  }, { A1: { expect: 'green' } });
+  assert.equal(skip.code, 1, skip.out);
+  assert.match(skip.out, /A1 UNEXPECTED skip/);
+  assert.doesNotMatch(skip.out, /green ok/);
+  const todo = runWith({
+    'a.accept.mjs': `${head}test('A1: outer', async (t) => { await t.test('assert later', { todo: 'not yet' }, () => {}); });\n`,
+  }, { A1: { expect: 'green' } });
+  assert.equal(todo.code, 1, todo.out);
+  assert.match(todo.out, /A1 UNEXPECTED todo/);
+  // Control: the same nesting without a directive stays green ok.
+  const ok = runWith({ 'a.accept.mjs': `${head}test('A1: outer', async (t) => { await t.test('nested', async (u) => { await u.test('deep', () => {}); }); });\n` }, { A1: { expect: 'green' } });
+  assert.equal(ok.code, 0, ok.out);
+  assert.match(ok.out, /A1 green ok/);
+});
+
+test('M4: a scenario\'s own "A<n>: ..." log line is passed through as info and does not change the verdict', () => {
+  const r = runWith({ 'a.accept.mjs': `${head}test('A1: fine', () => { console.log('A1: 2 of 5 losers lost at the push'); });\n` }, { A1: { expect: 'green' } });
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /^info A1: 2 of 5 losers lost at the push$/m);
+  assert.match(r.out, /A1 green ok/);
+});
+
 test('I5: the reason is matched against the failure message, not the scenario title', () => {
   const r = runWith({
     'a.accept.mjs': `${head}test('A1: plan-edit-guard title', async (t) => { await t.test('sub plan-edit-guard', () => { throw new Error('boom'); }); });\n`,

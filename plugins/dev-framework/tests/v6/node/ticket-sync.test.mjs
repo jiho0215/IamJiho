@@ -301,15 +301,33 @@ test('lag: the full listing misses an existing issue but the per-item read finds
   assert.equal(s.st.issues.filter((i) => i.labels.some((l) => l.name === 'plan:' + id)).length, 1);
 });
 
-test('label create answering 422 (already exists, a parallel run made it) is success', () => {
-  const { dir } = coreRepo();
-  const s = sim();
+// The real shape of a failed `gh api` call (measured): execFileSync's message carries only stderr ("gh: Validation
+// Failed (HTTP 422)"); the response body, with the error code, is on stdout.
+const ghFail422 = (code, field) => Object.assign(
+  new Error('Command failed: gh api -X POST repos/acme/core/labels --input -\ngh: Validation Failed (HTTP 422)\n'),
+  { status: 1, stdout: JSON.stringify({ message: 'Validation Failed', errors: [{ resource: 'Label', code, field }], status: '422' }), stderr: 'gh: Validation Failed (HTTP 422)\n' },
+);
+const failLabels = (s, err) => {
   const orig = s.gh.api;
   s.gh.api = (method, path, body) => {
-    if (method === 'POST' && path === 'repos/acme/core/labels') throw new Error('Command failed: gh api -X POST repos/acme/core/labels --input -\ngh: Validation Failed (HTTP 422)\n');
+    if (method === 'POST' && path === 'repos/acme/core/labels') throw err;
     return orig(method, path, body);
   };
+};
+
+test('label create answering 422 already_exists (a parallel run made it) is success', () => {
+  const { dir } = coreRepo();
+  const s = sim();
+  failLabels(s, ghFail422('already_exists', 'name'));
   const r = run({ argv: argv(dir, '--apply'), gh: s.gh, env: {} });
   assert.equal(r.exitCode, 0);
   assert.ok(r.result.created.length > 0);
+});
+
+test('M10: label create answering 422 for anything but already_exists (an invalid colour) still fails', () => {
+  const { dir } = coreRepo();
+  const s = sim();
+  failLabels(s, ghFail422('invalid', 'color'));
+  assert.throws(() => run({ argv: argv(dir, '--apply'), gh: s.gh, env: {} }), /HTTP 422/);
+  assert.equal(s.st.calls.filter((c) => c.method === 'POST' && c.path === 'repos/acme/core/issues').length, 0, 'nothing created after the failure');
 });

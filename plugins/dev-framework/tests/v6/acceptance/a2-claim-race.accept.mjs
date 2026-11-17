@@ -26,6 +26,9 @@ test('A2: claim race', async () => {
     const winner = results.find((r) => r.code === 0);
     assert.ok(winner.json && winner.json.result === 'claimed', `winner output: ${winner.stdout}`);
     for (const r of results.filter((x) => x.code === 3)) assert.equal(r.json && r.json.result, 'lost', `loser output: ${r.stdout}`);
+    // Reported, not required: how many losers reached the create-only push (real GitHub timing varies run to run).
+    const pushLosers = results.filter((x) => x.code === 3 && x.json && x.json.lostAt === 'push').length;
+    console.log(`A2: ${pushLosers} of 5 losers lost at the create-only push (lostAt: push); the rest at the precheck`);
 
     // Read-only: the ref on GitHub sits at the winner's commit. (Retried: reads can lag a push.)
     const ref = `refs/heads/t/${issue}-race`;

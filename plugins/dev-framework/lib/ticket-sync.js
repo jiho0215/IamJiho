@@ -197,10 +197,13 @@ function sync(o, config, gh) {
   const pace = () => { if (writesDone++ > 0) sleepMs(config.github.writeDelayMs); };
   const write = (method, p, body) => { pace(); return gh.api(method, p, body); };
 
-  // A label that already exists (HTTP 422: a parallel run or a lagging listing) is fine, not an error.
+  // A label that already exists (a parallel run or a lagging listing) is fine, not an error. Only that 422 is: the
+  // error code "already_exists" is in the response body, which gh prints on stdout (stderr says only "HTTP 422").
+  // Any other 422 (an invalid colour or name) still fails.
   for (const name of labelsMissing) {
     try { write('POST', `repos/${planRepo}/labels`, { name, color: wanted.get(name) }); } catch (e) {
-      if (!/HTTP 422|already_exists/.test(String(e && e.message))) throw e;
+      const text = `${e && e.message}\n${e && e.stdout ? e.stdout : ''}`;
+      if (!(/HTTP 422|"status":\s*"422"/.test(text) && /\balready_exists\b/.test(text))) throw e;
     }
   }
 

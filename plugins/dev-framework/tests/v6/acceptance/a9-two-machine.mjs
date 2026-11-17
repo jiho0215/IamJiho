@@ -42,7 +42,8 @@ function cloneCode(code) {
   return { tmp: dir, dir: path.join(dir, 'code') };
 }
 
-// Next occurrence of HH:MM:SS UTC; if it is already past by more than 12 h we mean tomorrow, otherwise it is an error.
+// Today's HH:MM:SS UTC as epoch ms. There is no rollover to tomorrow: a time more than 5 s in the past exits 2
+// (agree a later time); up to 5 s late, the first round starts at once.
 function startMs(at) {
   const [h, m, s] = at.split(':').map(Number);
   const now = new Date();
