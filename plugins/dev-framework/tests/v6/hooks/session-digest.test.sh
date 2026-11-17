@@ -62,6 +62,20 @@ git -C "$SEED" commit -q --allow-empty -m two; git -C "$SEED" push -q "$BARE" ma
 run; SHA2=$(git -C "$CORE" rev-parse origin/main | tr -d '\r')
 [ "$SHA2" != "$SHA" ] && head -1 <<<"$OUT" | grep -q "@${SHA2:0:12}" || fail "fetch is not fresh: $OUT"
 
+# a plan parsePlan rejects: head survives, the PlanError message (not a stack location) is shown
+printf '%s
+' '### P-9 · Bad' '- stage: A' '- kind: code' '- state: ready' '- area: acme-api' '- depends: D-3' >> "$SEED/docs/plan/PLAN.md"
+git -C "$SEED" commit -q -am bad; git -C "$SEED" push -q "$BARE" main
+run; [ "$RC" = 0 ] || fail "bad plan: rc=$RC"
+head -1 <<<"$OUT" | grep -q '^dev-framework ' || fail "bad plan lost the head: $OUT"
+grep -q '^open items: unavailable (P-9: depends on unknown item D-3)$' <<<"$OUT" || fail "bad plan reason: $OUT"
+
+SHA2=$(git -C "$CORE" rev-parse origin/main | tr -d "")
+# the CLI failing outright prints a message, not a stack location
+MSG=$(node "$(cygpath -m "$DIR/../../../lib/digest.js")" "$TMP/nope" "$TMP/nope" abc main 1 0 2>&1 >/dev/null)
+grep -q 'ENOENT' <<<"$MSG" || fail "cli message: $MSG"
+grep -q 'digest.js:[0-9]' <<<"$MSG" && fail "cli leaked a stack location: $MSG"
+
 # origin gone: the old tracking ref still answers, marked STALE, exit 0
 rm -rf "$BARE"
 run; [ "$RC" = 0 ] || fail "origin deleted: rc=$RC"
@@ -72,6 +86,13 @@ head -1 <<<"$OUT" | grep -q "@${SHA2:0:12}" || fail "stale sha: $OUT"
 git -C "$CORE" update-ref -d refs/remotes/origin/main
 run; [ "$RC" = 0 ] || fail "no ref: rc=$RC"
 grep -q '^dev-framework v6: digest unavailable: ' <<<"$OUT" || fail "no ref: $OUT"
+
+# jq missing from PATH: unavailable line, exit 0 (hook_init would have blocked with exit 2)
+NOJQ=""; IFS=: read -ra PD <<<"$PATH"
+for d in "${PD[@]}"; do [ -e "$d/jq" ] || [ -e "$d/jq.exe" ] || NOJQ="$NOJQ:$d"; done
+OUT=$(echo '{}' | PATH="${NOJQ#:}" DEVFW_CORE_DIR="$CORE" bash "$HOOK" 2>/dev/null); RC=$?
+[ "$RC" = 0 ] || fail "no jq: rc=$RC"
+[ "${OUT//$''/}" = 'dev-framework v6: digest unavailable: jq not found' ] || fail "no jq: $OUT"
 
 # DEVFW_CORE_DIR unset: inactive line
 OUT=$(echo '{}' | bash "$HOOK" 2>/dev/null); RC=$?

@@ -4,6 +4,8 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN="$DIR/../.."
 . "$DIR/_v6-hook.sh"
 unavailable() { echo "dev-framework v6: digest unavailable: $1"; exit 0; }
+# hook_init would hook_block (exit 2) without jq; this hook must always exit 0.
+if [ -n "${DEVFW_CORE_DIR:-}" ] && ! command -v jq >/dev/null 2>&1; then unavailable "jq not found"; fi
 hook_init session-digest
 if [ -z "$HOOK_CORE" ]; then echo "dev-framework v6: inactive (DEVFW_CORE_DIR not set)"; exit 0; fi
 command -v node >/dev/null 2>&1 || unavailable "node not found"

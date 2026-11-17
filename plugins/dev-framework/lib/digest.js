@@ -3,6 +3,7 @@
 const { parsePlan } = require('./plan');
 const { parseLeaseLine } = require('./lease');
 
+const NL = String.fromCharCode(10);
 const MAX = 10000;
 const FOCUS_MAX = 2000;
 
@@ -45,11 +46,18 @@ function digest({ planText, startHereText, sha, branch, version, stale }) {
   const first = String(startHereText || '').replace(/\r/g, '').split('\n')[0];
   head.push(parseLeaseLine(first) ? first : 'lease: none');
   head.push(...focusOf(startHereText));
-  head.push('open items:');
   // An item with no `state:` counts as open (parsePlan requires one, so this only matters for hand-built input).
-  const items = itemsOf(planText)
-    .filter((it) => it.fields.state !== 'done')
-    .map((it) => `${it.id} · ${it.title} [${it.fields.state}]`);
+  // A plan parsePlan rejects does not kill the digest: the head survives and the reason is shown.
+  let items;
+  try {
+    items = itemsOf(planText)
+      .filter((it) => it.fields.state !== 'done')
+      .map((it) => `${it.id} · ${it.title} [${it.fields.state}]`);
+  } catch (e) {
+    head.push(`open items: unavailable (${String(e && e.message || e).split(NL)[0].slice(0, 300)})`);
+    return head.join(NL).slice(0, MAX);
+  }
+  head.push('open items:');
   for (let k = items.length; k >= 0; k--) {
     const lines = [...head, ...items.slice(0, k)];
     if (k < items.length) lines.push(`… ${items.length - k} more open items; read the plan through the orchestrate skill`);
@@ -64,9 +72,14 @@ module.exports = { digest, MAX };
 // CLI for the hook: node digest.js <plan-file> <start-here-file> <sha> <branch> <version> <stale:0|1>
 if (require.main === module) {
   const fs = require('node:fs');
-  const [planF, startF, sha, branch, version, stale] = process.argv.slice(2);
-  process.stdout.write(digest({
-    planText: fs.readFileSync(planF, 'utf8'), startHereText: fs.readFileSync(startF, 'utf8'),
-    sha, branch, version, stale: stale === '1',
-  }) + '\n');
+  try {
+    const [planF, startF, sha, branch, version, stale] = process.argv.slice(2);
+    process.stdout.write(digest({
+      planText: fs.readFileSync(planF, 'utf8'), startHereText: fs.readFileSync(startF, 'utf8'),
+      sha, branch, version, stale: stale === '1',
+    }) + NL);
+  } catch (e) {
+    process.stderr.write(`${e && e.message ? e.message : e}` + NL);
+    process.exit(1);
+  }
 }

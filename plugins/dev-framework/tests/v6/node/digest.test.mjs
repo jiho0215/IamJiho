@@ -63,3 +63,13 @@ test('cap boundary: exactly 10000 chars is kept whole, 10001 is cut', () => {
   assert.ok(over.length <= 10000);
   assert.match(over.split('\n').at(-1), /^… 1 more open items/);
 });
+
+test('a plan parsePlan rejects keeps the head and shows the reason', () => {
+  const bad = '### P-1 · One\n- stage: A\n- kind: code\n- state: ready\n- area: acme-api\n- depends: D-3\n';
+  const t = digest({ ...base, planText: bad });
+  const lines = t.split('\n');
+  assert.equal(lines[0], 'dev-framework 6.0.0 · plan origin/main@abcdef012345');
+  assert.equal(lines[1], LEASE);
+  assert.ok(lines.includes('## Focus'));
+  assert.match(lines.at(-1), /^open items: unavailable \(P-1: depends on unknown item D-3\)$/);
+});
