@@ -2,6 +2,7 @@
 // routes: "METHOD path-without-pagination" -> response.
 //   A flat array (or any value) is ONE page. Multi-page is explicit: { pages: [page1, page2, ...] }
 //   where each page is an array, or an object such as { check_runs: [...] } for wrapped endpoints.
+//   Exception: a git/matching-refs route returns its whole list for every page=, as the real endpoint does.
 // GraphQL: "GRAPHQL <operationName or first field>" or "POST graphql" -> response data. Recorded in calls
 //   as { method: 'POST', path: 'graphql', body: { query, variables } }. An unrouted graphql call throws.
 // Writes are recorded in calls; unrouted writes default to {}; an unrouted GET throws.
@@ -44,6 +45,8 @@ export function fakeGh(routes = {}) {
       const empty = Array.isArray(r.pages[0]) ? [] : Object.fromEntries(Object.keys(r.pages[0] || {}).map((k) => [k, Array.isArray(r.pages[0][k]) ? [] : r.pages[0][k]]));
       return JSON.stringify(r.pages[page - 1] ?? empty);
     }
+    // git/matching-refs ignores page= on the real API (verified live): every page is the full list.
+    if (/\/git\/matching-refs\//.test(base)) return JSON.stringify(r);
     // Flat value: one page. Later pages are empty so a flat array of >= 100 rows terminates.
     return JSON.stringify(m && page > 1 && Array.isArray(r) ? [] : r);
   };

@@ -24,4 +24,13 @@ function readIssues(gh, planRepo) {
   return { byId, planIds };
 }
 
-module.exports = { readIssues, sleepMs, labelNames };
+// Claim branch names (t/*) of a repo. git/matching-refs ignores page= and always returns the whole list,
+// so it is ONE read, never paginate() (which would see the same full page forever).
+function claimRefs(gh, repo) {
+  const path = `repos/${repo}/git/matching-refs/heads/t/`;
+  const rows = gh.api('GET', path);
+  if (!Array.isArray(rows)) throw new Error(`expected an array from ${path}`);
+  return rows.map((r) => String((r && r.ref) || '').replace(/^refs\/heads\//, ''));
+}
+
+module.exports = { readIssues, sleepMs, labelNames, claimRefs };

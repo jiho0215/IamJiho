@@ -4,7 +4,7 @@ const { execFileSync } = require('node:child_process');
 const { loadConfig, ConfigError } = require('./config');
 const { planHashes, PlanError } = require('./plan');
 const { parseCites } = require('./ticket-body');
-const { readIssues, sleepMs } = require('./plan-issues');
+const { readIssues, sleepMs, claimRefs } = require('./plan-issues');
 const { parseLeaseLine } = require('./lease');
 
 const MARKER = '<!-- devfw:impact -->';
@@ -128,8 +128,7 @@ function findAffected(gh, config, changed) {
       if (ids.length) prs.push({ issue: p.number, ids, kind: 'pr', repo: r.github });
     }
     if (!nums.size) continue;
-    for (const ref of gh.paginate(`repos/${r.github}/git/matching-refs/heads/t/`)) {
-      const name = String(ref.ref || '').replace(/^refs\/heads\//, '');
+    for (const name of claimRefs(gh, r.github)) {
       const n = claimNo(name);
       if (n !== null && nums.has(n)) branches.push({ issue: n, ids: nums.get(n), kind: 'branch', repo: r.github, branch: name });
     }

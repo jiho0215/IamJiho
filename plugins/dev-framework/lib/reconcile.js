@@ -4,7 +4,7 @@ const { execFileSync } = require('node:child_process');
 const { loadConfig, ConfigError } = require('./config');
 const { parsePlan, planHashes, PlanError } = require('./plan');
 const { parseCites } = require('./ticket-body');
-const { readIssues, sleepMs, labelNames } = require('./plan-issues');
+const { readIssues, sleepMs, labelNames, claimRefs } = require('./plan-issues');
 const { ackCovers } = require('./acks');
 const { deriveState, staleCites } = require('./state');
 const gate = require('./gate');
@@ -31,8 +31,7 @@ function repoFacts(gh, repoKey, config, cache) {
   if (cache.has(repoKey)) return cache.get(repoKey);
   const r = config.repos[repoKey];
   const facts = { branches: new Map(), open: new Map(), merged: new Map() };
-  for (const ref of gh.paginate(`repos/${r.github}/git/matching-refs/heads/t/`)) {
-    const name = String(ref.ref || '').replace(/^refs\/heads\//, '');
+  for (const name of claimRefs(gh, r.github)) {
     const n = claimNo(name);
     if (n !== null && !facts.branches.has(n)) facts.branches.set(n, name);
   }

@@ -19,14 +19,22 @@ function createGh({ exec = defaultExec } = {}) {
     const out = exec(args, input);
     return out && String(out).trim() ? JSON.parse(out) : {};
   };
+  // Runaway guard: an endpoint that ignores page= (git/matching-refs does) returns the same full page forever,
+  // so a repeated page, or a 51st page, throws instead of looping. Read such endpoints with one api() call.
+  const MAX_PAGES = 50;
   const paginate = (path, { key } = {}) => {
     guard(path);
     const all = [];
+    let prev = null;
     for (let page = 1; ; page++) {
+      if (page > MAX_PAGES) throw new Error(`paginate: more than ${MAX_PAGES} pages from ${path}`);
       const sep = path.includes('?') ? '&' : '?';
       const res = api("GET", `${path}${sep}per_page=100&page=${page}`);
       const rows = key ? res && res[key] : res;
       if (!Array.isArray(rows)) throw new Error(`paginate: expected array${key ? " at ." + key : ""} from ${path}`);
+      const sig = JSON.stringify(rows);
+      if (rows.length && sig === prev) throw new Error(`paginate: page ${page} of ${path} has the same content as page ${page - 1} (the endpoint ignores page=)`);
+      prev = sig;
       all.push(...rows);
       if (rows.length < 100) return all;
     }

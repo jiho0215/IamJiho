@@ -188,9 +188,13 @@ test('facts are read once per repo, not once per item', () => {
     'GET repos/acme/core/issues?state=all': [issue(41, 'P-0-3', b('P-0-3')), issue(42, 'P-0-4', b('P-0-4')), issue(43, 'P-0-5', b('P-0-5'))],
     [SINCE]: [], ...quiet,
   });
-  // fakeGh records writes only, so count the list reads at the paginate seam.
+  // fakeGh records writes only, so count the reads at the paginate and api seams (matching-refs is one api read).
   const reads = [];
-  const gh = { ...fake.gh, paginate: (p, o) => { reads.push(p); return fake.gh.paginate(p, o); } };
+  const gh = {
+    ...fake.gh,
+    paginate: (p, o) => { reads.push(p); return fake.gh.paginate(p, o); },
+    api: (m, p, b) => { if (m === 'GET') reads.push(p); return fake.gh.api(m, p, b); },
+  };
   run({ argv: argv(c.dir), gh, env: {} });
   const n = (frag) => reads.filter((p) => p.includes(frag)).length;
   assert.equal(n('matching-refs'), 1);
