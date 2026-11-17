@@ -279,11 +279,12 @@ test('F7: global options that take a value; unknown ones are opaque', () => {
   assert.deepEqual(parseCommand('git --frobnicate HEAD push origin main'), r({ opaque: ['git --frobnicate HEAD push origin main'] }));
   assert.deepEqual(parseCommand('git --frobnicate HEAD status'), r({}));
 });
-test('F8: env -C/--chdir/-S are opaque; sudo -u consumes its value', () => {
+test('F8: env -C/--chdir/-S are opaque; sudo runs its arguments (R28: opaque, sudo -D moves the dir)', () => {
   assert.equal(parseCommand('env -C ../api git push').opaque.length, 1);
   assert.equal(parseCommand('env --chdir=../api git push').opaque.length, 1);
   assert.equal(parseCommand("env -S 'git push'").opaque.length, 1);
-  assert.deepEqual(parseCommand('sudo -u bob git push origin x'), r({ pushes: [push({ remote: 'origin', refspecs: ['x'] })] }));
+  // was read exactly before R28; sudo is a CODE_RUNNER now (sudo -D <dir> / -s / -i were misread as the cwd)
+  assert.deepEqual(parseCommand('sudo -u bob git push origin x'), r({ opaque: ['sudo -u bob git push origin x'] }));
 });
 test('F11: gh -R x pr merge; git --no-pager push', () => {
   assert.deepEqual(parseCommand('gh -R acme/api pr merge 12 --auto'), r({ merges: [merge({ pr: 12, repo: 'acme/api', auto: true })] }));
@@ -317,8 +318,9 @@ test('R20/C1: a dir the parser cannot read is reported unknown, per opaque entry
 test('R20/C1: a readable dir is not unknown; a literal -C in an opaque segment is its dir', () => {
   assert.deepEqual(D('cd /r/api && git push $R main'), [{ raw: 'git push $R main', dir: '/r/api', unknown: false }]);
   assert.deepEqual(D('git push $R main'), [{ raw: 'git push $R main', dir: null, unknown: false }]);
-  assert.deepEqual(D('xargs git -C /r/api push origin < f'), [{ raw: 'xargs git -C /r/api push origin < f', dir: '/r/api', unknown: false }]);
-  assert.deepEqual(D('cd /r && xargs git -C api push'), [{ raw: 'xargs git -C api push', dir: '/r/api', unknown: false }]);
+  // R28 reseed: xargs is a CODE_RUNNER (its git dir is unknown since R28), so the literal-dir fence uses stdbuf (R25 only)
+  assert.deepEqual(D('stdbuf -oL git -C /r/api push origin < f'), [{ raw: 'stdbuf -oL git -C /r/api push origin < f', dir: '/r/api', unknown: false }]);
+  assert.deepEqual(D('cd /r && stdbuf -oL git -C api push'), [{ raw: 'stdbuf -oL git -C api push', dir: '/r/api', unknown: false }]);
   assert.deepEqual(D('env --chdir=/r/api git push origin main'), [{ raw: 'env --chdir=/r/api git push origin main', dir: '/r/api', unknown: false }]);
 });
 test('R20: with a home, ~ and $HOME read as that literal path; ~user and quoted ~ do not', () => {
@@ -365,4 +367,93 @@ test('R12: dynamic command word with a guarded verb is opaque without a MENTION 
   assert.deepEqual(parseCommand('g=gh; $g pr merge 5 --repo acme/api').opaque, ['$g pr merge 5 --repo acme/api']);
   assert.deepEqual(parseCommand('$(echo gh) PR MERGE 5').opaque, ['$(echo gh) PR MERGE 5']);
   assert.deepEqual(parseCommand('$g status').opaque, []);
+});
+
+// ---- plan 3 hardening (rulings R27-R31) ----
+const U = (c, o) => D(c, o).map((d) => d.unknown);
+test('R27/A: command words fold case and a path / .exe suffix', () => {
+  const p = [push({ remote: 'origin', refspecs: ['main'] })];
+  for (const c of ['GIT push origin main', 'Git.EXE push origin main', '/usr/bin/git push origin main',
+    '"C:/Program Files/Git/cmd/git.exe" push origin main', 'git PUSH origin main', 'COMMAND GIT push origin main',
+    'EXEC Git push origin main', 'ENV A=1 GIT push origin main', 'TIMEOUT 5 git push origin main']) {
+    assert.deepEqual(P(c).pushes, p, c);
+  }
+  assert.deepEqual(P('Gh pr merge 5 --repo acme/api').merges, [merge({ pr: 5, repo: 'acme/api' })]);
+  assert.deepEqual(P('GH.exe PR MERGE 5 --repo acme/api').merges, [merge({ pr: 5, repo: 'acme/api' })]);
+  assert.deepEqual(P('CD /r/api && GIT push origin main').pushes, [push({ dir: '/r/api', remote: 'origin', refspecs: ['main'] })]);
+  assert.equal(P('EVAL "git push"').opaque.length, 1, 'EXECS fold');
+  assert.equal(P('ECHO git push origin main').opaque.length, 0, 'DATA fold');
+  assert.equal(P('STDBUF -oL GIT push origin main').opaque.length, 1, 'R25 arg check folds');
+  assert.deepEqual(P('EXPORT GIT_DIR=/x; git push origin main').opaque, ['git push origin main'], 'export folds');
+  // no-regression: a plain builtin in any case is still nothing
+  assert.deepEqual(P('Git status'), { ...r({}), opaqueDirs: [], aliases: [] });
+});
+test('R28/B: a code-running word whose arguments mention git/gh is opaque with an unknown dir', () => {
+  for (const c of ["script -qc 'git push origin main'", `python -c "import os; os.system('git push origin main')"`,
+    `perl -e 'system("git push origin main")'`, "bash -c 'cd ~/api && git push origin main'",
+    `node -e "require('child_process').execSync('GIT.exe push origin main')"`, 'sudo -u bob git push origin x',
+    'nohup git push origin main', 'wsl git push origin main', `python3.12 -c 'import os; os.system("gh pr merge 5")'`,
+    'xargs git -C /r/api push origin < f', 'eval "git push"', `Python -c 'x("git commit")'`]) {
+    assert.deepEqual(U(c), [true], c);
+  }
+  assert.deepEqual(U("bash -c 'cd ~/api && git push origin main'", { home: '/h/u' }), [true], 'even with a home');
+  // no-regression: no git/gh word -> nothing; .git and github are not the word git
+  for (const c of ['python -c "print(1)"', 'python script.py push', "node -e 'console.log(1)'", 'find . -name .git',
+    "python -c 'import github'"]) {
+    assert.deepEqual(P(c).opaque, [], c);
+  }
+});
+test('R30/D: inline alias / include config makes a git call opaque unless it is a harmless builtin', () => {
+  for (const c of ['git -c alias.x=push x origin main', 'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.x GIT_CONFIG_VALUE_0=push git x origin main',
+    `GIT_CONFIG_PARAMETERS="'alias.x'='push'" git x origin main`, 'git --config-env=alias.x=V x origin main',
+    'git --config-env alias.x=V x origin main', 'git -c ALIAS.x=push x origin main', 'git -c include.path=/t/c push origin main',
+    'git -c includeIf.onbranch:main.path=/t/c commit -m x', 'export GIT_CONFIG_COUNT=1; git x origin main',
+    'GIT_CONFIG_GLOBAL=/t/c git x', 'GIT_CONFIG_SYSTEM=/t/c git push origin main', 'GIT_CONFIG=/t/c git x',
+    'env GIT_CONFIG_PARAMETERS=x git x origin main', 'git -c "$K" x origin main', 'HOME=/t git x origin main',
+    'git -c remote.origin.url=https://github.com/acme/api push origin main']) {
+    const x = P(c);
+    assert.equal(x.opaque.length, 1, c);
+    assert.equal(x.opaqueDirs[0].unknown, false, `dir as known: ${c}`);
+    assert.deepEqual(x.aliases, [], `not an alias candidate: ${c}`);
+    assert.deepEqual(x.pushes, [], `not read as a push: ${c}`);
+  }
+  assert.deepEqual(D('cd /r/api && git -c alias.x=push x origin main')[0].dir, '/r/api');
+  // an alias the hook cannot read is every guard's business (any); a guarded builtin is matched by its own verb
+  assert.equal(P('GIT_CONFIG_GLOBAL=/t/c git x origin main').opaqueDirs[0].any, true, 'any: alias from injected config');
+  assert.equal(P('git -c include.path=/t/c push origin main').opaqueDirs[0].any, undefined, 'guarded builtin: not any');
+  assert.equal(P('GH_CONFIG_DIR=/t gh m 5').opaqueDirs[0].any, true, 'any: gh alias from another config dir');
+  // no-regression
+  assert.deepEqual(P('git -c color.ui=never status'), { ...r({}), opaqueDirs: [], aliases: [] });
+  assert.deepEqual(P('GIT_CONFIG_COUNT=1 git log'), { ...r({}), opaqueDirs: [], aliases: [] });
+  assert.deepEqual(P('git -c color.ui=never push origin t/12-x').pushes, [push({ remote: 'origin', refspecs: ['t/12-x'] })]);
+  assert.deepEqual(P('git -c user.name=t commit -m x').commits, [commit({})]);
+  assert.deepEqual(P('git push origin t/12-x').pushes, [push({ remote: 'origin', refspecs: ['t/12-x'] })]);
+  assert.deepEqual(P('git commit -m x').commits, [commit({})]);
+  // gh: a config dir from the environment hides which aliases exist
+  assert.equal(P('GH_CONFIG_DIR=/t gh m 5').opaque.length, 1);
+  assert.deepEqual(P('GH_CONFIG_DIR=/t gh m 5').aliases, []);
+});
+test('R31/E: a relative cd while CDPATH is set has an unknown dir', () => {
+  for (const [c, o] of [['CDPATH=/r cd api && git push origin main'], ['export CDPATH=/r; cd api && git push origin main'],
+    ['cd api && git push origin main', { cdpath: true }], ['pushd api && git push origin main', { cdpath: true }],
+    ['CDPATH=$X cd api && git push origin main']]) {
+    assert.deepEqual(U(c, o), [true], c);
+  }
+  const at = (c, o) => P(c, o).pushes.map((p) => p.dir);
+  assert.deepEqual(at('cd api && git push origin main'), ['api'], 'no CDPATH: relative to the cwd');
+  assert.deepEqual(at('cd /r/api && git push origin main', { cdpath: true }), ['/r/api'], 'absolute: CDPATH unused');
+  assert.deepEqual(at('cd ./api && git push origin main', { cdpath: true }), ['./api'], './: CDPATH unused');
+  assert.deepEqual(at('cd ../api && git push origin main', { cdpath: true }), ['../api'], '../: CDPATH unused');
+  assert.deepEqual(at('unset CDPATH; cd api && git push origin main', { cdpath: true }), ['api'], 'unset CDPATH');
+  assert.deepEqual(at('CDPATH= cd api && git push origin main'), ['api'], 'empty CDPATH');
+  const out = execFileSync(process.execPath, [join(here, '../../../bin/hook-parse')],
+    { input: 'cd api && git push origin main', encoding: 'utf8', env: { ...process.env, CDPATH: '/r' } });
+  assert.deepEqual(JSON.parse(out).opaqueDirs, [{ dir: null, unknown: true }], 'hook-parse reads the hook CDPATH');
+});
+test('R29/C: hook-parse lists the git and gh command names when there is an alias candidate', () => {
+  const run = (input) => JSON.parse(execFileSync(process.execPath, [join(here, '../../../bin/hook-parse')], { input, encoding: 'utf8' }));
+  const a = run('git q origin main');
+  assert.ok(a.gitCommands.includes('push') && a.gitCommands.includes('status'), 'git commands');
+  assert.ok(a.ghCommands.includes('pr') && a.ghCommands.includes('api'), 'gh commands');
+  assert.equal(run('git status').gitCommands, undefined, 'only with an alias candidate');
 });

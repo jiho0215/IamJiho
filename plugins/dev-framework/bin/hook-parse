@@ -2,8 +2,12 @@
 'use strict';
 // hook-parse: reads a Bash command line on stdin and prints lib/hook-cmd.js parseCommand(...) as JSON.
 // DEVFW_PARSE_HOME (set by the hooks to $HOME in a form node can use) is the literal path `~` and $HOME stand for.
+// A non-empty CDPATH in this process's environment (the hook's) makes a relative cd unknown (ruling R31).
+// With an alias candidate, gitCommands / ghCommands carry the command names an alias chain may end at (R29).
 const fs = require('node:fs');
 const path = require('node:path');
-const { parseCommand } = require(path.join(__dirname, '..', 'lib', 'hook-cmd.js'));
+const { parseCommand, GIT_COMMANDS, GH_COMMANDS } = require(path.join(__dirname, '..', 'lib', 'hook-cmd.js'));
 const home = process.env.DEVFW_PARSE_HOME || '';
-process.stdout.write(JSON.stringify(parseCommand(fs.readFileSync(0, 'utf8'), { home })) + '\n');
+const out = parseCommand(fs.readFileSync(0, 'utf8'), { home, cdpath: !!process.env.CDPATH });
+if (out.aliases.length) { out.gitCommands = GIT_COMMANDS; out.ghCommands = GH_COMMANDS; }
+process.stdout.write(JSON.stringify(out) + '\n');

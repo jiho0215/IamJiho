@@ -30,6 +30,20 @@
 //   raw } for the hook to resolve (git config alias.<name> / gh alias list).
 // - R22: a `gh api` endpoint loses a scheme+host prefix (and GHE's api/v3/) and a leading / before matching; an
 //   endpoint naming pulls/<x>/merge that still does not match exactly is opaque for PUT or an unknown method.
+// - R27: command words (git, gh, cd, export, env, the EXECS/DATA/KEYWORDS words, ...) are compared case-insensitively
+//   by basename with a trailing .exe dropped (Git Bash on Windows runs GIT, Git.EXE, /usr/bin/git alike); so are git
+//   subcommands and gh command groups (git PUSH can reach git-push.exe there). Folded on every platform.
+// - R28: a code-running word (CODE_RUNNERS: EXECS plus interpreters and privilege/session wrappers) whose arguments
+//   mention git or gh as a word is opaque with an UNKNOWN dir: the string can cd anywhere (bash -c 'cd ~/x && ...').
+// - R30: a git call that carries inline config able to define an alias or redirect it (-c alias.* / include.* /
+//   includeIf.* / remote.* / url.* / branch.* / push.*, any --config-env, a dynamic -c, or GIT_CONFIG_* / HOME /
+//   XDG_CONFIG_HOME from the env prefix or an earlier export) is opaque (dir as known) unless its subcommand is a git
+//   builtin that no guard reads; gh with GH_CONFIG_DIR (or HOME / XDG_CONFIG_HOME / APPDATA) and a non-command group
+//   likewise. When the subcommand is not a builtin (an alias the hook cannot look up: its expansion may live only in
+//   the injected config, git -c alias.x=... x), the opaqueDirs entry carries `any: true`: every guard reads it as
+//   its own, whatever its text says.
+// - R31: a relative `cd <dir>` / `pushd <dir>` (not ., .., ./x, ../x) while CDPATH is set (env prefix, export, or
+//   opts.cdpath = the hook's own environment) makes the dir unknown.
 
 const MENTION = new RegExp([
   String.raw`\bgh\b[\s\S]*\bpr\b[\s\S]*\bmerge\b`,
@@ -39,7 +53,7 @@ const MENTION = new RegExp([
   String.raw`worktree\s+add`,
   String.raw`checkout\s+-[bB]`,
   String.raw`switch\s+(-[cC]\b|--create|--force-create)`,
-].join('|'));
+].join('|'), 'i');  // R27: GIT push mentions push too
 
 // Commands that run their arguments (or a script) as code: unreadable when they mention a guarded command.
 const EXECS = new Set(['eval', 'xargs', 'sh', 'bash', 'zsh', 'dash', 'ksh', 'fish', 'pwsh', 'powershell', 'cmd',
@@ -64,6 +78,22 @@ const GH_COMMANDS = new Set(('auth browse codespace cs gist issue org pr project
   'agent-task alias api attestation completion config copilot extension ext extensions gpg-key label licenses ' +
   'preview ruleset rs search secret ssh-key status variable help version').split(' '));
 const base = (t) => t.replace(/^.*[\\/]/, '').replace(/\.exe$/i, '');
+// R27: how a command word is compared: basename, no .exe, lower case.
+const cmdName = (t) => base(t).toLowerCase();
+// R28: words that run code given as arguments or a script; EXECS plus these.
+const CODE_RUNNERS = new Set([...EXECS, 'script', 'python', 'python3', 'py', 'perl', 'ruby', 'node', 'deno', 'bun', 'php',
+  'lua', 'osascript', 'busybox', 'nohup', 'setsid', 'sudo', 'doas', 'runuser', 'chroot', 'unbuffer', 'expect', 'tclsh',
+  'wsl', 'start']);
+const isCodeRunner = (name) => CODE_RUNNERS.has(name) || /^(python|pypy)[0-9.]*$/.test(name);
+// R28: git or gh named as a word (git.exe too; .git, github, git-lfs are not it).
+const GIT_WORD = /(^|[^\w.-])(git|gh)(\.exe)?(?![\w-])/i;
+// R30: environment that changes which git config (and so which aliases) a call reads.
+const GIT_CONFIG_ENV = /^(GIT_CONFIG|GIT_CONFIG_COUNT|GIT_CONFIG_KEY_\w*|GIT_CONFIG_VALUE_\w*|GIT_CONFIG_PARAMETERS|GIT_CONFIG_GLOBAL|GIT_CONFIG_SYSTEM|HOME|XDG_CONFIG_HOME)$/;
+const GH_CONFIG_ENV = /^(GH_CONFIG_DIR|HOME|XDG_CONFIG_HOME|APPDATA)$/;
+// R30: -c keys that can define an alias, pull in more config, or redirect where a guarded call goes.
+const GIT_CONFIG_KEY_RISK = /^(alias|include|includeif|remote|url|branch|push)\./i;
+// git subcommands some guard reads; a call to one of them under injected config is never read exactly.
+const GIT_GUARDED = new Set(['push', 'commit', 'worktree', 'checkout', 'switch', 'branch']);
 
 // ---------------------------------------------------------------- scanner
 
@@ -399,6 +429,8 @@ const GIT_GLOBAL_FLAG = /^(-p|-P|--paginate|--no-pager|--bare|--no-replace-objec
 function parseGit(args, st, env, out, raw) {
   let i = 0, dir = st.dir, dirDyn = false;
   let gitDir = st.gitDir || env.GIT_DIR !== undefined || env.GIT_WORK_TREE !== undefined;
+  // R30: config from the environment (prefix or an earlier export) can define aliases or redirect the call
+  let injected = !!st.gitConfig || Object.keys(env).some((k) => GIT_CONFIG_ENV.test(k));
   while (i < args.length) {
     const t = args[i].text;
     if (args[i].dyn) return 'maybe';  // values of value-taking options are skipped below, never seen here
@@ -408,17 +440,22 @@ function parseGit(args, st, env, out, raw) {
       const v = eq < 0 ? args[i + 1] : { text: t.slice(eq + 1), dyn: args[i].dyn };
       if (name === '-C') { if (!v || v.dyn) dirDyn = true; else dir = joinDir(dir, v.text); }
       if (/^--(git-dir|work-tree|namespace)$/.test(name)) gitDir = true;
+      if (name === '--config-env') injected = true;
+      if (name === '-c' && (!v || v.dyn || GIT_CONFIG_KEY_RISK.test(v.text))) injected = true;
       i += eq < 0 ? 2 : 1; continue;
     }
     if (GIT_GLOBAL_FLAG.test(t)) { i++; continue; }
     return 'maybe';  // an unknown global option may take a value we would misread as the subcommand
   }
-  const subcmd = args[i] ? args[i].text : '';
+  const subcmd = args[i] ? args[i].text.toLowerCase() : '';  // R27: git PUSH can reach git-push.exe on Windows
   const rest = args.slice(i + 1);
   const blocked = () => gitDir || dirDyn || st.cdOpaque;
+  // R30: under injected config, an alias candidate or a guarded verb cannot be read exactly
+  if (injected && subcmd !== '' && !GIT_COMMANDS.has(subcmd)) return 'opaque-any';  // an alias the hook cannot read
+  if (injected && GIT_GUARDED.has(subcmd)) return 'opaque';
   if (args[i] && !args[i].dyn && subcmd !== '' && !GIT_COMMANDS.has(subcmd)) {
     // R25: may be an alias (alias.<name> in the repo's or the global git config); the hook resolves it.
-    out.aliases.push({ tool: 'git', name: subcmd, dir, unknown: !!blocked(), raw });
+    out.aliases.push({ tool: 'git', name: args[i].text, dir, unknown: !!blocked(), raw });
     return null;
   }
   if (subcmd === 'push' || subcmd === 'commit' || (subcmd === 'worktree' && rest[0] && rest[0].text === 'add')) {
@@ -464,18 +501,21 @@ function parseGh(allArgs, st, env, out, raw) {
   if (groupIdx < 0) return null;
   const group = args[groupIdx];
   if (group.dyn) return 'maybe';
-  if (!GH_COMMANDS.has(group.text)) {
+  const gname = group.text.toLowerCase();  // R27
+  if (!GH_COMMANDS.has(gname)) {
+    // R30: aliases from another gh config dir cannot be looked up by the hook
+    if (st.ghConfig || Object.keys(env).some((k) => GH_CONFIG_ENV.test(k))) return 'opaque-any';
     // R25: may be a gh alias (gh alias set m 'pr merge'); the hook resolves it with `gh alias list`.
     out.aliases.push({ tool: 'gh', name: group.text, dir: st.dir, unknown: !!st.cdOpaque, raw });
     return null;
   }
   let kind = null, startIdx = groupIdx + 1;
-  if (group.text === 'api') kind = 'api';
-  else if (group.text === 'pr') {
+  if (gname === 'api') kind = 'api';
+  else if (gname === 'pr') {
     const subIdx = args.findIndex((a, j) => j > groupIdx && !a.text.startsWith('-'));
     if (subIdx < 0) return null;
     if (args[subIdx].dyn) return 'maybe';
-    if (args[subIdx].text !== 'merge') return null;
+    if (args[subIdx].text.toLowerCase() !== 'merge') return null;
     kind = 'merge'; startIdx = subIdx + 1;
   }
   if (!kind) return null;
@@ -538,11 +578,14 @@ function ghApi(args, pos, method, methodDyn, repo, repoDyn, st, out) {
 
 // ---------------------------------------------------------------- segments
 
-function cdEffect(args, st) {
+function cdEffect(args, st, env) {
   const pos = args.filter((a) => !/^-[LPe@]+$/.test(a.text) && a.text !== '--');
   if (!pos.length || pos[0].dyn || pos[0].text === '-') return { ...st, cdOpaque: true };
   const t = pos[0].text;
   if (isAbs(t)) return { ...st, dir: t, cdOpaque: false };
+  // R31: with CDPATH set, a relative dir (not ., .., ./x, ../x) may resolve under any CDPATH entry
+  const cdpath = env.CDPATH !== undefined ? env.CDPATH.dyn || env.CDPATH.text !== '' : st.cdpath;
+  if (cdpath && !/^\.\.?([\\/]|$)/.test(t)) return { ...st, cdOpaque: true };
   if (st.cdOpaque) return st;
   return { ...st, dir: joinDir(st.dir, t) };
 }
@@ -569,28 +612,34 @@ function segDir(ws, st, env) {
 function segment(it, st, out) {
   const mentions = MENTION.test(it.raw);
   const env = {};
-  const list = () => { out.opaque.push(it.raw); out.opaqueDirs.push(segDir(it.words, st, env)); return null; };
+  // unknown: the dir cannot be read (R28); any: the call may be anything, so every guard reads it as its own (R30)
+  const list = (unknown, any) => {
+    const d = segDir(it.words, st, env);
+    out.opaque.push(it.raw);
+    out.opaqueDirs.push({ ...d, ...(unknown ? { unknown: true } : {}), ...(any ? { any: true } : {}) });
+    return null;
+  };
   const opaque = () => (mentions ? list() : null);
   if (it.broken) return opaque();
   const ws = it.words;
   let k = 0;
   for (;;) {
-    while (k < ws.length && !ws[k].quoted && KEYWORDS.has(ws[k].text)) k++;
+    while (k < ws.length && !ws[k].quoted && KEYWORDS.has(cmdName(ws[k].text))) k++;
     while (k < ws.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(ws[k].text)) {
       const eq = ws[k].text.indexOf('=');
       env[ws[k].text.slice(0, eq)] = { text: ws[k].text.slice(eq + 1), dyn: ws[k].dyn };
       k++;
     }
-    const t = k < ws.length ? ws[k].text : '';
+    const t = k < ws.length ? cmdName(ws[k].text) : '';
     if (ws[k] && ws[k].dyn) {
       // R12: a dynamic command word (g=gh; $g pr merge) hides the program: listed whenever a later word is a
       // verb we guard, even with no MENTION hit.
       if (ws.slice(k + 1).some((w) => /^(merge|push|commit|checkout|switch|worktree|branch)$/i.test(w.text))) return list();
       return opaque();
     }
-    if (t === 'command' || t === 'nohup' || t === 'builtin' || t === 'sudo') {
+    if (t === 'command' || t === 'builtin') {  // nohup / sudo run their arguments: CODE_RUNNERS (R28)
       k++;
-      while (k < ws.length && ws[k].text.startsWith('-')) k += t === 'sudo' && /^-[ugpCDhrtUTR]$/.test(ws[k].text) ? 2 : 1;
+      while (k < ws.length && ws[k].text.startsWith('-')) k++;
       continue;
     }
     if (t === 'exec') {  // exec [-cl] [-a name] cmd: runs cmd in place of the shell, arguments as given
@@ -616,23 +665,37 @@ function segment(it, st, out) {
     break;
   }
   if (k >= ws.length) return null;
-  const name = base(ws[k].text);
+  const name = cmdName(ws[k].text);
   const args = ws.slice(k + 1);
-  if (name === 'cd' || name === 'pushd') return cdEffect(args, st);
+  if (name === 'cd' || name === 'pushd') return cdEffect(args, st, env);
   if (name === 'popd') return { ...st, cdOpaque: true };
   if (name === 'export') {
     let next = null;
     for (const a of args) {
-      if (a.text.startsWith('GH_REPO=')) next = { ...(next || st), ghRepo: { text: a.text.slice(8), dyn: a.dyn } };
-      if (/^(GIT_DIR|GIT_WORK_TREE)(=|$)/.test(a.text)) next = { ...(next || st), gitDir: true };
+      const eq = a.text.indexOf('='); const v = eq < 0 ? null : a.text.slice(eq + 1);
+      const key = eq < 0 ? a.text : a.text.slice(0, eq);
+      if (key === 'GH_REPO' && v !== null) next = { ...(next || st), ghRepo: { text: v, dyn: a.dyn } };
+      if (key === 'GIT_DIR' || key === 'GIT_WORK_TREE') next = { ...(next || st), gitDir: true };
+      if (GIT_CONFIG_ENV.test(key)) next = { ...(next || st), gitConfig: true };
+      if (GH_CONFIG_ENV.test(key)) next = { ...(next || st), ghConfig: true };
+      if (key === 'CDPATH' && v !== null) next = { ...(next || st), cdpath: a.dyn || v !== '' };
     }
     return next;
   }
-  if (name === 'unset' && args.some((a) => a.text === 'GH_REPO')) return { ...st, ghRepo: null };
-  if (EXECS.has(name)) return opaque();
+  if (name === 'unset') {
+    let next = null;
+    if (args.some((a) => a.text === 'GH_REPO')) next = { ...st, ghRepo: null };
+    if (args.some((a) => a.text === 'CDPATH')) next = { ...(next || st), cdpath: false };
+    return next;
+  }
+  if (isCodeRunner(name)) {
+    // R28: its arguments may run git/gh from any dir (bash -c 'cd ~/x && git push'): opaque, dir unknown
+    if (args.some((a) => GIT_WORD.test(a.text))) return list(true);
+    return EXECS.has(name) ? opaque() : null;
+  }
   if (name !== 'git' && name !== 'gh') {
     // R25: an unknown command word (stdbuf -oL, winpty, flock f, ...) followed by git/gh may run it: unreadable.
-    if (!DATA.has(name) && args.some((a) => !a.dyn && /^(git|gh)$/.test(base(a.text)))) return opaque();
+    if (!DATA.has(name) && args.some((a) => !a.dyn && /^(git|gh)$/.test(cmdName(a.text)))) return opaque();
     return null;
   }
   let verdict = null;
@@ -644,6 +707,7 @@ function segment(it, st, out) {
     verdict = 'opaque';  // need() throws only inside an already-classified guarded call
   }
   if (verdict === 'opaque') list();  // guarded and unreadable: listed even with no MENTION hit
+  else if (verdict === 'opaque-any') list(false, true);
   else if (verdict === 'maybe') opaque();
   return null;
 }
@@ -664,11 +728,15 @@ function walk(src, out, initial, opts) {
   }
 }
 
-// parseCommand(cmd, { home }): home (optional) is the literal path `~` and $HOME stand for.
+// parseCommand(cmd, { home, cdpath }): home (optional) is the literal path `~` and $HOME stand for; cdpath (optional)
+// is true when the hook's own environment has a non-empty CDPATH (R31).
 function parseCommand(cmd, opts = {}) {
   const out = { merges: [], pushes: [], branches: [], commits: [], opaque: [], opaqueDirs: [], aliases: [] };
-  walk(String(cmd == null ? '' : cmd), out, { dir: null, cdOpaque: false, ghRepo: null, gitDir: false }, opts || {});
+  const o = opts || {};
+  walk(String(cmd == null ? '' : cmd), out,
+    { dir: null, cdOpaque: false, ghRepo: null, gitDir: false, gitConfig: false, ghConfig: false, cdpath: !!o.cdpath }, o);
   return out;
 }
 
-module.exports = { parseCommand };
+// R29: the command names an alias step may resolve to (the hook walks alias chains with these).
+module.exports = { parseCommand, GIT_COMMANDS: [...GIT_COMMANDS], GH_COMMANDS: [...GH_COMMANDS] };
