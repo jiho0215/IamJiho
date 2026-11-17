@@ -45,11 +45,18 @@ hook_net() {
   __hn_cap=$__hn_left
   if [[ "$__hn_t" =~ ^[0-9]+$ ]] && [ $(( __hn_t * 1000 )) -lt "$__hn_cap" ]; then __hn_cap=$(( __hn_t * 1000 )); fi
   printf -v __hn_s '%d.%03d' $(( __hn_cap / 1000 )) $(( __hn_cap % 1000 ))
+  # stdout goes to a temp FILE, not a $( ... ) pipe: a pipe is read until EOF, so a grandchild that outlives the
+  # command (a background helper, a native process a Windows timeout cannot kill) holding stdout would keep the
+  # hook waiting past the deadline. Waiting on `timeout` alone ends at the deadline.
+  local __hn_f
+  __hn_f=$(mktemp 2>/dev/null) || { printf -v "$__hn_v" '%s' ""; return 125; }
   case "$__hn_e" in
-    null)  __hn_o=$(timeout "$__hn_s" "$@" 2>/dev/null) || __hn_rc=$? ;;
-    merge) __hn_o=$(timeout "$__hn_s" "$@" 2>&1) || __hn_rc=$? ;;
-    *)     __hn_o=$(timeout "$__hn_s" "$@" 2>"$__hn_e") || __hn_rc=$? ;;
+    null)  timeout "$__hn_s" "$@" >"$__hn_f" 2>/dev/null || __hn_rc=$? ;;
+    merge) timeout "$__hn_s" "$@" >"$__hn_f" 2>&1 || __hn_rc=$? ;;
+    *)     timeout "$__hn_s" "$@" >"$__hn_f" 2>"$__hn_e" || __hn_rc=$? ;;
   esac
+  __hn_o=$(cat "$__hn_f" 2>/dev/null) || __hn_o=""
+  rm -f "$__hn_f" 2>/dev/null || true
   printf -v "$__hn_v" '%s' "$__hn_o"
   return "$__hn_rc"
 }
@@ -64,12 +71,93 @@ hook_init() {
   if [ ! -t 0 ]; then HOOK_JSON=$(cat 2>/dev/null) || HOOK_JSON=""; fi
   HOOK_CORE=""
   [ -z "${DEVFW_CORE_DIR:-}" ] || HOOK_CORE=$(_hook_norm "$DEVFW_CORE_DIR")
-  if [ -n "$HOOK_CORE" ] && ! command -v jq >/dev/null 2>&1; then
-    hook_block "jq not found (needed to read the hook input and the config)"
-  fi
+  # A missing jq never blocks here, before scope (ruling R24): each hook calls hook_need_jq with its own tokens.
+  HOOK_HAVE_JQ=1
+  command -v jq >/dev/null 2>&1 || HOOK_HAVE_JQ=0
+  # the parser reads a leading ~ / $HOME as this literal path (ruling R20)
+  if [ -n "${HOME:-}" ]; then DEVFW_PARSE_HOME=$(devfw_path "$HOME" 2>/dev/null) || DEVFW_PARSE_HOME=""; export DEVFW_PARSE_HOME; fi
   HOOK_TOOL=$(hook_field .tool_name)
   HOOK_CWD=$(hook_field .cwd)
   HOOK_AGENT_ID=$(hook_field .agent_id)
+}
+
+# hook_need_jq <ERE>: ruling R24. With jq present, returns. Without jq: if the RAW hook input matches <ERE> (the
+# hook's guarded tokens), blocks "jq not found"; otherwise exits 0 (not this hook's business). Call it right after
+# the DEVFW_CORE_DIR check, before anything that reads a field (fields read as empty without jq).
+hook_need_jq() {
+  [ "$HOOK_HAVE_JQ" -eq 0 ] || return 0
+  grep -Eq -- "$1" <<<"${HOOK_JSON:-}" || exit 0
+  hook_block "jq not found (needed to read this command and the config); install jq or run it without the dev-framework hooks"
+}
+
+# hook_raw_str <key>: the first "<key>":"<string>" of the RAW hook input, JSON escapes \\ and \" undone. For the
+# jq-missing path only (R24); anything else uses hook_field.
+hook_raw_str() {
+  local v
+  v=$(sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"\(\([^\"\\\\]\|\\\\.\)*\)\".*/\1/p" <<<"${HOOK_JSON:-}" | head -1)
+  v="${v//\\\\/$'\001'}"; v="${v//\\\"/\"}"; v="${v//$'\001'/\\}"
+  printf '%s\n' "$v"
+}
+
+# hook_abs <path> [<base>]: <path> made absolute against <base> (default HOOK_CWD) when relative: /x, C:x, \x and
+# \\server\share are absolute. With no base, prints <path> as given.
+hook_abs() {
+  local b="${2-${HOOK_CWD:-}}"
+  case "$1" in
+    /*|[A-Za-z]:*|\\*) printf '%s\n' "$1" ;;
+    *) if [ -n "$b" ]; then printf '%s/%s\n' "$b" "$1"; else printf '%s\n' "$1"; fi ;;
+  esac
+}
+
+# hook_parse <command>: sets PARSED to lib/hook-cmd.js's JSON for <command>, or empty when the parser fails.
+hook_parse() {
+  PARSED=$(node "$(devfw_path "$HOOK_LIB_DIR/../../bin/hook-parse")" <<<"$1" | tr -d '\r') || PARSED=""
+  if [ -n "$PARSED" ] && ! jq -e . >/dev/null 2>&1 <<<"$PARSED"; then PARSED=""; fi
+}
+
+# hook_opaque_rows <jq-regex> [<alias-regex>]: rulings R20/R25, the ONE place opaque scope facts are read. From
+# $PARSED, every opaque segment matching <jq-regex> (case-insensitive), plus every git/gh alias call whose
+# expansion matches <alias-regex> (default: <jq-regex>), becomes a row "<unknown 0|1><TAB><dir>" in the array HOOK_OPQ_ROWS (dir empty = the hook cwd). Scope pass: no
+# network (git config / gh alias list are local; gh is bounded by hook_net). An alias of a dir the parser cannot
+# read is looked up from the hook cwd (global aliases). A failing `gh alias list` makes each gh alias call a row of
+# kind 2 ("2<TAB>": unresolved), in scope only when the hook cwd is (R25). Never call it inside $( ... ).
+hook_opaque_rows() {
+  local re="$1" are="${2:-$1}" row tool name dir unk d val ghl="" ghrc=-1
+  HOOK_OPQ_ROWS=()
+  while IFS= read -r row; do
+    [ -n "$row" ] && HOOK_OPQ_ROWS+=("$row")
+  done < <(jq -r --arg re "$re" '[.opaque, (.opaqueDirs // [])] | transpose[] | select((.[0] // "") | test($re; "i"))
+      | "\(if .[1].unknown == false then 0 else 1 end)\t\(.[1].dir // "")"' <<<"$PARSED" | tr -d '\r')
+  while IFS=$'\037' read -r tool name dir unk; do   # \037: an empty dir must not collapse (tab is IFS whitespace)
+    [ -n "$tool" ] || continue
+    if [ "$unk" = true ] || [ -z "$dir" ]; then d="${HOOK_CWD:-.}"; else d=$(hook_abs "$dir"); fi
+    val=""
+    if [ "$tool" = git ]; then
+      val=$(git -C "$(devfw_path "$d")" config --get "alias.$name" 2>/dev/null | tr -d '\r') || val=""
+    else
+      if [ "$ghrc" -lt 0 ]; then ghrc=0; hook_net ghl null 5 gh alias list || ghrc=$?; ghl="${ghl//$'\r'/}"; fi
+      if [ "$ghrc" -ne 0 ]; then HOOK_OPQ_ROWS+=("2"$'\t'); continue; fi   # cannot list gh aliases: kind 2
+      val=$(awk -v n="$name" 'index($0, n ":") == 1 { print substr($0, length(n) + 2); exit }' <<<"$ghl")
+    fi
+    [ -n "$val" ] || continue
+    jq -en --arg v "$val" --arg re "$are" '$v | test($re; "i")' >/dev/null 2>&1 || continue
+    HOOK_OPQ_ROWS+=("$([ "$unk" = true ] && echo 1 || echo 0)"$'\t'"$dir")
+  done < <(jq -r '(.aliases // [])[] | [.tool, .name, (.dir // ""), (.unknown | tostring)] | join("\u001f")' <<<"$PARSED" | tr -d '\r')
+}
+
+# hook_opaque_hit <pred-fn>: 0 when any HOOK_OPQ_ROWS row is in scope: its dir is unknown, or <pred-fn> <dir>
+# (the row's literal dir made absolute, and the hook cwd) returns 0. <pred-fn> returns 0 for "in scope" and must
+# count its own errors as in scope.
+hook_opaque_hit() {
+  local row u d
+  [ "${#HOOK_OPQ_ROWS[@]}" -gt 0 ] || return 1
+  "$1" "${HOOK_CWD:-.}" && return 0
+  for row in "${HOOK_OPQ_ROWS[@]}"; do
+    u="${row%%$'\t'*}"; d="${row#*$'\t'}"
+    [ "$u" != 1 ] || return 0   # kind 2 falls through: only the cwd test above applies to it
+    if [ -n "$d" ] && "$1" "$(hook_abs "$d")"; then return 0; fi
+  done
+  return 1
 }
 
 # hook_field <jq-filter>: that field of HOOK_JSON (false and 0 print as such), or nothing.
@@ -233,12 +321,23 @@ hook_claim_ok() {
   base=$(sed -n 's#^ref: refs/heads/\([^[:space:]]*\)[[:space:]]HEAD$#\1#p' <<<"$ls" | head -1)
   [ -n "$base" ] || return 1
   awk -v r="refs/heads/$branch" '$2 == r { f = 1 } END { exit !f }' <<<"$ls" || return 3
+  # per-process refs (M1): claim-guard and push-guard run in parallel and must not lock the same ref; deleted after
+  # the read (a killed run can leave one behind under refs/devfw/claim-check/<pid>/, harmless).
+  local cr="refs/devfw/claim-check/$$" rc=3
   hook_net body null "$t" git -C "$dir" -c gc.auto=0 -c maintenance.auto=false fetch -q --no-tags --no-write-fetch-head \
     --refmap= --no-recurse-submodules "$remote" \
-    "+refs/heads/$branch:refs/devfw/claim-check/$branch" "+refs/heads/$base:refs/devfw/claim-check/base" \
-    || return 1
-  body=$(git -C "$dir" log --format=%B "refs/devfw/claim-check/base..refs/devfw/claim-check/$branch" 2>/dev/null) \
-    || return 1
-  grep -q "^Claim-Issue: $n\$" <<<"${body//$'\r'/}" && return 0
-  return 3
+    "+refs/heads/$branch:$cr/b/$branch" "+refs/heads/$base:$cr/base" \
+    || { _hook_claim_refs_rm "$dir" "$cr"; return 1; }
+  if body=$(git -C "$dir" log --format=%B "$cr/base..$cr/b/$branch" 2>/dev/null); then
+    grep -q "^Claim-Issue: $n\$" <<<"${body//$'\r'/}" && rc=0
+  else rc=1; fi
+  _hook_claim_refs_rm "$dir" "$cr"
+  return "$rc"
+}
+_hook_claim_refs_rm() {  # _hook_claim_refs_rm <dir> <ref-prefix>: delete this run's claim-check refs
+  local r
+  while IFS= read -r r; do
+    [ -n "$r" ] && git -C "$1" update-ref -d "$r" >/dev/null 2>&1
+  done < <(git -C "$1" for-each-ref --format='%(refname)' "$2/" 2>/dev/null | tr -d '\r')
+  return 0
 }

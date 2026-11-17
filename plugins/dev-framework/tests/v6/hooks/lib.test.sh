@@ -110,7 +110,10 @@ claim_ok() { bash -c ". '$LIB'; hook_claim_ok \"\$1\" \"\$2\"" _ "$1" "$2"; echo
 [ "$(claim_ok "$TMP/b" t/41-x)" = 0 ] || fail "hook_claim_ok: a claimed branch"
 [ -z "$(git -C "$TMP/b" for-each-ref refs/remotes/origin/t)" ] || fail "hook_claim_ok must not update remote-tracking refs"
 [ ! -e "$TMP/b/.git/FETCH_HEAD" ] || fail "hook_claim_ok wrote FETCH_HEAD"
-git -C "$TMP/b" rev-parse -q --verify refs/devfw/claim-check/t/41-x >/dev/null || fail "hook_claim_ok: refs/devfw/claim-check/<branch> not written"
+[ -z "$(git -C "$TMP/b" for-each-ref refs/devfw/claim-check/)" ] || fail "M1: hook_claim_ok leaves its per-run refs behind: $(git -C "$TMP/b" for-each-ref refs/devfw/claim-check/)"
+# M1: two guards check the same claim at once (Claude Code runs matching hooks in parallel): no ref-lock race
+for i in 1 2 3 4; do claim_ok "$TMP/b" t/41-x > "$TMP/par$i" & done; wait
+for i in 1 2 3 4; do [ "$(cat "$TMP/par$i")" = 0 ] || fail "M1: parallel claim check $i returned $(cat "$TMP/par$i")"; done
 # plain push, no trailer
 g -C "$TMP/b" commit -q --allow-empty -m 'plain'; g -C "$TMP/b" push -q origin HEAD:refs/heads/t/42-x
 [ "$(claim_ok "$TMP/b" t/42-x)" = 3 ] || fail "hook_claim_ok: plain push must be 3"
@@ -137,4 +140,20 @@ R=$(DEVFW_HOOK_BUDGET=3 run '{}' 'hook_init t 25; hook_net o null 20 sleep 5; ec
 [[ "$R" =~ ^0\|rc=124\ [0-3]\|$ ]] || fail "hook_net capped by the time left, not the per-call bound: $R"
 R=$(DEVFW_HOOK_BUDGET=x run '{}' 'hook_init t 7; echo "$HOOK_BUDGET"')
 [ "$R" = "0|7|" ] || fail "a non-numeric DEVFW_HOOK_BUDGET is ignored: $R"
+# M6: a grandchild that outlives the command and holds stdout must not keep hook_net past the command's end
+S=$SECONDS
+R=$(run '{}' 'hook_init t 25; hook_net o null 5 bash -c "sleep 6 & echo hi"; echo "rc=$? [$o]"')
+[ "$R" = "0|rc=0 [hi]|" ] || fail "M6: hook_net output with a lingering grandchild: $R"
+[ $((SECONDS - S)) -le 3 ] || fail "M6: hook_net waited $((SECONDS - S))s for a grandchild holding stdout"
+
+# ---- R24: jq missing never blocks before scope
+. "$DIR/nojq-path.sh"; NOJQ_PATH=$(nojq_path "$TMP/nojq") || fail "setup: a PATH without jq"
+R=$(printf '%s' '{"tool_name":"Bash","tool_input":{"command":"ls"}}' | PATH="$NOJQ_PATH" DEVFW_CORE_DIR="$TMP/core" bash -c ". '$LIB'; hook_init t; hook_need_jq 'push'; echo reached" 2>&1); RC=$?
+[ "$RC" = 0 ] && [ -z "$R" ] || fail "R24: no token, no jq must exit 0 quietly: rc=$RC [$R]"
+R=$(printf '%s' '{"tool_name":"Bash","tool_input":{"command":"git push"}}' | PATH="$NOJQ_PATH" DEVFW_CORE_DIR="$TMP/core" bash -c ". '$LIB'; hook_init t; hook_need_jq 'push'; echo reached" 2>&1); RC=$?
+[ "$RC" = 2 ] && [[ "$R" == "devfw t: jq not found"* ]] || fail "R24: token present, no jq must block: rc=$RC [$R]"
+R=$(run '{"tool_name":"Bash","tool_input":{"command":"git push"}}' 'hook_init t; hook_need_jq push; echo reached')
+[ "$R" = "0|reached|" ] || fail "R24: with jq, hook_need_jq returns: $R"
+R=$(run '{"cwd":"C:\\w \"q\"","x":"y"}' 'hook_init t; hook_raw_str cwd')
+[ "$R" = '0|C:\w "q"|' ] || fail "hook_raw_str unescapes: $R"
 echo ok
