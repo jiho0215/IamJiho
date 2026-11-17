@@ -1,5 +1,8 @@
 {
   "A0": { "expect": "green" },
   "A1": { "expect": "green" },
-  "A4": { "expect": "green" }
+  "A2": { "expect": "green" },
+  "A3": { "expect": "green" },
+  "A4": { "expect": "green" },
+  "A8": { "expect": "green" }
 }

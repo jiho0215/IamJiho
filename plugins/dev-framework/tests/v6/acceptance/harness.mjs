@@ -1,7 +1,7 @@
 // Acceptance harness: drives the real v6 scripts against a real GitHub sandbox.
 // Sandbox repos come only from env (DEVFW_SANDBOX_CORE / DEVFW_SANDBOX_CODE, "owner/name"); no name is committed.
 // Every write path first proves the core repo carries the DEVFW_SANDBOX marker on its default branch.
-import { spawnSync, execFileSync } from 'node:child_process';
+import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -137,6 +137,27 @@ export function execIn(run, script, args = []) {
   const last = stdout.split('\n').map((l) => l.trim()).filter(Boolean).pop();
   if (last) { try { json = JSON.parse(last); } catch { json = null; } }
   return { code: r.status, json, stdout, stderr: r.stderr || '' };
+}
+
+// Same guard and result shape as execIn, but asynchronous: for scenarios that run several scripts at once.
+export function execAsyncIn(run, script, args = []) {
+  requireRun(run);
+  const file = path.join(PLUGIN, 'bin', script);
+  const cmd = NODE_SCRIPTS.has(script) ? ['node', [file, ...args]] : BASH_SCRIPTS.has(script) ? ['bash', [file, ...args]] : null;
+  if (!cmd) throw new Error(`unknown plugin script: ${script}`);
+  return new Promise((resolve, reject) => {
+    const c = spawn(cmd[0], cmd[1], { env: run.env });
+    let stdout = ''; let stderr = '';
+    c.stdout.on('data', (d) => { stdout += d; });
+    c.stderr.on('data', (d) => { stderr += d; });
+    c.on('error', reject);
+    c.on('close', (code) => {
+      let json = null;
+      const last = stdout.split('\n').map((l) => l.trim()).filter(Boolean).pop();
+      if (last) { try { json = JSON.parse(last); } catch { json = null; } }
+      resolve({ code, json, stdout, stderr });
+    });
+  });
 }
 
 // Retries a READ assertion only. Never pass a write: it would be repeated.
