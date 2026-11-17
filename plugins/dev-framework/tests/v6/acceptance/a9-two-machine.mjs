@@ -1,5 +1,6 @@
 // A9: the two-machine claim race. NOT a *.accept.mjs file; run.sh never runs it. See ../manual/claim-race.md.
 //   node a9-two-machine.mjs --issue <n> --slug <s> --at <HH:MM:SS UTC> [--rounds 5] [--gap 30] [--base main]
+//   node a9-two-machine.mjs --compare <machineA.jsonl> <machineB.jsonl>   (each file = that machine's saved race output; network-free)
 //   node a9-two-machine.mjs --verify --issue <n> --slug <s> [--rounds 5] [--base main]
 // Run the SAME command on both machines. Round k claims issue <n>+k-1 with slug <s><k> (one issue, one claim: a
 // repeated issue number would make every later round lose before any push), starting at <at> + (k-1)*gap seconds.
@@ -10,6 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { verifySandboxPair, SandboxError } from './harness.mjs';
+import { compareRuns } from './a9-compare.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const CLAIM = path.resolve(HERE, '..', '..', '..', 'bin', 'claim');
@@ -57,12 +59,13 @@ async function race(o, code) {
       const wait = t0 + (k - 1) * o.gap * 1000 - Date.now();
       if (wait > 0) await sleep(wait);
       const issue = o.issue + k - 1;
+      const startedAt = Date.now();
       const r = spawnSync('bash', [CLAIM, String(issue), `${o.slug}${k}`, '--repo-dir', dir, '--base', o.base], { encoding: 'utf8' });
       let json = null;
       const last = (r.stdout || '').split('\n').map((l) => l.trim()).filter(Boolean).pop();
       try { json = JSON.parse(last); } catch { /* reported below */ }
-      console.log(JSON.stringify({ round: k, issue, machine: os.hostname(), code: r.status, result: json ? json.result : 'error',
-        branch: json && json.branch, at: new Date().toISOString(), ...(json ? {} : { stderr: (r.stderr || '').trim() }) }));
+      console.log(JSON.stringify({ round: k, issue, machine: os.hostname(), startedAt, code: r.status,
+        result: json ? json.result : 'error', lostAt: (json && json.lostAt) || null, branch: json && json.branch, endedAt: Date.now(), ...(json ? {} : { stderr: (r.stderr || '').trim() }) }));
     }
   } finally { try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* temp cleaner */ } }
 }
@@ -87,6 +90,13 @@ function verify(o, code) {
   } finally { try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* temp cleaner */ } }
 }
 
+if (process.argv[2] === '--compare') {                    // network-free: reads two saved race outputs
+  if (process.argv.length !== 5) die('usage: --compare <machineA.jsonl> <machineB.jsonl>');
+  const r = compareRuns(fs.readFileSync(process.argv[3], 'utf8'), fs.readFileSync(process.argv[4], 'utf8'));
+  for (const line of r.lines) console.log(JSON.stringify(line));
+  console.log(JSON.stringify(r.summary));
+  process.exit({ VERIFIED: 0, FAILED: 1, ERROR: 2, INCONCLUSIVE: 4 }[r.verdict]);
+}
 const o = parseArgs(process.argv.slice(2));
 let pair;
 try { pair = verifySandboxPair(); } catch (e) { die(`${e.name}: ${e.message}`, e instanceof SandboxError ? 2 : 1); }

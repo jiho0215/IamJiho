@@ -32,12 +32,15 @@ set +e; OUT=$("$CLAIM" 41 rate-limit --repo-dir "$TMP/b" --base main --core-dir 
 [ "$(jq -r .result <<<"$OUT")" = lost ] || { echo "FAIL: second claim result: $OUT"; exit 1; }
 [ "$(jq -r .heldBy.lease <<<"$OUT")" = aaaaaaaaaaaaaaaa ] || { echo "FAIL: heldBy.lease: $OUT"; exit 1; }
 [ "$(jq -r .heldBy.machine <<<"$OUT")" = "$(hostname)" ] || { echo "FAIL: heldBy.machine: $OUT"; exit 1; }
+# lostAt tells a sequential loss (seen at the ls-remote pre-check) from a loss at the create-only push
+[ "$(jq -r .lostAt <<<"$OUT")" = precheck ] || { echo "FAIL: existing branch should be lostAt precheck: $OUT"; exit 1; }
 
 # Review Focus 3: a branch already at the base tip
 g -C "$TMP/b" push -q origin main:refs/heads/t/42-x
 set +e; OUT=$("$CLAIM" 42 x --repo-dir "$TMP/a" --base main --core-dir "$TMP/ca"); rc=$?; set -e
 [ "$rc" -eq 3 ] || { echo "FAIL: claim over base-tip branch exit $rc, want 3: $OUT"; exit 1; }
 [ "$(jq -r .heldBy.lease <<<"$OUT")" = unknown ] || { echo "FAIL: heldBy should be unknown: $OUT"; exit 1; }
+[ "$(jq -r .lostAt <<<"$OUT")" = precheck ] || { echo "FAIL: base-tip branch should be lostAt precheck: $OUT"; exit 1; }
 # positive control: a plain push of a fresh claim-shaped commit fast-forwards and "succeeds"
 C=$(git -C "$TMP/b" commit-tree "$MAIN^{tree}" -p "$MAIN" -m probe)
 git -C "$TMP/b" push -q origin "$C:refs/heads/t/42-x" || { echo "FAIL: control: plain push should succeed (gap not reproduced)"; exit 1; }
@@ -53,6 +56,7 @@ OUT=$("$CLAIM" 46 other --repo-dir "$TMP/a" --base main --core-dir "$TMP/ca")
 N2=$(git -C "$TMP/a" log -1 --format=%B "$(jq -r .sha <<<"$OUT")" | sed -n 's/^Claim-Nonce: //p')
 [ "$N1" != "$N2" ] || { echo "FAIL: nonces repeat"; exit 1; }
 
+PUSHLOSS=0
 # concurrency: exactly one of 8 wins, 7 lose cleanly with exit 3; three rounds
 for round in 1 2 3; do
   rm -f "$TMP"/race.*
@@ -63,9 +67,19 @@ for round in 1 2 3; do
   wait
   WIN=$(cat "$TMP"/race.*.rc | grep -c "^0$" || true); LOSE=$(cat "$TMP"/race.*.rc | grep -c "^3$" || true)
   [ "$WIN" -eq 1 ] && [ "$LOSE" -eq 7 ] || { echo "FAIL: race$round win=$WIN lose=$LOSE (rcs: $(cat "$TMP"/race.*.rc | tr '\n' ' '))"; exit 1; }
+  # every loser says where it lost: one of the two exits (shape); push losers are counted, not required (timing)
+  for f in "$TMP"/race.*.rc; do
+    [ "$(cat "$f")" = 3 ] || continue
+    LA=$(jq -r .lostAt "${f%.rc}.out")
+    [ "$LA" = precheck ] || [ "$LA" = push ] || { echo "FAIL: race$round loser lostAt '$LA' in $(cat "${f%.rc}.out")"; exit 1; }
+    [ "$LA" = push ] && PUSHLOSS=$((PUSHLOSS + 1))
+  done
   WSHA=$(jq -r .sha "$(grep -l '^0$' "$TMP"/race.*.rc | sed 's/\.rc$/.out/')")
   [ "$(git -C "$TMP/a" ls-remote origin "refs/heads/t/$((round * 100 + 43))-race$round" | cut -f1)" = "$WSHA" ] || { echo "FAIL: race$round remote sha != winner"; exit 1; }
 done
+
+echo "info: losers that reached the push (lostAt=push) across 3 races: $PUSHLOSS" >&2
+[ "$PUSHLOSS" -ge 1 ] || { echo "FAIL: no loser reached the create-only push in 3 eight-way races (lostAt=push never seen)"; exit 1; }
 
 # bad slug
 set +e; "$CLAIM" 44 Bad_Slug --repo-dir "$TMP/a" --base main >/dev/null 2>&1; rc=$?; set -e

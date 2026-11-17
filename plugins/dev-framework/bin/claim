@@ -34,8 +34,9 @@ TOKEN=none
 if [ -n "$CORE" ]; then TOKEN=$("$BIN/lease" mine --core-dir "$CORE" 2>/dev/null) || TOKEN=none; fi
 MACHINE=$(hostname)
 
-lost() {  # lost <ref> <sha>: print who holds <ref> and exit 3
-  local ref="$1" sha="$2" body="" l m a
+lost() {  # lost <ref> <sha> <precheck|push>: print who holds <ref> and exit 3
+  # lostAt: "precheck" = the ref was already visible (a sequential loss); "push" = the create-only push was rejected (a real race).
+  local ref="$1" sha="$2" stage="$3" body="" l m a
   # --no-write-fetch-head: concurrent claims in one repo must not race on FETCH_HEAD.
   if git -C "$REPO" fetch -q --no-write-fetch-head origin "$ref" 2>/dev/null; then
     body=$(git -C "$REPO" log -1 --format=%B "$sha" 2>/dev/null | tr -d '\r')
@@ -43,8 +44,8 @@ lost() {  # lost <ref> <sha>: print who holds <ref> and exit 3
   l=$(sed -n 's/^Claim-Lease: //p' <<<"$body" | head -1)
   m=$(sed -n 's/^Claim-Machine: //p' <<<"$body" | head -1)
   a=$(sed -n 's/^Claim-At: //p' <<<"$body" | head -1)
-  jq -cn --arg b "${ref#refs/heads/}" --arg l "${l:-unknown}" --arg m "${m:-unknown}" --arg a "${a:-unknown}" \
-    '{result:"lost", branch:$b, heldBy:{lease:$l, machine:$m, at:$a}}'
+  jq -cn --arg b "${ref#refs/heads/}" --arg l "${l:-unknown}" --arg m "${m:-unknown}" --arg a "${a:-unknown}" --arg w "$stage" \
+    '{result:"lost", lostAt:$w, branch:$b, heldBy:{lease:$l, machine:$m, at:$a}}'
   exit 3
 }
 
@@ -52,7 +53,7 @@ lost() {  # lost <ref> <sha>: print who holds <ref> and exit 3
 # slug. This pre-check is not atomic; the create-only push below is, per branch name.
 EXISTING=$(git -C "$REPO" ls-remote origin "refs/heads/t/$ISSUE-*" 2>/dev/null | head -1) \
   || devfw_die 1 "ls-remote failed"
-if [ -n "$EXISTING" ]; then lost "$(cut -f2 <<<"$EXISTING")" "$(cut -f1 <<<"$EXISTING")"; fi
+if [ -n "$EXISTING" ]; then lost "$(cut -f2 <<<"$EXISTING")" "$(cut -f1 <<<"$EXISTING")" precheck; fi
 
 git -C "$REPO" fetch -q origin "$BASE" || devfw_die 1 "fetch of $BASE failed"
 PARENT=$(git -C "$REPO" rev-parse --verify -q "origin/$BASE^{commit}") || devfw_die 1 "no origin/$BASE"
@@ -81,7 +82,7 @@ fi
 # a ruleset, a permissions error) is a failure, not contention.
 if grep -q "^[!=]	[^	]*:$REF	" <<<"$OUT"; then
   HELD=$(git -C "$REPO" ls-remote origin "$REF" 2>/dev/null | cut -f1)
-  [ -z "$HELD" ] || lost "$REF" "$HELD"
+  [ -z "$HELD" ] || lost "$REF" "$HELD" push
 fi
 
 echo "$OUT" >&2
