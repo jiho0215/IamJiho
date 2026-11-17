@@ -15,9 +15,16 @@ The names live only in your shell, never in a committed file. `gh` must be logge
 ## Run
 
 ```bash
-bash plugins/dev-framework/tests/v6/acceptance/run.sh --init   # once: commit the marker to the core repo's main
+# once: commit the marker to the core repo's default branch (the two names must repeat the env values exactly)
+bash plugins/dev-framework/tests/v6/acceptance/run.sh --init --confirm "$DEVFW_SANDBOX_CORE" "$DEVFW_SANDBOX_CODE"
 bash plugins/dev-framework/tests/v6/acceptance/run.sh          # every scenario, compared with expected.json
 ```
+
+`--init` refuses (exit 2, nothing written) unless `--confirm <core> <code>` repeats the env names exactly. Before it
+creates the marker, or adds a code repo to it, it also refuses when either repo is public, has more than 20 commits on its
+default branch, or has a closed PR that is not an acceptance-run PR (head or base on a `run/` branch). `--force-sandbox`
+skips those three heuristics only, never `--confirm`. A marker read that fails with anything but a 404 refuses too: the
+marker is never overwritten.
 
 Exit 0 only when every scenario matches `expected.json`; 1 on any mismatch; 2 when the sandbox guard or env refuses.
 Output lines: `A1 green ok`, `A7 red ok (until Plan 3)`, `A4 UNEXPECTED red: <msg>`, `A7 UNEXPECTED green`.

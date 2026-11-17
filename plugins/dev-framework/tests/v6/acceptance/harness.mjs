@@ -52,7 +52,6 @@ function readMarker(repo) {
   const r = gh(['api', '-H', 'Accept: application/vnd.github.raw', `repos/${repo}/contents/${MARKER}`], { allowFail: true });
   return r.status === 0 ? r.stdout : null;
 }
-const hasMarker = (repo) => readMarker(repo) !== null;
 const allowedRepos = (text) => String(text).replace(/\r/g, '').split('\n').map((l) => l.trim()).filter((l) => OWNER_NAME.test(l));
 
 // A run is writable only if openRun verified it: core carries the marker AND the marker lists the code repo.
@@ -207,33 +206,92 @@ export async function closeRun(run) {
   return closed;
 }
 
+// GitHub access for --init. Injected in unit tests (harness.unit.test.mjs); this is the real one.
+const MAX_SANDBOX_COMMITS = 20;
+const ghIo = {
+  // The marker text, null on a 404, and a throw on anything else (an auth, rate-limit or network error is never "absent").
+  readMarker(repo) {
+    const r = gh(['api', '-H', 'Accept: application/vnd.github.raw', `repos/${repo}/contents/${MARKER}`], { allowFail: true });
+    if (r.status === 0) return r.stdout;
+    const err = (r.stderr || r.stdout || '').trim();
+    if (/\bHTTP 404\b/.test(err)) return null;
+    throw new Error(`cannot read ${MARKER} of ${repo} (not a 404): ${err}`);
+  },
+  repoInfo(repo) {
+    const j = JSON.parse(gh(['api', `repos/${repo}`]).stdout);
+    return { private: j.private === true && j.visibility !== 'public', default_branch: j.default_branch };
+  },
+  commitCount(repo, branch, limit) {
+    const out = gh(['api', `repos/${repo}/commits?sha=${encodeURIComponent(branch)}&per_page=${limit}`, '--jq', 'length']).stdout;
+    return Number(out.trim());
+  },
+  closedPrs(repo) {
+    const out = gh(['api', '--paginate', `repos/${repo}/pulls?state=closed&per_page=100`, '--jq', '.[] | {number, head: .head.ref, base: .base.ref}']).stdout;
+    return out.split('\n').map((s) => s.trim()).filter(Boolean).map((s) => JSON.parse(s));
+  },
+  writeMarker(core, body, message) {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'devfw-accept-init-'));
+    try {
+      const dir = path.join(tmp, 'core');
+      gh(['repo', 'clone', core, dir, '--', '-q']);
+      fs.writeFileSync(path.join(dir, MARKER), body);
+      git(dir, ['add', MARKER]);
+      git(dir, ['commit', '-q', '-m', message]);
+      git(dir, ['push', '-q', 'origin', 'HEAD']);
+    } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+  },
+};
+
+// Heuristics that tell a throwaway sandbox from a real repo. Any hit refuses (--force-sandbox skips only these).
+// A closed PR counts as a sandbox PR only when it belongs to an acceptance run: its head or its base is a run/ branch.
+function notASandbox(io, repo) {
+  const why = [];
+  const info = io.repoInfo(repo);
+  if (!info.private) why.push(`${repo} is public`);
+  const n = io.commitCount(repo, info.default_branch, MAX_SANDBOX_COMMITS + 1);
+  if (n > MAX_SANDBOX_COMMITS) why.push(`${repo} has more than ${MAX_SANDBOX_COMMITS} commits on ${info.default_branch}`);
+  const foreign = io.closedPrs(repo).filter((p) => !String(p.head || '').startsWith('run/') && !String(p.base || '').startsWith('run/'));
+  if (foreign.length) why.push(`${repo} has closed PRs not made by a run/ branch (#${foreign.slice(0, 5).map((p) => p.number).join(', #')})`);
+  return why;
+}
+
 // One-time: the marker goes to the CORE repo's default branch only (a normal push) and lists the code repo.
-// If the marker already exists the repo is already a verified sandbox; a missing code line is added to it.
-export async function initSandbox(opts = {}) {
-  const { core, code } = resolveRepos(opts);
-  if (hasMarker(code)) throw new SandboxError('the code repo carries a marker; only the core repo may');
-  const existing = readMarker(core);
+// --confirm <core> <code> must repeat the env names exactly; it is checked before any GitHub read and is never skipped.
+// Before the marker is created or a code repo is added to it, both repos must look like throwaway sandboxes.
+// A marker that already lists the code repo is a no-op. A marker read that fails (not a 404) refuses: never overwrite.
+export async function initSandbox({ confirm, forceSandbox = false, env = process.env, io = ghIo } = {}) {
+  const { core, code } = resolveRepos({ coreRepo: env.DEVFW_SANDBOX_CORE, codeRepo: env.DEVFW_SANDBOX_CODE });
+  if (!Array.isArray(confirm) || confirm.length !== 2 || confirm[0] !== core || confirm[1] !== code) {
+    throw new SandboxError(`--init needs --confirm <core> <code> repeating DEVFW_SANDBOX_CORE and DEVFW_SANDBOX_CODE exactly (${core} ${code}): refusing to write`);
+  }
+  if (io.readMarker(code) !== null) throw new SandboxError('the code repo carries a marker; only the core repo may');
+  const existing = io.readMarker(core);
   if (existing !== null && allowedRepos(existing).includes(code)) return { created: false, added: false };
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'devfw-accept-init-'));
-  try {
-    const dir = path.join(tmp, 'core');
-    gh(['repo', 'clone', core, dir, '--', '-q']);
-    const body = existing === null
-      ? `# Throwaway sandbox for the dev-framework acceptance suite. Safe to write to.
-# Sandbox code repos allowed for this core repo, one per line:
-${code}
-`
-      : existing.replace(/\r/g, '').replace(/\n*$/, '\n') + `${code}
-`;
-    fs.writeFileSync(path.join(dir, MARKER), body);
-    git(dir, ['add', MARKER]);
-    git(dir, ['commit', '-q', '-m', existing === null ? 'add DEVFW_SANDBOX marker' : 'DEVFW_SANDBOX: list the code repo']);
-    git(dir, ['push', '-q', 'origin', 'HEAD']);
-  } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+  if (!forceSandbox) {
+    const why = [...notASandbox(io, core), ...notASandbox(io, code)];
+    if (why.length) throw new SandboxError(`these do not look like throwaway sandbox repos (--force-sandbox overrides): ${why.join('; ')}`);
+  }
+  const body = existing === null
+    ? `# Throwaway sandbox for the dev-framework acceptance suite. Safe to write to.\n# Sandbox code repos allowed for this core repo, one per line:\n${code}\n`
+    : existing.replace(/\r/g, '').replace(/\n*$/, '\n') + `${code}\n`;
+  io.writeMarker(core, body, existing === null ? 'add DEVFW_SANDBOX marker' : 'DEVFW_SANDBOX: list the code repo');
   return { created: existing === null, added: existing !== null };
 }
 
+// --init --confirm <core> <code> [--force-sandbox]. Anything else is refused (exit 2) before any GitHub call.
+export function parseInitArgs(argv) {
+  const o = { confirm: null, forceSandbox: false };
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === '--confirm') { o.confirm = argv.slice(i + 1, i + 3); i += 2; }
+    else if (argv[i] === '--force-sandbox') o.forceSandbox = true;
+    else throw new SandboxError(`--init: unknown argument ${argv[i]} (usage: --init --confirm <core> <code> [--force-sandbox])`);
+  }
+  return o;
+}
+
+const cliFail = (e) => { console.error(`${e.name}: ${e.message}`); process.exit(e instanceof SandboxError ? 2 : 1); };
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href && process.argv[2] === '--init') {
-  initSandbox().then((r) => { console.log(r.created ? 'marker committed to the sandbox core repo' : r.added ? 'code repo added to the marker' : 'marker already present'); })
-    .catch((e) => { console.error(`${e.name}: ${e.message}`); process.exit(e instanceof SandboxError ? 2 : 1); });
+  Promise.resolve().then(() => initSandbox(parseInitArgs(process.argv.slice(3))))
+    .then((r) => { console.log(r.created ? 'marker committed to the sandbox core repo' : r.added ? 'code repo added to the marker' : 'marker already present'); })
+    .catch(cliFail);
 }
