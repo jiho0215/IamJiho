@@ -118,7 +118,6 @@ test('push force/delete flag spellings', () => {
   assert.equal(f('git push -uf origin x').force, true);
   assert.equal(f('git push --force origin x').force, true);
   assert.equal(f('git push --force-with-lease=x:abc origin x').force, true);
-  assert.equal(f('git push --mirror origin').force, true);
   assert.equal(f('git push --force-if-includes origin x').force, false);
   assert.equal(f('git push --delete origin x').del, true);
   assert.equal(f('git push -d origin x').del, true);
@@ -254,6 +253,9 @@ test('F4: git branch copy/move creates the new name', () => {
 test('F5: push --all/--branches is opaque; --tags names refs/tags/*', () => {
   assert.deepEqual(parseCommand('git push --all origin'), r({ opaque: ['git push --all origin'] }));
   assert.deepEqual(parseCommand('git push --branches origin'), r({ opaque: ['git push --branches origin'] }));
+  // ruling R8
+  assert.deepEqual(parseCommand('git push --mirror origin'), r({ opaque: ['git push --mirror origin'] }));
+  assert.deepEqual(parseCommand('git push --mirror'), r({ opaque: ['git push --mirror'] }));
   assert.deepEqual(parseCommand('git push --tags origin'), r({ pushes: [push({ remote: 'origin', refspecs: ['refs/tags/*'] })] }));
 });
 test('F6: GIT_DIR / GIT_WORK_TREE make a guarded git call opaque', () => {

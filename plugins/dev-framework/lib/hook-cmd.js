@@ -239,7 +239,8 @@ function gitPush(args, dir) {
       if (name === '--force' || name === '--force-with-lease' || name === '--mirror') force = true;
       if (name === '--delete' || name === '--prune') del = true;
       // --all/--branches push every branch, yet name none: refspecs [] would read as "the current branch".
-      if (name === '--all' || name === '--branches') throw new Opaque();
+      // (ruling R8) --mirror too: with force allowed it would otherwise read as "the current branch".
+      if (name === '--all' || name === '--branches' || name === '--mirror') throw new Opaque();
       if (name === '--tags') tags = true;
       if (PUSH_LONG_ARG.has(name)) {
         const val = eq < 0 ? need(args[++j]) : (args[j].dyn ? need(null) : t.slice(eq + 1));
