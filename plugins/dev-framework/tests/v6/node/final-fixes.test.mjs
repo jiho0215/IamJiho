@@ -440,3 +440,13 @@ test('I4: an OPEN merged-stale issue is still reported (exit 9) and not duplicat
   assert.equal(r2.exitCode, 9);
   assert.deepEqual(none.calls.filter((x) => x.method === 'POST').map((x) => x.body.title), ['merged-stale: acme/api#50']);
 });
+
+test('I3: the fetch names its refspec, so origin/<branch> advances even with no remote.origin.fetch configured', () => {
+  const { resolvePlanRef } = require('../../../lib/fetch-plan.js');
+  const c = core();
+  const config = loadConfig({ coreDir: c.dir, env: {} });
+  c.g('config', '--unset-all', 'remote.origin.fetch');
+  const up = upstreamEdit(c, 'PLAN.md', 'Expose a health endpoint.', 'Expose it upstream.');
+  assert.equal(resolvePlanRef({ coreDir: c.dir, config }), 'origin/main');
+  assert.equal(c.g('rev-parse', 'origin/main').trim(), up);
+});
