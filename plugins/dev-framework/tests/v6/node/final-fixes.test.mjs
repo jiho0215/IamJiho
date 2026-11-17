@@ -135,3 +135,40 @@ test('C1 fence: 150 claim refs; impact lists the claim branch that is 150th', ()
   const r = impact.run({ argv: ['--core-dir', c.dir, '--pr', '7'], gh, env: {} });
   assert.deepEqual(r.result.affected.filter((a) => a.kind === 'branch').map((a) => a.branch), ['t/12-swagger']);
 });
+
+// ---------------------------------------------------------------- C2
+const { PlanError } = require('../../../lib/plan.js');
+const P_CFG = { ownerArea: 'owner', repos: CONFIG.repos };
+const withP4 = (depends, decisions) => fixture
+  .replace('- depends: P-0-3\n', depends === null ? '' : `- depends:${depends}\n`)
+  .replace('- decisions: D-8, RL-7\n', `- decisions:${decisions}\n`);
+const p4 = (text) => parsePlan(text, P_CFG).find((i) => i.id === 'P-0-4');
+
+test('C2: a depends value that starts with — means none', () => {
+  const it = p4(withP4(' — (after launch)', ' D-8'));
+  assert.deepEqual(it.deps, []);
+  assert.equal(it.fields.depends, '—');
+});
+
+test('C2: a decisions value that starts with — means none, and renders without throwing', () => {
+  const c = core({ plan: withP4(' —', ' — (note)') });
+  const config = loadConfig({ coreDir: c.dir, env: {} });
+  const it = parsePlan(withP4(' —', ' — (note)'), config).find((i) => i.id === 'P-0-4');
+  assert.deepEqual(it.decisions, []);
+  assert.equal(it.fields.decisions, '—');
+  const body = renderBody(it, { hashes: planHashes(c.dir, 'HEAD', config), planSha: c.sha, config });
+  assert.match(body, /- \*\*Cites:\*\* P-0-4@[0-9a-f]{12}\n/);
+});
+
+test('C2: an empty depends: value is none', () => {
+  for (const v of ['', ' ', '  \t']) {
+    const it = p4(withP4(v, ' D-8'));
+    assert.deepEqual(it.deps, [], JSON.stringify(v));
+    assert.equal(it.fields.depends, '—', JSON.stringify(v));
+  }
+});
+
+test('C2: a range such as O-1–O-11 still throws PlanError', () => {
+  assert.throws(() => p4(withP4(' O-1–O-11', ' D-8')), (e) => e instanceof PlanError && /O-1–O-11/.test(e.message));
+  assert.throws(() => p4(withP4(' P-0-3, O-1–O-11', ' D-8')), PlanError);
+});

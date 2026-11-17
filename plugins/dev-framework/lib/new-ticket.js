@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { loadConfig, ConfigError } = require('./config');
-const { PlanError, parsePlan, planHashes } = require('./plan');
+const { PlanError, parsePlan, planHashes, list: planList } = require('./plan');
 const impact = require('./impact');
 const ticketSync = require('./ticket-sync');
 
@@ -91,7 +91,7 @@ function run({ argv, gh, env = process.env }) {
     const validate = (planText) => {
       if (!config.stages || !(o.stage in config.stages)) throw new ConfigError(`stage "${o.stage}" is not in config.stages`);
       parsePlan(planText, config);
-      const wanted = o.decisions === '—' ? [] : o.decisions.split(',').map((s) => s.trim()).filter((s) => s && s !== '—');
+      const wanted = planList(o.decisions);
       if (wanted.length) {
         const known = planHashes(o.coreDir, `origin/${config.plan.branch || 'main'}`, config);
         for (const d of wanted) if (!known.has(d)) throw new ConfigError(`decision ${d} does not exist in the plan`);

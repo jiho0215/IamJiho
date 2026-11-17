@@ -13,7 +13,9 @@ const ID_RE = /^### ([A-Z]+(?:-[a-z0-9]+)*-[0-9]+) · (.+)$/;
 const FIELD_RE = /^- (stage|kind|state|area|depends|decisions|ticket):[ \t]*(.*)$/;
 const REQUIRED = ['stage', 'kind', 'state', 'area'];
 
-const list = (v) => (!v || v === '—' ? [] : v.split(',').map((s) => s.trim()).filter((s) => s && s !== '—'));
+// A comma list of IDs. Empty, or anything that STARTS with — ("— (after launch)"), means none.
+const none = (v) => !v || !String(v).trim() || String(v).trim().startsWith('—');
+const list = (v) => (none(v) ? [] : v.split(',').map((s) => s.trim()).filter((s) => s && s !== '—'));
 
 function parsePlan(text, config) {
   const lines = text.replace(/\r/g, '').split('\n');
@@ -55,7 +57,8 @@ function parsePlan(text, config) {
       if (!ids.has(d)) throw new PlanError(`${it.id}: depends on unknown item ${d}`);
     }
     return {
-      id: it.id, title: it.title, fields: { ticket: '—', depends: '—', decisions: '—', ...it.fields },
+      id: it.id, title: it.title,
+      fields: { ticket: '—', ...it.fields, depends: none(it.fields.depends) ? '—' : it.fields.depends, decisions: none(it.fields.decisions) ? '—' : it.fields.decisions },
       repo, deps, decisions: list(it.fields.decisions),
       body: it.bodyLines.join('\n').trim(),
     };
@@ -100,4 +103,4 @@ function planHashes(coreDir, ref, config) {
   }
 }
 
-module.exports = { parsePlan, planHashes, PlanError };
+module.exports = { parsePlan, planHashes, PlanError, list };
