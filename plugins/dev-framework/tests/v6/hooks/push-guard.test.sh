@@ -263,6 +263,23 @@ Explains git push.
 EOF
 )\""; expect 0 "R35: gh pr create body naming git push"
 run "$W" 'npm test && git push origin t/12-x'; expect 0 "R35: a read push accounts for its own mention"
+# --- R35 fix round 1: C1 quote-aware run, R35a subscripts / indirection, R35b git runs text, M2 comments ---
+for c in "printf -v x 'cd ~/W && git 2>&1 push origin main'; python -c 'import os,sys; os.system(sys.argv[1])' \"\$x\"" \
+  "printf -v x 'cd ~/W && git -C \"a;b\" push origin main'; sudo bash -c \"\$x\"" \
+  "printf -v x 'cd ~/W && git &>/dev/null push origin main'; sudo bash -c \"\$x\"" \
+  "printf -v 'a[\$(cd ~/W && git push origin main)]' x" "declare -i w='r[\$(cd ~/W && git push origin main)]'" \
+  "read -r 'b[\$(cd ~/W && git push origin main)]' <<< x" "test -v 'c[\$(cd ~/W && git push origin main)]'" \
+  "GIT_SSH_COMMAND='sh -c \"cd ~/W && git push origin main\"' git fetch origin"; do
+  HOME="$TMP" run "$U" "$c"; expect 2 "R35 round 1, unmanaged cwd: $c"
+done
+for c in "git rebase -x 'git push origin main' main" "git submodule foreach 'git push origin main'" \
+  "git -c core.sshCommand='sh -c \"git push origin main\"' fetch origin" "git bisect run sh -c 'git push origin main'" \
+  "GIT_SSH_COMMAND='sh -c \"git push origin main\"' git fetch origin"; do
+  run "$W" "$c"; expect 2 "R35b, managed cwd: $c"
+done
+run "$W" 'npm test && git commit -m "x" && git push origin t/12-x # git push origin main'; expect 0 "M2: a trailing comment is no mention"
+run "$W" "echo 'git log | grep push' && npm test && git push origin t/12-x"; expect 0 "C1: | ends the run"
+run "$W" "git rebase -x 'npm test' main"; expect 0 "R35b: rebase -x with no guarded mention"
 # C2 / R21: destinations as git resolves them (W is on main)
 run "$W" 'git push origin @'; expect 2 "C2: @ is the current branch (main)"
 says 'merge to main goes through the merge gate' "@ text"

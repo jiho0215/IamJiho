@@ -250,5 +250,13 @@ run "gh pr create --title x --body \"\$(cat <<'EOF'
 Explains git push and gh pr merge.
 EOF
 )\""; expect 0 "R35: gh pr create body naming gh pr merge"
+# --- R35 fix round 1: C1, R35a, R35b ---
+for c in "printf -v x 'gh pr --repo \"acme/api|x\" merge 1'; node -p \"require('child_process').execSync(process.argv[1]).toString()\" \"\$x\"" \
+  "printf -v x 'gh pr 2>&1 merge 1 --repo acme/api'; sudo bash -c \"\$x\"" \
+  "printf -v 'a[\$(gh pr merge 1 --repo acme/api)]' x" \
+  "git submodule foreach 'gh pr merge 1 --repo acme/api'"; do
+  run "$c"; expect 2 "R35 round 1: $c"
+done
+run "echo 'gh pr view 1 | grep merge' && npm test"; expect 0 "C1: | ends the run (merge)"
 unset DEVFW_CORE_DIR; run 'gh pr merge 1 --repo acme/api'; expect 0 "DEVFW_CORE_DIR unset"
 echo "PASS: merge-gate-hook"

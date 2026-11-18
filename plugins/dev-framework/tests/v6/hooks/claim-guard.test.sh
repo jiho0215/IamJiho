@@ -124,6 +124,11 @@ run "$W" 'BR=$(git branch --show-current); npm test && node scripts/lint.js && g
 # per-guard verb: an unaccounted `git push` mention is not a branch creation, though the text names t/ and $( )
 run "$W" 'BR=$(git branch --show-current); npm test && git commit -m "t/12: explain git push"'; expect 0 "R35: a push mention is not claim-guard's"
 run "$W" "echo 'git checkout -b t/43-z' > notes.md"; expect 0 "R35: echo is data"
+# --- R35 fix round 1: C1, R35a, R35b ---
+for c in "printf -v x 'git 2>&1 checkout -b t/43-z'; sudo bash -c \"\$x\"" "printf -v 'a[\$(git checkout -b t/43-z)]' x" \
+  "git rebase -x 'git checkout -b t/43-z' main"; do
+  run "$W" "$c"; expect 2 "R35 round 1: $c"
+done
 
 run "$W" 'git worktree add ../wt -b t/41-x origin/t/41-x'; expect 0 "claimed worktree add"
 run "$W" 'git checkout -b t/41-x origin/t/41-x'; expect 0 "claimed checkout -b"

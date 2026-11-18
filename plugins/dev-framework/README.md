@@ -307,8 +307,10 @@ Each item is a path on which a rule above does NOT block. They are accepted resi
    **Backstop: the unaccounted-mention rule (ruling R35).** The rules above enumerate execution shapes; R35 does not.
    A *mention* is a `git`/`gh` word anywhere in the raw command text — any quoting level, heredoc bodies, `$( )` /
    backtick / process-substitution bodies, array literals and assignment values included; case-folded, with a path
-   and `.exe` allowed — followed, within its run of words (up to the next `;`, `&`, `|` or newline; a `\`-newline
-   joins), by a guard's verb: `push`; `commit`; `pr ... merge`, `pulls/<n>/merge`, `repos/.../merges`,
+   and `.exe` allowed, never after an unquoted word-start `#` (a comment) — followed, within its run of words, by a
+   guard's verb. The run ends at a `;`, `&&`, `||`, `|`, bare `&` or newline that is outside every quote opened after
+   the mention, or where the quote, `$( )` or backtick the mention sits in closes; a redirection (`2>&1`, `>&2`,
+   `&>`, `&>>`, `>|`, `<&`) never ends it, and a `\`-newline joins. The verbs are: `push`; `commit`; `pr ... merge`, `pulls/<n>/merge`, `repos/.../merges`,
    `mergePullRequest` / `enablePullRequestAutoMerge` / `mergeBranch`; a branch creation (`checkout -b/-B`,
    `switch -c/-C`, `branch <name>`, `worktree add`). Each git/gh call the parser read accounts for the mention that
    starts in its own command word, by source position (not by counting); so does a call already reported as a row of
@@ -318,7 +320,16 @@ Each item is a path on which a rule above does NOT block. They are accepted resi
    depth, whose command word is not `git`, `gh` or data (the parser's `DATA` set — `echo`, `printf` incl. `printf -v`,
    `grep`, `cat`, `test`, `read`, `declare`/`typeset`/`local`, ... — plus `export`, `cd`, `pushd`, `popd`, `unset`;
    assignment-only segments and `for`/`case` headers count as data; `env`/`timeout`/`nice`/`command`/`exec` are
-   looked through), the whole command becomes ONE row with an unknown dir. The row carries its unaccounted mentions,
+   looked through), the whole command becomes ONE row with an unknown dir. Two kinds of words that look like data
+   run text and so count as non-data. **R35a**: bash evaluates array subscripts and indirection, so a data word
+   (data builtins included) whose argument holds `$(`, a backtick or `${!` runs it (`printf -v 'a[$(...)]' x`,
+   `declare -i w='r[$(...)]'`, `read 'b[$(...)]'`, `test -v 'c[$(...)]'`, `unset 'a[$(...)]'`), as does any word
+   holding `${!` and `declare`/`local`/`typeset -n`; `cd` and `export` with plain values stay data, while
+   `export X="$(...)"` is non-data. **R35b**: git runs text itself in `rebase -x`/`--exec`, `submodule foreach`,
+   `bisect run`, `filter-branch`, a `-c`/`--config-env` key naming a command, pager, editor, askpass, ssh, hook,
+   fsmonitor or sequence, and with a `GIT_*COMMAND` / `GIT_SSH*` / `GIT_EDITOR` / `GIT_PAGER` / `GIT_ASKPASS`
+   assignment on the segment or exported. Such a call is non-data and accounts only for its own word, so
+   `git rebase -x 'git push origin main' main` blocks on its own. The row carries its unaccounted mentions,
    and `hook_opaque_rows` tests each guard's own verb (R33) against those mentions, not against the rest of the text.
    This closes `printf -v x '...git push...'; bash -lc "$x"` (and `sudo` / `nohup` / `xargs` / `setsid` / `wsl` /
    `busybox` / `find -exec` / `-c"$x"` / `node -p` / `perl -E` / `script -qc` / `watch`), `cmd=(git push origin
@@ -328,11 +339,14 @@ Each item is a path on which a rule above does NOT block. They are accepted resi
    push origin t/12-x`), and data-only commands never fire (`grep -rn "git push" docs/`, `echo 'run git push later' >
    notes.md`, `git commit -m "docs: explain git push flow"`, a heredoc commit or `gh pr create --body "$(cat
    <<'EOF' ...)"` whose body says `git push`). **Cost** (accepted by the owner): a guarded command spelled as data in
-   a command that also runs a non-data program blocks, e.g. `npm test && git commit -m "... git push ..."`,
-   `git log --grep "git push" | head`, `echo 'git push later' | tee notes.md`; workaround: split the command, or pass
-   the message with `-F <file>`. **Residuals** (not seen by R35 either): text that never spells the command (`git $V`,
-   `pu""sh`, `g""it`, `$'\x67it push'`), code in a file (`bash scripts/x.sh`), and a variable set by an earlier Bash
-   call.
+   a command that also runs a non-data program blocks, e.g. a commit message beside a test run
+   (`npm test && git commit -m "fix: the push-guard (git push to main) false block"`), a PR body beside one
+   (`npm test && gh pr create --body "fixes the git push docs"`), `git log --grep "git push" | head`,
+   `echo 'git push later' | tee notes.md`, and (R35a) `echo "$(git log -1)"; echo 'run git push later'`;
+   workaround: split the command, or pass the message with `-F <file>`. **Residuals** (not seen by R35 either): text
+   that never spells the command (`git $V`, `pu""sh`, `g""it`, `$'\x67it push'`, a command word renamed through the
+   hash table: `hash -p /usr/bin/git ls; ls push origin main`), code in a file (`bash scripts/x.sh`), and a variable
+   or git config (`git config core.sshCommand ...`) set by an earlier Bash call.
 4. **Web merges** (GitHub UI, API outside Claude's Bash tool) never pass `merge-gate-hook.sh`; they are caught after
    the fact by `bin/reconcile --post-merge` (`lib/reconcile.js`).
 5. **`owner-said` authorship**: `freeze-gate.sh` rule 8 proves an `owner-said` record for this exact plan content

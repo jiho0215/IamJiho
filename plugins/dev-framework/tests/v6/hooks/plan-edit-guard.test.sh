@@ -162,6 +162,12 @@ run "$(bash_ 'npm test && git commit -m "docs: explain git push flow"' "$TMP")";
 run "$(bash_ 'npm test && git commit -m "docs: run git commit -a later"' "$TMP")"; expect 2 "R35: a commit mention in a message beside npm (the stated cost)"
 run "$(bash_ 'BR=$(git branch --show-current); npm test && node x.js && git commit -m x' "$TMP")"; expect 0 "R35/NI2: outside core"
 run "$(bash_ "echo 'git commit -m x' > notes.md" "$TMP")"; expect 0 "R35: echo is data"
+# --- R35 fix round 1: C1, R35a, R35b (from outside core) ---
+for c in "printf -v x 'git 2>&1 commit -m x'; sudo bash -c \"\$x\"" "declare -i w='r[\$(git commit -m x)]'" \
+  "git bisect run sh -c 'git commit -m x'"; do
+  run "$(bash_ "$c" "$TMP")"; expect 2 "R35 round 1 outside core: $c"
+done
+run "$(bash_ 'npm test && git status # then git commit -m x' "$TMP")"; expect 0 "M2: a trailing comment is no mention"
 g -C "$CORE" reset -q; g -C "$CORE" checkout -q -- docs/plan/PLAN.md
 echo r2 >> "$CORE/README.md"; g -C "$CORE" add README.md
 run "$(bash_ 'git commit -m x')"; expect 0 "only README staged"

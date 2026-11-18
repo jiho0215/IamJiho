@@ -166,14 +166,90 @@ const R35_VERBS = {
 // mentions(text): [{ at, text }] for every git/gh word followed in its run by a guard's verb.
 function mentions(text) {
   const t = text.replace(/\\\r?\n/g, (m) => ' '.repeat(m.length));  // a line continuation joins the run
+  const words = [...t.matchAll(R35_GIT_WORD)];
+  const ctx = quoteContexts(t, new Set(words.map((m) => m.index)));
   const found = [];
-  for (const m of t.matchAll(R35_GIT_WORD)) {
+  for (const m of words) {
+    const c = ctx.get(m.index) || { q: '', comment: false, sub: '' };
+    if (c.comment) continue;  // M2: after an unquoted word-start `#`, as the scanner reads it
     const from = m.index + m[0].length;
-    const stop = t.slice(from).search(/[;&|\n]/);
-    const run = t.slice(from, stop < 0 ? t.length : from + stop);
+    const run = t.slice(from, runEnd(t, from, c));
     if (Object.values(R35_VERBS).some((re) => re.test(run))) found.push({ at: m.index, text: m[0] + run });
   }
   return found;
+}
+// R35 fix round 1 (C1). quoteContexts(t, starts): for each git/gh word start, the quote it sits in at the outer shell
+// level (q: '' | "'" | '"'), whether it is inside a comment, and whether it is inside a $( ) or `...` body
+// (sub: ')' | '`' | ''). $( ) and backtick bodies start a fresh quote level; a heredoc body is read as a fresh script.
+function quoteContexts(t, starts) {
+  const ctx = new Map();
+  const scan = (lo, hi) => {
+    const stack = [{ q: '', sub: '' }];
+    let comment = false, hds = [];
+    for (let i = lo; i < hi;) {
+      const f = stack[stack.length - 1];
+      if (starts.has(i) && !ctx.has(i)) ctx.set(i, { q: f.q, comment, sub: f.sub });
+      const c = t[i];
+      if (comment) { if (c === '\n') comment = false; else { i++; continue; } }
+      if (f.q === "'") { if (c === "'") f.q = ''; i++; continue; }
+      if (c === '\\') { i += 2; continue; }
+      if (c === '`' && f.sub === '`' && f.q === '') { stack.pop(); i++; continue; }
+      if (c === '`' && (f.q === '' || f.q === '"')) { stack.push({ q: '', sub: '`' }); i++; continue; }
+      if (c === '$' && t[i + 1] === '(' && (f.q === '' || f.q === '"')) { stack.push({ q: '', sub: ')' }); i += 2; continue; }
+      if (f.q === '"') { if (c === '"') f.q = ''; i++; continue; }
+      if (c === "'" || c === '"') { f.q = c; i++; continue; }
+      if (c === '(' ) { stack.push({ q: '', sub: '(' }); i++; continue; }
+      if (c === ')' && stack.length > 1) { stack.pop(); i++; continue; }
+      if (c === '#' && (i === lo || /[\s;&|()]/.test(t[i - 1]))) { comment = true; i++; continue; }
+      if (c === '<' && t[i + 1] === '<' && t[i + 2] !== '<') {
+        let j = i + 2; const strip = t[j] === '-'; if (strip) j++;
+        while (t[j] === ' ' || t[j] === '\t') j++;
+        const d = /^(?:'([^']*)'|"([^"]*)"|\\?([^\s;&|<>()]+))/.exec(t.slice(j));
+        if (d) { hds.push({ delim: d[1] ?? d[2] ?? d[3], strip }); i = j + d[0].length; continue; }
+      }
+      if (c === '\n' && hds.length) {
+        let k = i + 1;
+        for (const h of hds) {
+          const b = k;
+          while (k < hi) {
+            const eol = t.indexOf('\n', k); const e = eol < 0 || eol > hi ? hi : eol;
+            const line = t.slice(k, e);
+            if ((h.strip ? line.replace(/^\t+/, '') : line) === h.delim) { scan(b, k); k = e + 1; break; }
+            k = e + 1;
+            if (k >= hi) scan(b, hi);
+          }
+        }
+        hds = []; i = k; continue;
+      }
+      i++;
+    }
+  };
+  scan(0, t.length);
+  return ctx;
+}
+// runEnd(t, from, c): where the run after a git/gh word ends. Quotes are tracked RELATIVE to the mention (C1): a quote
+// opened after it hides ; | & newline; the quote the mention sits in (c.q) ends the run when it closes; inside a $( )
+// or backtick body, its closing ) or ` ends it. Terminators: newline ; && || | & — but not a redirection: >| and the
+// & of >& <& &> &>> (2>&1, >&2, &>/dev/null) never end a run.
+function runEnd(t, from, c) {
+  let rel = '', pd = 0;
+  for (let i = from; i < t.length; i++) {
+    const ch = t[i];
+    // inside an outer "...", \" is a quote of the inner level (bash -c "git -C \"a;b\" push"); the outer quote itself
+    // ends the run whatever the inner level holds
+    if (ch === '\\' && c.q === '"' && t[i + 1] === '"' && rel !== "'") { rel = rel ? '' : '"'; i++; continue; }
+    if (ch === '\\' && (c.q === '"' || (rel !== "'" && c.q !== "'"))) { i++; continue; }
+    if (c.q && ch === c.q) return i;
+    if (rel) { if (ch === rel) rel = ''; continue; }
+    if (ch === "'" || ch === '"') { rel = ch; continue; }
+    if (ch === '\n' || ch === ';') return i;
+    if (ch === '|') { if (t[i - 1] === '>') continue; return i; }
+    if (ch === '&') { if (t[i - 1] === '>' || t[i - 1] === '<' || t[i + 1] === '>') continue; return i; }
+    if (ch === '(') { pd++; continue; }
+    if (ch === ')') { if (pd === 0 && c.sub === ')') return i; if (pd > 0) pd--; continue; }
+    if (ch === '`' && c.sub === '`') return i;
+  }
+  return t.length;
 }
 // Words that never run text: the DATA commands, and these builtins (they change shell state only). Shell reserved words
 // open or close a compound command; a for/select/case header runs nothing itself (its substitutions are walked apart).
@@ -183,12 +259,47 @@ const R35_HEADERS = new Set(['for', 'select', 'case']);
 const ASSIGN_WORD = /^[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?\+?=/;
 // r35NonData(ws): does this segment's command word run something other than git, gh or a data command? Assignment-only
 // segments do not; the wrappers the parser reads through (command, builtin, exec, env, timeout, nice) are looked past.
+// R35a: bash evaluates array subscripts and indirection arithmetically, so a data word whose argument holds `$(` or a
+// backtick (printf -v 'a[$(...)]', declare -i w='r[$(...)]', read 'b[$(...)]', test -v 'c[$(...)]', unset 'a[$(...)]')
+// runs it; `${!x}` (indirection) and declare/local/typeset -n (namerefs) too.
+const R35_ARITH_CODE = /\$\(|`|\$\{!/;
+// R35b: git runs text itself: rebase -x/--exec, submodule foreach, bisect run, filter-branch, a -c / --config-env key
+// naming a command, pager, editor, askpass, ssh, hook, fsmonitor or sequence, or a GIT_*COMMAND / GIT_SSH* / GIT_EDITOR /
+// GIT_PAGER / GIT_ASKPASS assignment on the segment (or exported). Such a call accounts only for its own word, so the
+// text it runs stays an unaccounted mention, and the call itself is the non-data segment.
+const R35_GIT_RUN_KEY = /command|pager|editor|askpass|ssh|hook|fsmonitor|sequence/i;
+const R35_GIT_RUN_ENV = /^GIT_[A-Z_]*(COMMAND|SSH[A-Z_]*|EDITOR|PAGER|ASKPASS)=/;
+function gitRunsText(args) {
+  let i = 0;
+  for (; i < args.length; i++) {
+    const t = args[i].text;
+    if (!t.startsWith('-')) break;
+    const eq = t.indexOf('='); const name = eq < 0 ? t : t.slice(0, eq);
+    if (name === '-c' || name === '--config-env') {
+      const v = eq < 0 ? (args[i + 1] || { text: '' }).text : t.slice(eq + 1);
+      if (R35_GIT_RUN_KEY.test(v.split('=')[0])) return true;
+      if (eq < 0) i++;
+      continue;
+    }
+    if (eq < 0 && GIT_GLOBAL_VALUE.has(name)) i++;
+  }
+  const sub = args[i] ? args[i].text.toLowerCase() : '';
+  const rest = args.slice(i + 1).map((a) => a.text);
+  if (sub === 'rebase') return rest.some((a) => /^(-[A-Za-z]*x|--exec(=|$))/.test(a));
+  if (sub === 'submodule') return rest.includes('foreach');
+  if (sub === 'bisect') return rest[0] === 'run';
+  return sub === 'filter-branch';
+}
 function r35NonData(ws) {
   let k = 0;
   while (k < ws.length && !ws[k].quoted && (KEYWORDS.has(ws[k].text) || R35_CLOSERS.has(ws[k].text))) k++;
   if (ws[k] && !ws[k].quoted && R35_HEADERS.has(ws[k].text)) return false;
+  if (ws.some((w) => w.text.includes('${!'))) return true;  // R35a: indirection
   for (;;) {
-    while (k < ws.length && ASSIGN_WORD.test(ws[k].text)) k++;
+    while (k < ws.length && ASSIGN_WORD.test(ws[k].text)) {
+      if (R35_GIT_RUN_ENV.test(ws[k].text)) return true;  // R35b: GIT_SSH_COMMAND=... on this segment
+      k++;
+    }
     if (k >= ws.length) return false;
     if (ws[k].dyn) return true;  // $x, "${cmd[@]}", ${x:-}, $(...): may be anything
     const t = wordName(ws[k].text);
@@ -211,7 +322,16 @@ function r35NonData(ws) {
       if (t === 'timeout') k++;
       continue;
     }
-    return !(t === 'git' || t === 'gh' || DATA.has(t) || R35_DATA_BUILTINS.has(t));
+    const args = ws.slice(k + 1);
+    if (t === 'git') return gitRunsText(args);  // R35b
+    if (t === 'gh') return false;
+    if (!(DATA.has(t) || R35_DATA_BUILTINS.has(t))) return true;
+    // R35a: a data word whose argument holds $( / ` / ${! runs it (subscripts and indirection are evaluated), and so
+    // does a nameref; R35b: an exported GIT_SSH_COMMAND=... (and friends) makes later git calls run its text
+    if (args.some((a) => R35_ARITH_CODE.test(a.text))) return true;
+    if (/^(declare|local|typeset)$/.test(t) && args.some((a) => /^-[A-Za-z]*n/.test(a.text))) return true;
+    if (t === 'export' && args.some((a) => R35_GIT_RUN_ENV.test(a.text))) return true;
+    return false;
   }
 }
 // The text of an assignment value outside its command substitutions: $( ... ) and `...` run now, so their git text
