@@ -230,7 +230,7 @@ order; the "rule" numbers below refer to those headers.
 | PreToolUse Edit family + Bash | `plan-edit-guard.sh` | 30 s | Only the lease holder edits the plan or commits plan changes in core (`bin/lease check`, rules 2 and 5) | **Enforced** |
 | PreToolUse Edit family + Bash | `plan-edit-guard.sh` | 30 s | Subagents never edit the plan (rule 4, gated on a non-empty `agent_id`) | **Convention-backed** until Q2 is measured (see below) |
 | PreToolUse Edit family | `freeze-gate.sh` | 30 s | On a claim branch `t/<n>-<slug>`, a code edit needs the freeze doc committed on that branch to be APPROVED, hash-verified, and cite an `owner-said <n> <path>@<content hash>` comment on issue `<n>` by a trusted author (rules 4-8; hash from `freeze-content-hash.sh`) | **Enforced for Edit/Write/MultiEdit/NotebookEdit; Bash writes are convention** (ruling R26: `cat >`, `sed -i`, `cp` into a code path are not parsed); who typed `owner-said` is convention |
-| PreToolUse Bash | `merge-gate-hook.sh` | 120 s | `gh pr merge` / `gh api .../pulls/N/merge` (the endpoint also as a full URL, ruling R22) and gh/git aliases that expand to one (R25): no `--auto`, `--repo` required, a plan-repo merge is decided by the lease alone (R23; `bin/merge-gate` is not called for it), other managed repos must pass `bin/merge-gate` (bounded at 100 s). The branch-merge APIs (R34: a write — `-X` other than GET/HEAD, or fields/`--input` with no `-X` — to `repos/<o>/<n>/merges` in any URL form, and GraphQL `mergeBranch`) are blocked into a managed repo or a repo the hook cannot read (`{owner}/{repo}` with no `--repo`, a GraphQL node id): branch merges into a managed repo go through a PR | **Enforced** for merges run through Claude's Bash tool |
+| PreToolUse Bash | `merge-gate-hook.sh` | 120 s | `gh pr merge` / `gh api .../pulls/N/merge` (the endpoint also as a full URL, ruling R22) and gh/git aliases that expand to one (R25): no `--auto`, `--repo` required, a plan-repo merge is decided by the lease alone (R23; `bin/merge-gate` is not called for it), other managed repos must pass `bin/merge-gate` (bounded at 100 s). The branch-merge APIs (R34: a write — `-X` other than GET/HEAD, or fields/`--input` with no `-X`; a combined short cluster such as `-if` is split first, R34a — to `repos/<o>/<n>/merges` in any URL form, and GraphQL `mergeBranch`) are blocked into a managed repo or a repo the hook cannot read (`{owner}/{repo}` with no `--repo`, a GraphQL node id); the repo is host/URL-normalised the same way as `gh pr merge` (R34a), so a host-qualified `GH_REPO=github.com/acme/api` is caught: branch merges into a managed repo go through a PR | **Enforced** for merges run through Claude's Bash tool |
 | PreToolUse Bash | `push-guard.sh` | 30 s | In a managed repo: no force/delete (unless `hooks.pushGuard.allowForce`), no push to the default branch (the destination resolved as git does: `@`, `HEAD`, `heads/<x>`, `refs/heads/<x>`; an unresolvable one blocks, ruling R21), a `t/<n>-...` push needs a claim on origin, and issue `<n>` must not carry `needs-ack` | **Enforced** |
 | PreToolUse Bash | `claim-guard.sh` | 30 s | Creating a `t/<n>-<slug>` branch (`worktree add -b`, `checkout -b`, `switch -c`, `branch <new>`) needs a claim for `<n>` on origin | **Enforced** for the creation forms only |
 | PreToolUse EnterWorktree | (none) | - | Claim check on EnterWorktree | **Not registered**: Q5 (is it hookable) is unmeasured (ruling R5) |
@@ -277,9 +277,15 @@ Each item is a path on which a rule above does NOT block. They are accepted resi
    plus a code runner (`eval`, `source` and `.` included; `coproc` counts as one too) or a dynamic command word at any
    depth, plus git/gh in the text — whatever the runner's arguments (`-s x`, `/dev/stdin`) and wherever it sits
    (`( ... )`, `if`, `for`, `while read; eval`, `done <<< ...`, `> >(bash)`, `coproc bash; echo ... >&"${COPROC[1]}"`);
-   and, with no feed at all (R28d), a code runner given a dynamic argument (`eval "$x"`, `bash -c "$x"`,
-   `source "$f"`; a bare `{}` is literal) or any dynamic command word (`$x`), plus git/gh in the text, so
-   `x='git push origin main'; eval "$x"` is seen. That row's text is the whole command, so `git log | python
+   and, with no feed at all (R28e), a runner whose code-position argument carries an expansion or a `$`-bearing
+   literal — any argument of `eval`/`source`/`.`, or the argument right after `-c`/`-e`/`--eval`/`-Command` of a shell
+   or interpreter (`eval "$x"`, `bash -c "$x"`, and `bash -c 'eval "$X"'`, whose literal code reads an env var);
+   a command word that is a single parameter expansion (`$x`, `"$x"`, `${x}`, `"$@"`, `$*`); or (NC4) any runner
+   together with an assignment, prefix or `export`, whose value is itself a git command (`export X='…git push…'; bash
+   -c 'eval "$X"'`) — plus git/gh in the text, so `x='git push origin main'; eval "$x"` is seen. A glob
+   (`node --test tests/*.mjs`), a script-file argument (`bash scripts/run.sh "$1"`), a path command word with an
+   expansion (`"$REPO/scripts/test.sh"`), and a plain data argument never count, so an ordinary
+   test-then-push / test-then-commit chain is allowed. That row's text is the whole command, so `git log | python
    summarize.py` or `eval "$(ssh-agent -s)" && git push origin t/12-x` is a row too, harmless unless the text names a
    guard's verb — the second does, so it blocks as unreadable: run the two parts as separate commands),
    else a literal `-C`/`--chdir` in the segment, else the cd dir. A `git <x>` / `gh <x>` written
