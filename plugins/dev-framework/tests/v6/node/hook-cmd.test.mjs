@@ -166,7 +166,8 @@ test('command substitution runs its body: the merge inside is seen', () => {
 });
 test('eval / xargs / sh -c are opaque when they mention a guarded command', () => {
   assert.equal(parseCommand('eval "git push"').opaque.length, 1);
-  assert.equal(parseCommand('echo 1 | xargs gh pr merge').opaque.length, 1);
+  // R28c adds the whole-command row (a pipe, a runner and gh): the segment row and that one
+  assert.deepEqual(parseCommand('echo 1 | xargs gh pr merge').opaque, ['xargs gh pr merge', 'echo 1 | xargs gh pr merge']);
   assert.equal(parseCommand("sh -c 'git commit -m x'").opaque.length, 1);
   assert.deepEqual(parseCommand('bash -c "ls"'), r({}));
 });
@@ -542,4 +543,25 @@ test('M1: a bare CDPATH= assignment is a shell variable cd reads', () => {
 test('M2: a git path component is not the word git', () => {
   assert.deepEqual(P('python tools/git/push_stats.py').opaque, []);
   assert.deepEqual(U('python /usr/bin/git push origin main'), [true], '/usr/bin/git followed by a space still is');
+});
+
+// ---- fix round 3 (ruling R28c) ----
+test('R28c/NC2: a pipe or < anywhere, a runner / eval / source / dynamic word at any depth, and git/gh: one whole-command row', () => {
+  for (const c of ["(echo 'git push origin main') | bash", "echo 'git push origin main' | (bash)",
+    "(echo 'cd ~/api && git push origin main') | bash -s x", "(echo 'gh pr merge 5 --repo acme/api --squash') | bash",
+    "echo 'gh pr merge 5 --repo acme/api --squash' | (bash)", "echo 'git commit -m x' | (bash)",
+    "echo 'git push origin main' | if true; then bash; fi", "echo 'git push origin main' | for i in 1; do bash; done",
+    `echo 'git push origin main' | while read -r l; do eval "$l"; done`,
+    `while read -r l; do eval "$l"; done <<< 'git push origin main'`, `echo 'git push origin main' | { "$SHELL"; }`,
+    "bash < <(echo 'git push origin main')", "(echo 'git push -q origin main') | bash -s x",
+    `x=$(cat <(echo 'git push origin main')); eval "$x"`, `x=$(echo 'git push origin main' | cat); eval "$x"`]) {
+    const x = P(c);
+    const at = x.opaque.indexOf(c);
+    assert.ok(at >= 0, `whole-command row: ${c}`);
+    assert.equal(x.opaqueDirs[at].unknown, true, c);
+  }
+  for (const c of ['npm test | tail', 'git log | grep x', 'git status && git push origin t/12-x 2>&1 | tail -3',
+    "(cd sub && git status) | cat", 'git diff | head -5']) {
+    assert.deepEqual(P(c).opaque, [], c);
+  }
 });

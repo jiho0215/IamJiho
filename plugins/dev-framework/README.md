@@ -272,18 +272,21 @@ Each item is a path on which a rule above does NOT block. They are accepted resi
    R28, R28a): a segment where ANY word is a code runner (`eval`, `xargs`, `sh`/`bash -c`, `script`, `python`,
    `perl`, `node`, `sudo`, `nohup`, `wsl`, ... — the `CODE_RUNNERS` set; so `stdbuf -oL bash -c '...'` and
    `winpty python -c '...'` too) and any word mentions `git`/`gh`; a dynamic command word (`"$SHELL" -c '...'`) whose
-   arguments mention them; and a code runner (`source` and `.` included) or dynamic command word fed on stdin (a
-   pipe, heredoc, here-string or `< file` into it, whatever its arguments: `-s x`, `/dev/stdin`, ...; ruling R28b)
-   when the whole command text mentions them — that row's text is the whole command, so `git log | python
-   summarize.py` is a row too, harmless unless the text names a guard's verb), else a literal `-C`/`--chdir` in the segment, else the cd dir. A `git <x>` / `gh <x>` written
+   arguments mention them; and, for the command as a whole (rulings R28b, R28c), a pipe or a `<` redirection
+   (heredoc, here-string, file, `<(...)`) anywhere in it, plus a code runner (`eval`, `source` and `.` included) or a
+   dynamic command word at any depth, plus git/gh in the text — whatever the runner's arguments (`-s x`,
+   `/dev/stdin`) and wherever it sits (`( ... )`, `if`, `for`, `while read; eval`, `done <<< ...`); that row's text is
+   the whole command, so `git log | python summarize.py` is a row too, harmless unless the text names a guard's verb),
+   else a literal `-C`/`--chdir` in the segment, else the cd dir. A `git <x>` / `gh <x>` written
    inside such code, where `<x>` is not a command, is looked up as an alias (item 20) from the hook cwd. All Bash
    guards share one rule (`_v6-hook.sh` `hook_opaque_rows` / `hook_opaque_hit`): an unreadable guarded segment is in
    scope when its dir is unknown, when its literal dir or the hook cwd is managed / in core, or when the text names a
    managed slug / the core path. So an unknown dir blocks from ANY cwd (a false block outside v6 repos, e.g.
    `bash -c 'git push ...'` or `echo 'git push' | bash` anywhere, or any relative `cd` before a guarded call when
    `CDPATH` is set; workaround: run git plainly and write the path literally). Residuals: an opaque segment counts for
-   a guard only when its text names the guard's verb (`push`, `commit`, `merge`/`pulls/`, a branch verb;
-   case-insensitive), so code that deliberately hides the verb or the git word (`bash -c "git $V"`, `pu""sh`,
+   a guard only when its text names the guard's verb as a whole word (`push`, `commit`, `merge`/`pulls/`, the GraphQL
+   merge mutations, a branch verb; case-insensitive; ruling R33: `mergeStateStatus`, `--merges`, `pushd`,
+   `committed` are not verbs), so code that deliberately hides the verb or the git word (`bash -c "git $V"`, `pu""sh`,
    `g""it`) is not seen — no stronger than running a script file (item 18); a code runner not in `CODE_RUNNERS` that
    mentions git only inside a string (`npx foo -c 'git push'`, `uv run x -c '...'`) is not seen; an alias inside an
    interpreter string run from an unmanaged cwd is looked up there (only global aliases are seen); `sudo` and `nohup`

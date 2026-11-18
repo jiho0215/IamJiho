@@ -123,6 +123,12 @@ run "$(bash_ "echo 'git commit -m x' | bash -s x" "$TMP")"; expect 2 "R28b/NC1: 
 run "$(bash_ "source /dev/stdin <<< 'git commit -m x'" "$TMP")"; expect 2 "R28b/NC1: source /dev/stdin from outside core"
 run "$(bash_ 'git log | python summarize.py')"; expect 0 "no-regression: git log | python summarize.py"
 run "$(bash_ 'npm test | tail')"; expect 0 "no-regression: npm test | tail"
+# --- fix round 3 (rulings R28c, R33) ---
+run "$(bash_ "echo 'git commit -m x' | (bash)")"; expect 2 "R28c/NC2: | (bash) in core"
+run "$(bash_ "(echo 'git commit -m x') | bash" "$TMP")"; expect 2 "R28c/NC2: (echo ...) | bash from outside core"
+run "$(bash_ "echo 'git commit -m x' | while read -r l; do eval \"\$l\"; done" "$TMP")"; expect 2 "R28c/NC2: | while read; eval from outside core"
+run "$(bash_ 'git log --oneline | python -c "print(1)" # committed' "$TMP")"; expect 0 "R33: committed is not the verb commit"
+run "$(bash_ 'git log | grep x')"; expect 0 "no-regression: git log | grep x"
 g -C "$CORE" reset -q; g -C "$CORE" checkout -q -- docs/plan/PLAN.md
 echo r2 >> "$CORE/README.md"; g -C "$CORE" add README.md
 run "$(bash_ 'git commit -m x')"; expect 0 "only README staged"

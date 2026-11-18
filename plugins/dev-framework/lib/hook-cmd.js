@@ -114,7 +114,7 @@ function scanAt(s, start, mode, opts = {}) {
   const home = typeof opts.home === 'string' && opts.home !== '' ? opts.home : null;
   const items = [];
   const n = s.length;
-  let i = start, depth = 0, broken = false, segBroken = false, segStdin = false;
+  let i = start, depth = 0, broken = false, segBroken = false, segStdin = false, fed = false;
   let words = [], subs = [], word = null, segStart = start;
   let pendingRedir = false, pendingHeredoc = null;
   const heredocs = [];
@@ -143,6 +143,7 @@ function scanAt(s, start, mode, opts = {}) {
   const sub = (from) => {  // scan a $( … ) / <( … ) body starting at `from`; returns the index after ')'
     const r = scanAt(s, from, 'subst', opts);
     if (r.broken) markBroken();
+    // (a body's own pipes / < reach out._fed when walk() re-scans the body, so r.fed is not needed here)
     subs.push(s.slice(from, Math.max(from, r.end - 1)));
     return r.end;
   };
@@ -232,20 +233,22 @@ function scanAt(s, start, mode, opts = {}) {
     }
     if (c === '|') {
       if (s[i + 1] === '|') { endSeg('||', i); i += 2; segStart = i; continue; }
+      fed = true;  // R28c: a pipe anywhere
       endSeg('|', i); i += s[i + 1] === '&' ? 2 : 1; segStart = i; continue;
     }
     if (c === '(' && !word) { endSeg(null, i); items.push({ kind: 'open' }); depth++; i++; segStart = i; continue; }
     if (c === ')') {
-      if (mode === 'subst' && depth === 0) { endSeg(null, i); return { items, end: i + 1, broken }; }
+      if (mode === 'subst' && depth === 0) { endSeg(null, i); return { items, end: i + 1, broken, fed }; }
       endSeg(null, i); if (depth > 0) depth--; items.push({ kind: 'close' }); i++; segStart = i; continue;
     }
     if (c === '<' || c === '>') {
       if (s[i + 1] === '(') {  // process substitution: it runs
+        if (c === '<') fed = true;  // R28c: <( ... ) feeds a command too
         const end = sub(i + 2); const ww = w();
         ww.text += s.slice(i, end); ww.dyn = true; ww.udyn = true; i = end; continue;
       }
       if (word && /^\d+$/.test(word.text) && !word.quoted && !word.dyn) word = null; else endWord();
-      if (c === '<') segStdin = true;  // R28a: a heredoc, here-string or `< file` feeds the command's stdin
+      if (c === '<') { segStdin = true; fed = true; }  // R28a: a heredoc, here-string or `< file` feeds the command's stdin
       if (c === '<' && s[i + 1] === '<' && s[i + 2] !== '<') {
         i += 2; let strip = false;
         if (s[i] === '-') { strip = true; i++; }
@@ -281,7 +284,7 @@ function scanAt(s, start, mode, opts = {}) {
   }
   endSeg(null, n);
   if (mode === 'subst') markBroken();
-  return { items, end: n, broken };
+  return { items, end: n, broken, fed };
 }
 
 // ---------------------------------------------------------------- helpers
@@ -667,8 +670,7 @@ function segment(it, st, out, ctx) {
       const rest = ws.slice(k + 1);
       // R28a (I2): a dynamic command word may be any code runner ("$SHELL" -c '...'): mentioning git/gh, dir unknown
       if (rest.some((w) => GIT_WORD.test(w.text))) return listCode(it.raw, rest.map((w) => w.text).join(' '));
-      // R28b: a dynamic command word fed on stdin (echo '...' | "$SHELL") may run what the command text says
-      if ((ctx.piped || it.stdin) && GIT_WORD.test(ctx.text)) return listCode(ctx.text, ctx.text);
+      out._runner = true;  // R28c: a dynamic command word may be a code runner fed on stdin (whole-command pass)
       // R12: a dynamic command word (g=gh; $g pr merge) hides the program: listed whenever a later word is a
       // verb we guard, even with no MENTION hit.
       if (rest.some((w) => /^(merge|push|commit|checkout|switch|worktree|branch)$/i.test(w.text))) return list();
@@ -738,11 +740,8 @@ function segment(it, st, out, ctx) {
     // R28a: ANY word may be the code runner (stdbuf -oL bash -c '...', winpty python -c '...')
     const ri = all.findIndex((w) => !w.dyn && isCodeRunner(wordName(w.text)));
     if (ri >= 0) {
+      out._runner = true;  // R28c: seen at any depth; the whole-command pass in parseCommand decides
       if (args.some((a) => GIT_WORD.test(a.text))) return listCode(it.raw, args.map((a) => a.text).join(' '));
-      // R28b (I1, NC1): a code runner fed on stdin (piped into, or a heredoc / here-string / < file) may read its code
-      // from there whatever its arguments say (-s x, /dev/stdin, /dev/fd/0, ...: no argument-shape test): when the
-      // whole command text mentions git/gh, that text is what it may run.
-      if ((ctx.piped || it.stdin) && GIT_WORD.test(ctx.text)) return listCode(ctx.text, ctx.text);
       if (ri === 0) return EXECS.has(name) ? opaque() : null;
     }
     // R27a: a wrapper whose target is cd/pushd/popd (stdbuf cd x, COMMAND cd x): the shell's dir is not changed,
@@ -768,7 +767,8 @@ function segment(it, st, out, ctx) {
 }
 
 function walk(src, out, initial, opts) {
-  const { items } = scanAt(src, 0, 'top', opts);
+  const { items, fed } = scanAt(src, 0, 'top', opts);
+  if (fed) out._fed = true;  // R28c: a pipe or < redirection anywhere (substitution bodies included)
   let st = initial;
   const stack = [];
   let prevSep = null;
@@ -788,8 +788,21 @@ function walk(src, out, initial, opts) {
 function parseCommand(cmd, opts = {}) {
   const out = { merges: [], pushes: [], branches: [], commits: [], opaque: [], opaqueDirs: [], aliases: [] };
   const o = opts || {};
-  walk(String(cmd == null ? '' : cmd), out,
+  const text = String(cmd == null ? '' : cmd);
+  walk(text, out,
     { dir: null, cdOpaque: false, ghRepo: null, gitDir: false, gitConfig: false, ghConfig: false, cdpath: !!o.cdpath }, o);
+  // R28c (NC1, NC2): a pipe or a < redirection (heredoc, here-string, file, process substitution) anywhere, a code
+  // runner / eval / source / . / dynamic command word at any depth, and git/gh in the text: some runner may read its
+  // code from that stdin, inside a subshell, loop or if as well, so the whole command is one row with an unknown dir.
+  // No nesting or argument tracking (rulings R28b, R28c).
+  const fedRunner = out._fed && out._runner && GIT_WORD.test(text);
+  delete out._fed; delete out._runner;
+  if (fedRunner) {
+    const at = out.opaque.indexOf(text);  // a one-segment command may already be a row with this text: make it unknown
+    if (at >= 0) out.opaqueDirs[at] = { ...out.opaqueDirs[at], unknown: true };
+    else { out.opaque.push(text); out.opaqueDirs.push({ dir: null, unknown: true }); }
+    aliasesInText(text, text, out);
+  }
   return out;
 }
 

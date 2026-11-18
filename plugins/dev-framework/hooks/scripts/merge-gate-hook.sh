@@ -29,7 +29,8 @@ fi
 NOPAQUE=0; NUNRES=0
 if [ "$PARSER_OK" -eq 1 ]; then
   NMERGE=$(jq -r '.merges | length' <<<"$PARSED" | tr -d '\r')
-  hook_opaque_rows 'merge|pulls/' 'merge|pulls/' '\bgh\b|merge|pulls/'
+  # the GraphQL merge mutations are words of their own (R33 matches whole words)
+  hook_opaque_rows 'merge|pulls/|mergePullRequest|enablePullRequestAutoMerge' 'merge|pulls/' '\bgh\b|merge|pulls/'
   for row in "${HOOK_OPQ_ROWS[@]}"; do
     case "$row" in
       2*) NUNRES=$((NUNRES + 1)) ;;

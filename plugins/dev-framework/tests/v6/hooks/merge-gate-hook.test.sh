@@ -179,5 +179,13 @@ grep -q 'cannot read this merge command exactly' <<<"$ERR" || fail "R28b text: $
 run "echo 'gh pr merge 5 --repo acme/api --squash' | bash /dev/stdin"; expect 2 "R28b/NC1: | bash /dev/stdin"
 run 'git log | python summarize.py'; expect 0 "no-regression: git log | python summarize.py"
 run 'npm test | tail'; expect 0 "no-regression: npm test | tail"
+# --- fix round 3 (rulings R28c, R33) ---
+run "(echo 'gh pr merge 5 --repo acme/api --squash') | bash"; expect 2 "R28c/NC2: (echo ...) | bash, unmanaged cwd"
+grep -q 'cannot read this merge command exactly' <<<"$ERR" || fail "R28c text: $ERR"
+run "echo 'gh pr merge 5 --repo acme/api --squash' | (bash)"; expect 2 "R28c/NC2: | (bash)"
+run "echo 'gh pr merge 5 --repo acme/api --squash' | while read -r l; do eval \"\$l\"; done"; expect 2 "R28c/NC2: | while read; eval"
+run 'gh pr view 5 --json mergeStateStatus | python -c "import sys"'; expect 0 "R33: mergeStateStatus is not merge"
+run 'git log --merges | python summarize.py'; expect 0 "R33: --merges is not merge"
+run 'git log | grep x'; expect 0 "no-regression: git log | grep x"
 unset DEVFW_CORE_DIR; run 'gh pr merge 1 --repo acme/api'; expect 0 "DEVFW_CORE_DIR unset"
 echo "PASS: merge-gate-hook"
