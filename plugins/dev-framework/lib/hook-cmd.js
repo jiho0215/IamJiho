@@ -100,9 +100,30 @@ const CODE_RUNNERS = new Set([...EXECS, 'script', 'python', 'python3', 'py', 'pe
   'lua', 'osascript', 'busybox', 'nohup', 'setsid', 'sudo', 'doas', 'runuser', 'chroot', 'unbuffer', 'expect', 'tclsh',
   'wsl', 'start']);
 const isCodeRunner = (name) => CODE_RUNNERS.has(name) || /^(python|pypy)[0-9.]*$/.test(name);
-// R28d: an argument whose value is only known when the command runs ("$x", $(...), a glob). A bare {} is literal to
-// bash (find -exec ... {} \;), though the scanner marks every brace word dynamic.
-const isDynArg = (w) => w.dyn && w.text !== '{}';
+// R28e: a shell or interpreter whose `-c`/`-e`/`--eval`/`-Command` argument is run as code (bash -c '…', python -c
+// '…', perl -e '…', pwsh -Command '…'). eval/source/. (handled apart) run any argument as code.
+const SHELL_RUNNERS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'fish', 'pwsh', 'powershell', 'python', 'python3',
+  'py', 'perl', 'ruby', 'node', 'deno', 'bun', 'php', 'lua', 'osascript', 'tclsh', 'expect']);
+const isShellRunner = (name) => SHELL_RUNNERS.has(name) || /^(python|pypy)[0-9.]*$/.test(name);
+const CODE_FLAG = /^(-c|-e|--eval|--command|-Command)$/;
+// R28e: a word that carries code the shell will expand — an expansion ($x, ${x}, `…`, $(…)) in it, OR a literal
+// string holding a `$` that an inner `eval`/`-c` shell expands (NC4: bash -c 'eval "$X"'). A plain glob (*.json) has
+// no `$`/backtick, so it never counts; nor does a bare data word.
+const carriesCode = (w) => /[$`]/.test(w.text);
+// R28e clause (b): a command word that is a single parameter expansion ($x, "$x", ${x}, "$@", $*) — word-splitting
+// it can produce any command. A path that merely contains an expansion ("$REPO/scripts/test.sh") is the script-file
+// residual and does not count.
+const isParamExpWord = (w) => w.dyn && /^\$(\{[A-Za-z_@*][A-Za-z0-9_]*\}|[A-Za-z_][A-Za-z0-9_]*|[@*])$/.test(w.text);
+// R28e clause (a): does the runner `name`, with the words `rest` after it, get code through an expansion or a
+// $-bearing literal in its code position?
+function runnerHasDynCode(name, rest) {
+  if (name === 'eval' || name === 'source' || name === '.') return rest.some(carriesCode);
+  if (!isShellRunner(name)) return false;  // sudo/ssh/find/start/nohup take no inline-code flag we read
+  for (let j = 0; j < rest.length; j++) {
+    if (CODE_FLAG.test(rest[j].text)) return !!rest[j + 1] && carriesCode(rest[j + 1]);
+  }
+  return false;
+}
 // R28: git or gh named as a word (git.exe too; .git, github, git-lfs and a path component like tools/git/x are not it).
 const GIT_WORD = /(^|[^\w.-])(git|gh)(\.exe)?(?![\w/-])/i;
 // R28a (I3): `git [global options] <sub>` / `gh [-R x] <group>` written inside an interpreter string.
@@ -590,7 +611,10 @@ function ghApi(args, pos, flags, method, methodDyn, repo, repoDyn, st, out) {
   // or a field / --input is given (then POST); an unknown method or an unquoted dynamic word may be a write.
   const path = endpoint.replace(/[?#].*$/, '');
   if (/(^|\/)merges(\/|$)/i.test(path)) {
-    const fields = [...flags].some((f) => /^(-[fF]|--raw-field|--field|--input)/.test(f));
+    // R34a: a field (-f/-F/--raw-field/--field/--input) makes `gh api` POST. Split a combined short cluster first, so
+    // `-if` (that is -i -f) counts as a field just like `-f`.
+    const fields = [...flags].some((f) => /^--(raw-field|field|input)$/.test(f.split('=')[0])
+      || (/^-[A-Za-z]/.test(f) && !f.startsWith('--') && /[fF]/.test(f.slice(1))));
     const write = methodDyn || args.some((a) => a.udyn) || (method !== null ? !/^(GET|HEAD)$/.test(method) : fields);
     if (!write) return null;
     const bm = /^repos\/([^/]+)\/([^/]+)\/merges\/?$/i.exec(path);
@@ -690,14 +714,17 @@ function segment(it, st, out, ctx) {
     while (k < ws.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(ws[k].text)) {
       const eq = ws[k].text.indexOf('=');
       env[ws[k].text.slice(0, eq)] = { text: ws[k].text.slice(eq + 1), dyn: ws[k].dyn };
+      // NC4: a prefix assignment whose value is itself a git command (cd ~/x && git push) carries the git text to a
+      // runner in the same command through the environment, bypassing the dynamic-code clauses.
+      if (MENTION.test(ws[k].text.slice(eq + 1))) out._assignGit = true;
       k++;
     }
     const t = k < ws.length ? wordName(ws[k].text) : '';
     if (ws[k] && ws[k].dyn) {
       const rest = ws.slice(k + 1);
-      // R28d: a dynamic command word is itself a runner given dynamic code ("$SHELL" -c "$x", and $x alone, which
-      // word-splits x='git push origin main' into that very command)
-      out._dynRunner = true;
+      // R28e clause (b): a command word that is a single parameter expansion ($x, "$x") may word-split into any
+      // command (set -- git push ...; "$@"); a path with an expansion ("$REPO/scripts/x") is the script-file residual.
+      if (isParamExpWord(ws[k])) out._dynRunner = true;
       // R28a (I2): a dynamic command word may be any code runner ("$SHELL" -c '...'): mentioning git/gh, dir unknown
       if (rest.some((w) => GIT_WORD.test(w.text))) return listCode(it.raw, rest.map((w) => w.text).join(' '));
       out._runner = true;  // R28c: a dynamic command word may be a code runner fed on stdin (whole-command pass)
@@ -755,6 +782,8 @@ function segment(it, st, out, ctx) {
       if (GIT_CONFIG_ENV.test(key)) next = { ...(next || st), gitConfig: true };
       if (GH_CONFIG_ENV.test(key)) next = { ...(next || st), ghConfig: true };
       if (key === 'CDPATH' && v !== null) next = { ...(next || st), cdpath: a.dyn || v !== '' };
+      // NC4: an exported git command carries into a runner through the environment (export X='...git push...')
+      if (v !== null && MENTION.test(v)) out._assignGit = true;
     }
     return next;
   }
@@ -771,7 +800,9 @@ function segment(it, st, out, ctx) {
     const ri = all.findIndex((w) => !w.dyn && isCodeRunner(wordName(w.text)));
     if (ri >= 0) {
       out._runner = true;  // R28c: seen at any depth; the whole-command pass in parseCommand decides
-      if (all.slice(ri + 1).some(isDynArg)) out._dynRunner = true;  // R28d: eval "$x", bash -c "$x", source "$f"
+      // R28e clause (a): only a code-position argument of the runner counts (eval/source/. any arg; a shell's -c arg),
+      // and only when it carries an expansion or a $-bearing literal — not a glob or a plain script-file argument.
+      if (runnerHasDynCode(wordName(all[ri].text), all.slice(ri + 1))) out._dynRunner = true;
       if (args.some((a) => GIT_WORD.test(a.text))) return listCode(it.raw, args.map((a) => a.text).join(' '));
       if (ri === 0) return EXECS.has(name) ? opaque() : null;
     }
@@ -825,11 +856,13 @@ function parseCommand(cmd, opts = {}) {
   // R28c (NC1, NC2): a pipe or a < redirection (heredoc, here-string, file, process substitution) anywhere, a code
   // runner / eval / source / . / dynamic command word at any depth, and git/gh in the text: some runner may read its
   // code from that stdin, inside a subshell, loop or if as well, so the whole command is one row with an unknown dir.
-  // No nesting or argument tracking (rulings R28b, R28c). R28d: >( ... ) and coproc feed too (coproc also runs), and
-  // a runner (eval, source, ., a shell, a dynamic command word) given a dynamic argument ("$x") may run the git text
-  // stored earlier in the same command (x='git push origin main'; eval "$x"): the same one row.
-  const fedRunner = ((out._fed && out._runner) || out._dynRunner) && GIT_WORD.test(text);
-  delete out._fed; delete out._runner; delete out._dynRunner;
+  // No nesting or argument tracking (rulings R28b, R28c). R28d/R28e: >( ... ) and coproc feed too (coproc also runs);
+  // and with no feed, a runner whose code-position argument carries an expansion or a $-bearing literal (eval "$x",
+  // bash -c 'eval "$X"'), a command word that is a single parameter expansion ($x), or (NC4) any runner together with
+  // an assignment whose value is itself a git command, make the same one whole-command row.
+  const fedRunner = ((out._fed && out._runner) || out._dynRunner || (out._runner && out._assignGit))
+    && GIT_WORD.test(text);
+  delete out._fed; delete out._runner; delete out._dynRunner; delete out._assignGit;
   if (fedRunner) {
     const at = out.opaque.indexOf(text);  // a one-segment command may already be a row with this text: make it unknown
     if (at >= 0) out.opaqueDirs[at] = { ...out.opaqueDirs[at], unknown: true };

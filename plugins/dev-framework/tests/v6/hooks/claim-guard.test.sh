@@ -106,6 +106,12 @@ EOF
 )\""; expect 0 "no-regression: \$(cat <<'EOF') commit"
 run "$W" 'cat file > out.txt'; expect 0 "no-regression: cat file > out.txt"
 run "$W" 'gh pr view 5 --json mergeStateStatus'; expect 0 "no-regression: gh pr view --json mergeStateStatus"
+# --- fix round 5 (ruling R28e, NC4; NI1 no-regression) ---
+run "$W" "export X='git checkout -b t/43-z'; bash -c 'eval \"\$X\"'"; expect 2 "NC4: export carries a branch create into a runner"
+run "$U" "X='cd ~/api && git switch -c t/43-z' bash -c 'eval \"\$X\"'"; expect 2 "NC4: prefix assignment, unmanaged cwd"
+run "$W" "x='git checkout -b t/43-z'; eval \"\$x\""; expect 2 "R28e(a): eval \"\$x\" still blocks"
+run "$W" 'node --test tests/*.mjs && git checkout -b t/41-x origin/t/41-x'; expect 0 "NI1: node --test glob then a claimed branch"
+run "$W" 'python3 summarize.py *.json && git switch -c feature/x'; expect 0 "NI1: python script + glob then a non-ticket branch"
 
 run "$W" 'git worktree add ../wt -b t/41-x origin/t/41-x'; expect 0 "claimed worktree add"
 run "$W" 'git checkout -b t/41-x origin/t/41-x'; expect 0 "claimed checkout -b"

@@ -65,6 +65,9 @@ while IFS= read -r m; do
   [ -n "$m" ] || continue
   pr=$(jq -r '.pr' <<<"$m" | tr -d '\r'); repo=$(jq -r '.repo // empty' <<<"$m" | tr -d '\r')
   auto=$(jq -r '.auto' <<<"$m" | tr -d '\r')
+  # R34a: normalise the repo (GH_REPO / -R / --repo given with a host or as a URL) BEFORE any use, so the branch-merge
+  # path and the gh-pr-merge path read it the same way (github.com/acme/api and https://… both become acme/api).
+  [ -z "$repo" ] || { repo=${repo#https://}; repo=${repo#http://}; repo=${repo#github.com/}; repo=${repo%/}; repo=${repo%.git}; }
   if [ "$(jq -r '.via' <<<"$m" | tr -d '\r')" = gh-api-branch-merge ]; then
     # R34: a branch-merge API (REST repos/<o>/<n>/merges, GraphQL mergeBranch) moves a branch with no PR and no gate
     BRANCH_MSG="branch merges into a managed repo go through a PR: gh pr create, then gh pr merge <n> --repo <owner/name> --squash"
@@ -75,7 +78,6 @@ while IFS= read -r m; do
   [ "$pr" != null ] || hook_block "give the PR number: gh pr merge <n> --repo <owner/name>"
   [ "$auto" != true ] || hook_block "never use gh pr merge --auto (it merges at once here)"
   [ -n "$repo" ] || hook_block "pass --repo <owner/name>; the repo is not inferred"
-  repo=${repo#https://}; repo=${repo#http://}; repo=${repo#github.com/}; repo=${repo%/}; repo=${repo%.git}
   managed=0
   while IFS= read -r r; do [ -n "$r" ] && [ "${r,,}" = "${repo,,}" ] && managed=1; done <<<"$MANAGED"
   [ "$managed" -eq 1 ] || continue

@@ -143,6 +143,13 @@ EOF
 )\"" "$TMP")"; expect 0 "no-regression: \$(cat <<'EOF') commit outside core"
 run "$(bash_ 'cat file > out.txt')"; expect 0 "no-regression: cat file > out.txt in core"
 run "$(bash_ 'gh pr view 5 --json mergeStateStatus')"; expect 0 "no-regression: gh pr view in core"
+# --- fix round 5 (ruling R28e, NC4; NI1 no-regression) ---
+run "$(bash_ "export X='git commit -m x'; bash -c 'eval \"\$X\"'")"; expect 2 "NC4: export carries a commit into a runner (core)"
+run "$(bash_ "export X='git commit -m x'; bash -c 'eval \"\$X\"'" "$TMP")"; expect 2 "NC4: export, outside core"
+run "$(bash_ "x='git commit -m x'; eval \"\$x\"")"; expect 2 "R28e(a): eval \"\$x\" still blocks"
+# NI1: the repo's own node test command chained before an ordinary commit must NOT be read as a plan commit
+run "$(bash_ 'node --test tests/v6/node/*.test.mjs && git add -A && git commit -m x' "$TMP")"; expect 0 "NI1: node --test glob then a commit outside core"
+run "$(bash_ 'python -m pytest -k "$K" && git commit -m x' "$TMP")"; expect 0 "NI1: pytest -k then a commit outside core"
 g -C "$CORE" reset -q; g -C "$CORE" checkout -q -- docs/plan/PLAN.md
 echo r2 >> "$CORE/README.md"; g -C "$CORE" add README.md
 run "$(bash_ 'git commit -m x')"; expect 0 "only README staged"

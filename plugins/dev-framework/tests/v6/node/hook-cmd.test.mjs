@@ -655,3 +655,59 @@ test('fix round 4 no-regressions: heredoc commits, redirects, gh pr view, a clai
   assert.deepEqual(P('git push origin t/12-x').pushes, [push({ remote: 'origin', refspecs: ['t/12-x'] })]);
   assert.deepEqual(P('git push origin t/12-x').opaque, []);
 });
+
+// ---- fix round 5 (rulings R28e, R34a) ----
+test('R28e: the runner-code clause counts only a code-position argument that carries an expansion (NC4)', () => {
+  // (a) eval/source/. : any arg that carries code; a shell's -c/-e/--eval/-Command arg; a $-bearing literal (NC4)
+  for (const c of [`x='git push origin main'; eval "$x"`, `x='git push origin main'; bash -c "$x"`,
+    `x='git push origin main'; "$SHELL" -c "$x"`, `V=push; bash -c "git $V origin main"`,
+    `printf -v x 'git push origin main'; eval "$x"`,
+    `x='cd ~/api && git push origin main'; bash -c 'eval "$1"' _ "$x"`,
+    `export X='cd ~/api && git push origin main'; bash -c 'eval "$X"'`,
+    `X='cd ~/api && git push origin main' bash -c 'eval "$X"'`,
+    `X='cd ~/api && git push origin main' python -c 'import os; os.system(os.environ["X"])'`,
+    // export form whose runner's code arg has no `$`: only the export-assignment clause catches it
+    `export X='git push origin main'; python -c 'import os; os.system(os.environ["X"])'`]) {
+    assert.ok(wholeRow(c), c);
+  }
+  // (b) a command word that is a single parameter expansion
+  for (const c of [`x='git push origin main'; $x`, `set -- git push origin main; "$@"`,
+    `x='git push origin main'; ${'${x}'}`, `"$EDITOR" && git push origin main`]) {
+    assert.ok(wholeRow(c), c);
+  }
+  // a code-arg with no expansion is not the dynamic clause (bash -c with a literal git command is caught by R28a's
+  // in-text listing instead, not here); a glob arg to a shell/eval does not count
+  assert.deepEqual(P('eval *.sh && git push origin t/12-x').opaque, [], 'a glob arg to eval is not code');
+});
+test('NI1: a runner whose code position takes only a glob, a script file, or a plain arg is not a row', () => {
+  // these ordinary test-then-push / test-then-commit chains must NOT produce a whole-command row (my round-4 regression)
+  for (const c of ['node --test tests/*.mjs && git push origin t/12-x',
+    'node --test tests/v6/node/*.test.mjs && git add -A && git commit -m x && git push origin t/12-x',
+    'python -m pytest -k "$K" && git push origin t/12-x', 'python3 summarize.py *.json && git push origin t/12-x',
+    'bash scripts/run.sh "$1" && git push origin t/12-x', 'npm run start -- --port "$PORT" && git push origin t/12-x',
+    'find . -name "$pat" -delete && git push origin t/12-x', 'sudo -u "$USER" true && git push origin t/12-x',
+    '"$REPO/scripts/test.sh" && git push origin t/12-x', 'bash -n "$f" && git commit -m x',
+    'ssh "$HOST" uptime && git push origin t/12-x',
+    // a non-shell runner's -c-looking flag (ssh -c cipher) is not a code flag: the shell-runner gate keeps it out
+    'ssh -c "$ALGO" "$HOST" uptime && git push origin t/12-x',
+    'K="run the git tests"; python -m pytest -k "$K" && git push origin t/12-x']) {
+    assert.deepEqual(P(c).opaque, [], c);
+  }
+  // the chained git/gh calls are still read exactly
+  assert.deepEqual(P('node --test tests/*.mjs && git push origin t/12-x').pushes,
+    [push({ remote: 'origin', refspecs: ['t/12-x'] })]);
+  assert.equal(P('node --test tests/v6/node/*.test.mjs && git add -A && git commit -m x && git push origin t/12-x').commits.length, 1);
+});
+test('R34a/NC5: a host-qualified GH_REPO and a combined -if flag reach the branch-merge path', () => {
+  const bm = (repo) => [{ pr: null, repo, auto: false, via: 'gh-api-branch-merge' }];
+  // the parser keeps GH_REPO as given; the hook applies the same host/URL normaliser as gh pr merge (fenced in the guard test)
+  assert.deepEqual(P(`GH_REPO=github.com/acme/api gh api -X POST 'repos/{owner}/{repo}/merges' -f base=main -f head=t/12-x`).merges,
+    bm('github.com/acme/api'));
+  assert.deepEqual(P(`GH_REPO=https://github.com/acme/api gh api -X POST 'repos/{owner}/{repo}/merges' -f base=main`).merges,
+    bm('https://github.com/acme/api'));
+  // R34a: a combined short cluster (-if = -i -f) is a field, so the write is detected
+  assert.deepEqual(P('gh api repos/acme/api/merges -if base=main -if head=t/12-x').merges, bm('acme/api'));
+  assert.deepEqual(P('gh api repos/acme/api/merges -fi base=main').merges, bm('acme/api'));
+  // -i alone (no field) is still a GET: not a merge
+  assert.deepEqual(P('gh api repos/acme/api/merges -i base=main').merges, []);
+});
