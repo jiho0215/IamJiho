@@ -129,6 +129,20 @@ run "$(bash_ "(echo 'git commit -m x') | bash" "$TMP")"; expect 2 "R28c/NC2: (ec
 run "$(bash_ "echo 'git commit -m x' | while read -r l; do eval \"\$l\"; done" "$TMP")"; expect 2 "R28c/NC2: | while read; eval from outside core"
 run "$(bash_ 'git log --oneline | python -c "print(1)" # committed' "$TMP")"; expect 0 "R33: committed is not the verb commit"
 run "$(bash_ 'git log | grep x')"; expect 0 "no-regression: git log | grep x"
+# --- fix round 4 (ruling R28d, NC3) ---
+run "$(bash_ "echo 'git commit -m x' > >(bash)")"; expect 2 "R28d/NC3: > >(bash) in core"
+run "$(bash_ "echo 'git commit -m x' > >(bash)" "$TMP")"; expect 2 "R28d/NC3: > >(bash) from outside core"
+run "$(bash_ "coproc bash; echo 'git commit -m x' >&\"\${COPROC[1]}\"" "$TMP")"; expect 2 "R28d/NC3: coproc from outside core"
+run "$(bash_ "x='git commit -m x'; eval \"\$x\"" "$TMP")"; expect 2 "R28d: eval \"\$x\" from outside core"
+run "$(bash_ "git commit -F - <<'EOF'
+fix: then commit and push
+EOF" "$TMP")"; expect 0 "no-regression: heredoc commit outside core"
+run "$(bash_ "git commit -m \"\$(cat <<'EOF'
+fix: run python, eval, then push
+EOF
+)\"" "$TMP")"; expect 0 "no-regression: \$(cat <<'EOF') commit outside core"
+run "$(bash_ 'cat file > out.txt')"; expect 0 "no-regression: cat file > out.txt in core"
+run "$(bash_ 'gh pr view 5 --json mergeStateStatus')"; expect 0 "no-regression: gh pr view in core"
 g -C "$CORE" reset -q; g -C "$CORE" checkout -q -- docs/plan/PLAN.md
 echo r2 >> "$CORE/README.md"; g -C "$CORE" add README.md
 run "$(bash_ 'git commit -m x')"; expect 0 "only README staged"

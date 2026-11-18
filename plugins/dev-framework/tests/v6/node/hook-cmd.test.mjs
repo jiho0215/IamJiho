@@ -365,7 +365,9 @@ test('R22/C3: gh api endpoints as full URLs are normalised before matching', () 
 });
 
 test('R12: dynamic command word with a guarded verb is opaque without a MENTION hit', () => {
-  assert.deepEqual(parseCommand('g=gh; $g pr merge 5 --repo acme/api').opaque, ['$g pr merge 5 --repo acme/api']);
+  // R12's own row is the segment; since R28d the dynamic command word also adds the whole-command row (gh in the text)
+  assert.deepEqual(parseCommand('g=gh; $g pr merge 5 --repo acme/api').opaque,
+    ['$g pr merge 5 --repo acme/api', 'g=gh; $g pr merge 5 --repo acme/api']);
   assert.deepEqual(parseCommand('$(echo gh) PR MERGE 5').opaque, ['$(echo gh) PR MERGE 5']);
   assert.deepEqual(parseCommand('$g status').opaque, []);
 });
@@ -564,4 +566,92 @@ test('R28c/NC2: a pipe or < anywhere, a runner / eval / source / dynamic word at
     "(cd sub && git status) | cat", 'git diff | head -5']) {
     assert.deepEqual(P(c).opaque, [], c);
   }
+});
+
+// ---- fix round 4 (rulings R28d, R34) ----
+const wholeRow = (c) => { const x = P(c); const at = x.opaque.indexOf(c); return at >= 0 && x.opaqueDirs[at].unknown === true; };
+test('R28d/NC3: output process substitution >( ... ) feeds the runner inside it', () => {
+  for (const c of ["echo 'git push origin main' > >(bash)", "echo 'git push origin main' >(bash)",
+    "echo 'git push origin main' 1> >(bash -s x)", "echo 'cd ~/api && git push origin main' > >(bash)",
+    "echo 'gh pr merge 5 --repo acme/api --squash' > >(bash)", "echo 'git commit -m x' > >(bash)",
+    "echo 'git checkout -b t/43-z' > >(bash)", "echo 'git push -q origin main' > >(bash)"]) {
+    assert.ok(wholeRow(c), c);
+  }
+  assert.deepEqual(P('npm test > >(tee log.txt)').opaque, [], 'no git text');
+  assert.deepEqual(P('git status > >(tee log.txt)').opaque, [], 'no runner');
+});
+test('R28d/NC3: coproc is a feed and a runner', () => {
+  for (const c of [`coproc bash; echo 'git push origin main' >&"\${COPROC[1]}"`,
+    `coproc bash; echo 'cd ~/api && git push origin main' >&"\${COPROC[1]}"`,
+    `coproc bash; echo 'gh pr merge 5 --repo acme/api --squash' >&"\${COPROC[1]}"`,
+    `coproc bash; echo 'git commit -m x' >&"\${COPROC[1]}"`,
+    `coproc S { bash; }; echo 'git push origin main' >&"\${S[1]}"`,
+    `coproc cat; echo 'git push origin main' >&"\${COPROC[1]}"`,
+    `coproc bash; echo 'git push -q origin main' >&"\${COPROC[1]}"; exec {COPROC[1]}>&-; wait`]) {
+    assert.ok(wholeRow(c), c);
+  }
+  assert.deepEqual(P("echo 'coproc' && git status").opaque, [], 'a quoted coproc is data');
+});
+test('R28d: a runner given a dynamic argument, with git/gh in the text: one whole-command row', () => {
+  for (const c of [`x='git push origin main'; eval "$x"`, `x='cd ~/api && git push origin main'; eval "$x"`,
+    `x='git push origin main'; bash -c "$x"`, `x='git push origin main'; "$SHELL" -c "$x"`,
+    `x='git push origin main'; $x`, `x='gh pr merge 5 --repo acme/api --squash'; eval "$x"`,
+    `x='git commit -m x'; eval "$x"`, `x='git checkout -b t/43-z'; eval "$x"`,
+    `x='git push origin main'; source /dev/fd/3 3<<<"$x"`, `x='git push origin main'; python3 -c "$x"`,
+    `f=git; eval "$f push origin main"`]) {
+    assert.ok(wholeRow(c), c);
+  }
+  // no git/gh in the text, or no dynamic argument, or a bare {} (literal to bash): no row
+  for (const c of [`x='echo hi'; eval "$x"`, 'eval "echo hi"; git status', "bash -c 'echo hi' && git status",
+    "find . -name '*.orig' -exec rm {} \; && git push origin t/12-x"]) {
+    assert.deepEqual(D(c).filter((d) => d.raw === c), [], c);
+  }
+  assert.deepEqual(P("find . -name '*.orig' -exec rm {} \; && git push origin t/12-x").pushes,
+    [push({ remote: 'origin', refspecs: ['t/12-x'] })]);
+});
+test('R34: the branch-merge APIs are merges (REST repos/<o>/<n>/merges written to, GraphQL mergeBranch)', () => {
+  const bm = (repo) => [{ pr: null, repo, auto: false, via: 'gh-api-branch-merge' }];
+  for (const c of ['gh api -X POST repos/acme/api/merges -f base=main -f head=t/12-x',
+    'gh api repos/acme/api/merges -f base=main -f head=t/12-x', 'gh api repos/acme/api/merges -fbase=main',
+    'gh api --method=post https://api.github.com/repos/acme/api/merges -f base=main -f head=t/12-x',
+    'gh api -XPOST /repos/acme/api/merges --input body.json', 'gh api -X PUT repos/acme/api/merges/ -F base=main',
+    "gh api --method PATCH 'http://ghe.example/api/v3/repos/acme/api/merges?x=1' --raw-field base=main",
+    'gh api -X POST REPOS/acme/api/MERGES -f base=main', 'gh api repos/acme/api/merges $ARGS']) {
+    assert.deepEqual(P(c).merges, bm('acme/api'), c);
+  }
+  // an unquoted ? globs: the endpoint is dynamic, so the call is an opaque row naming the endpoint
+  assert.equal(P('gh api -X POST repos/acme/api/merges?x=1 -f base=main').opaque.length, 1);
+  assert.deepEqual(P('gh api -X POST repos/acme/core/merges -f base=main').merges, bm('acme/core'));
+  assert.deepEqual(P("gh api -X POST 'repos/{owner}/{repo}/merges' -f base=main").merges, bm(null), 'placeholder, no repo');
+  assert.deepEqual(P("gh -R acme/api api -X POST 'repos/{owner}/{repo}/merges' -f base=main").merges, bm('acme/api'));
+  assert.deepEqual(P(`gh api graphql -f query='mutation{mergeBranch(input:{repositoryId:"x",base:"main",head:"t"}){clientMutationId}}'`).merges,
+    bm(null), 'GraphQL mergeBranch: the repo is a node id');
+  const dynm = P('gh api -X "$M" repos/acme/api/merges');
+  assert.deepEqual(dynm.merges, bm('acme/api'), 'an unknown method may be a write');
+  assert.deepEqual(P('gh api -X POST repos/acme/api/merges/x -f base=main').opaque,
+    ['gh api -X POST repos/acme/api/merges/x -f base=main'], 'names merges, does not read exactly');
+  // reads are not merges
+  for (const c of ['gh api repos/acme/api/merges', 'gh api -X GET repos/acme/api/merges -f per_page=1',
+    'gh api repos/acme/api/pulls/5', 'gh api graphql -f query="{viewer{login}}"', 'git log --merges']) {
+    const x = P(c);
+    assert.deepEqual([x.merges, x.opaque], [[], []], c);
+  }
+  // an opaque form names the endpoint, so the merge gate's whole-word regex can see it
+  assert.deepEqual(U("bash -c 'gh api -X POST repos/acme/api/merges -f base=main -f head=x'"), [true]);
+  // MENTION names the endpoint and the mutation: an unreadable call (broken quote, dynamic endpoint) is still listed
+  assert.deepEqual(P('gh api -X POST repos/acme/api/merges -f "base=main').opaque.length, 1, 'broken segment');
+  assert.deepEqual(P(`gh api "$E" -f query='mutation{mergeBranch(input:{}){x}}'`).opaque.length, 1, 'dynamic endpoint');
+});
+test('fix round 4 no-regressions: heredoc commits, redirects, gh pr view, a claimed push', () => {
+  const heredoc = "git commit -F - <<'EOF'\nfix: then push and merge; eval and bash and python\nEOF";
+  const subst = "git commit -m \"$(cat <<'EOF'\nfix: run python, eval, then push\nEOF\n)\"";
+  for (const c of [heredoc, subst, `${heredoc}\ngit push origin t/12-x`, `git add -A && ${subst} && git push origin t/12-x`]) {
+    const x = P(c);
+    assert.deepEqual(x.opaque, [], c);
+    assert.equal(x.commits.length, 1, c);
+  }
+  assert.deepEqual(P('cat file > out.txt').opaque, []);
+  assert.deepEqual(P('gh pr view 5 --json mergeStateStatus'), { ...r({}), opaqueDirs: [], aliases: [] });
+  assert.deepEqual(P('git push origin t/12-x').pushes, [push({ remote: 'origin', refspecs: ['t/12-x'] })]);
+  assert.deepEqual(P('git push origin t/12-x').opaque, []);
 });

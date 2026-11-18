@@ -10,7 +10,9 @@
 # reason leads the block message. Network bounds: lease DEVFW_HOOK_NET_TIMEOUT (20s), gate DEVFW_HOOK_GATE_TIMEOUT
 # (100s; the plan's inner 100 < hook 120). R29a: the pre-filter takes `git` too (a git alias or injected config can
 # run a merge with no merge word in the text); a git/gh shell (`!`) alias step counts when its text names gh, merge
-# or pulls/, or when the dir it was looked up in is managed.
+# or pulls/, or when the dir it was looked up in is managed. R34: a branch-merge API call (a write to
+# repos/<o>/<n>/merges, GraphQL mergeBranch) blocks when its repo is managed or cannot be read: such merges go
+# through a PR.
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_v6-hook.sh"
 hook_init merge-gate-hook 115
 [ -n "$HOOK_CORE" ] || exit 0
@@ -29,8 +31,8 @@ fi
 NOPAQUE=0; NUNRES=0
 if [ "$PARSER_OK" -eq 1 ]; then
   NMERGE=$(jq -r '.merges | length' <<<"$PARSED" | tr -d '\r')
-  # the GraphQL merge mutations are words of their own (R33 matches whole words)
-  hook_opaque_rows 'merge|pulls/|mergePullRequest|enablePullRequestAutoMerge' 'merge|pulls/' '\bgh\b|merge|pulls/'
+  # the GraphQL merge mutations are words of their own (R33 matches whole words); so is the branch-merge API (R34)
+  hook_opaque_rows 'merge|pulls/|mergePullRequest|enablePullRequestAutoMerge|mergeBranch|repos/\S*/merges' 'merge|pulls/' '\bgh\b|merge|pulls/'
   for row in "${HOOK_OPQ_ROWS[@]}"; do
     case "$row" in
       2*) NUNRES=$((NUNRES + 1)) ;;
@@ -63,6 +65,13 @@ while IFS= read -r m; do
   [ -n "$m" ] || continue
   pr=$(jq -r '.pr' <<<"$m" | tr -d '\r'); repo=$(jq -r '.repo // empty' <<<"$m" | tr -d '\r')
   auto=$(jq -r '.auto' <<<"$m" | tr -d '\r')
+  if [ "$(jq -r '.via' <<<"$m" | tr -d '\r')" = gh-api-branch-merge ]; then
+    # R34: a branch-merge API (REST repos/<o>/<n>/merges, GraphQL mergeBranch) moves a branch with no PR and no gate
+    BRANCH_MSG="branch merges into a managed repo go through a PR: gh pr create, then gh pr merge <n> --repo <owner/name> --squash"
+    [ -n "$repo" ] || hook_block "$BRANCH_MSG" "(this branch merge names no repo the hook can read, so it is treated as managed)"
+    while IFS= read -r r; do [ -n "$r" ] && [ "${r,,}" = "${repo,,}" ] && hook_block "$BRANCH_MSG" "(repo: $r)"; done <<<"$MANAGED"
+    continue
+  fi
   [ "$pr" != null ] || hook_block "give the PR number: gh pr merge <n> --repo <owner/name>"
   [ "$auto" != true ] || hook_block "never use gh pr merge --auto (it merges at once here)"
   [ -n "$repo" ] || hook_block "pass --repo <owner/name>; the repo is not inferred"

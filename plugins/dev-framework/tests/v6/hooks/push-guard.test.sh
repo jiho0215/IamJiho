@@ -183,6 +183,36 @@ run "$W" 'gh pr view 5 --json mergeStateStatus | python -c "import sys"'; expect
 run "$W" 'git log --merges | python summarize.py'; expect 0 "no-regression: git log --merges | python"
 run "$W" 'git log | grep x'; expect 0 "no-regression: git log | grep x"
 run "$W" "pushd sub 2>/dev/null; echo 'git status' | bash"; expect 0 "R33: pushd is not the verb push"
+# --- fix round 4 (ruling R28d, NC3): >( ... ) and coproc feed a shell; a runner given a dynamic argument ---
+run "$W" "echo 'git push origin main' > >(bash)"; expect 2 "R28d/NC3: > >(bash)"
+says 'cannot read this push command exactly' "R28d text"
+run "$W" "echo 'git push origin main' >(bash)"; expect 2 "R28d/NC3: >(bash) as an argument"
+run "$W" "echo 'git push origin main' 1> >(bash -s x)"; expect 2 "R28d/NC3: 1> >(bash -s x)"
+run "$U" "echo 'cd ~/api && git push origin main' > >(bash)"; expect 2 "R28d/NC3: > >(bash) from an unmanaged cwd"
+run "$W" "coproc bash; echo 'git push origin main' >&\"\${COPROC[1]}\""; expect 2 "R28d/NC3: coproc bash"
+run "$U" "coproc bash; echo 'cd ~/api && git push origin main' >&\"\${COPROC[1]}\""; expect 2 "R28d/NC3: coproc from an unmanaged cwd"
+run "$W" "coproc S { bash; }; echo 'git push origin main' >&\"\${S[1]}\""; expect 2 "R28d/NC3: named coproc"
+run "$W" "echo 'git push -q origin main' > >(bash)"; expect 2 "R28d/NC3: real-effect form 1"
+run "$W" "coproc bash; echo 'git push -q origin main' >&\"\${COPROC[1]}\"; exec {COPROC[1]}>&-; wait"; expect 2 "R28d/NC3: real-effect form 2"
+run "$W" "x='git push origin main'; eval \"\$x\""; expect 2 "R28d: eval \"\$x\""
+run "$U" "x='cd ~/api && git push origin main'; eval \"\$x\""; expect 2 "R28d: eval \"\$x\" from an unmanaged cwd"
+run "$W" "x='git push origin main'; bash -c \"\$x\""; expect 2 "R28d: bash -c \"\$x\""
+run "$W" "x='git push origin main'; \$x"; expect 2 "R28d: \$x as the command word"
+run "$W" "git commit -F - <<'EOF'
+fix: then push and merge; eval and bash and python
+EOF"; expect 0 "no-regression: heredoc commit naming push"
+run "$W" "git commit -m \"\$(cat <<'EOF'
+fix: run python, eval, then push
+EOF
+)\""; expect 0 "no-regression: \$(cat <<'EOF') commit naming push"
+run "$W" "git add -A && git commit -m \"\$(cat <<'EOF'
+fix: run python, eval, then push
+EOF
+)\" && git push origin t/12-x"; expect 0 "no-regression: heredoc commit then a claimed push"
+run "$W" 'cat file > out.txt'; expect 0 "no-regression: cat file > out.txt"
+run "$W" 'gh pr view 5 --json mergeStateStatus'; expect 0 "no-regression: gh pr view --json mergeStateStatus"
+run "$W" 'git push origin t/12-x'; expect 0 "no-regression: claimed push"
+run "$W" "find . -name '*.orig' -exec rm {} \\; && git push origin t/12-x"; expect 0 "R28d: a bare {} is not a dynamic argument"
 # C2 / R21: destinations as git resolves them (W is on main)
 run "$W" 'git push origin @'; expect 2 "C2: @ is the current branch (main)"
 says 'merge to main goes through the merge gate' "@ text"

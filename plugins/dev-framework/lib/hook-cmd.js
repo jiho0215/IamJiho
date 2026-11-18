@@ -44,11 +44,16 @@
 //   its own, whatever its text says.
 // - R31: a relative `cd <dir>` / `pushd <dir>` (not ., .., ./x, ../x) while CDPATH is set (env prefix, export, or
 //   opts.cdpath = the hook's own environment) makes the dir unknown.
+// - R28c / R28d: see parseCommand: a feed (|, <, <( ), >( ), coproc) plus a runner, or a runner given a dynamic
+//   argument, plus git/gh anywhere in the text, makes the whole command one row with an unknown dir.
+// - R34: a write to repos/<o>/<n>/merges and GraphQL mergeBranch merge a branch with no PR: a `merges` entry with
+//   pr null, via 'gh-api-branch-merge', repo null when it cannot be read.
 
 const MENTION = new RegExp([
   String.raw`\bgh\b[\s\S]*\bpr\b[\s\S]*\bmerge\b`,
   String.raw`pulls/\S*/merge`,
-  String.raw`mergePullRequest|enablePullRequestAutoMerge`,
+  String.raw`mergePullRequest|enablePullRequestAutoMerge|mergeBranch`,
+  String.raw`repos/\S*/merges\b`,  // R34: the branch-merge endpoint
   String.raw`\bgit\b[\s\S]*\b(push|commit|branch)\b`,
   String.raw`worktree\s+add`,
   String.raw`checkout\s+-[bB]`,
@@ -95,6 +100,9 @@ const CODE_RUNNERS = new Set([...EXECS, 'script', 'python', 'python3', 'py', 'pe
   'lua', 'osascript', 'busybox', 'nohup', 'setsid', 'sudo', 'doas', 'runuser', 'chroot', 'unbuffer', 'expect', 'tclsh',
   'wsl', 'start']);
 const isCodeRunner = (name) => CODE_RUNNERS.has(name) || /^(python|pypy)[0-9.]*$/.test(name);
+// R28d: an argument whose value is only known when the command runs ("$x", $(...), a glob). A bare {} is literal to
+// bash (find -exec ... {} \;), though the scanner marks every brace word dynamic.
+const isDynArg = (w) => w.dyn && w.text !== '{}';
 // R28: git or gh named as a word (git.exe too; .git, github, git-lfs and a path component like tools/git/x are not it).
 const GIT_WORD = /(^|[^\w.-])(git|gh)(\.exe)?(?![\w/-])/i;
 // R28a (I3): `git [global options] <sub>` / `gh [-R x] <group>` written inside an interpreter string.
@@ -243,7 +251,7 @@ function scanAt(s, start, mode, opts = {}) {
     }
     if (c === '<' || c === '>') {
       if (s[i + 1] === '(') {  // process substitution: it runs
-        if (c === '<') fed = true;  // R28c: <( ... ) feeds a command too
+        fed = true;  // R28c / R28d: <( ... ) feeds a command; so does >( ... ) (its body reads the outer output)
         const end = sub(i + 2); const ww = w();
         ww.text += s.slice(i, end); ww.dyn = true; ww.udyn = true; i = end; continue;
       }
@@ -549,7 +557,7 @@ function parseGh(allArgs, st, env, out, raw) {
     if (t.startsWith('-')) { flags.add(t.split('=')[0]); if (!t.includes('=') && argSet.has(t)) j++; continue; }
     pos.push(a);
   }
-  if (kind === 'api') return ghApi(allArgs, pos, method, methodDyn, repo, repoDyn, st, out);
+  if (kind === 'api') return ghApi(allArgs, pos, flags, method, methodDyn, repo, repoDyn, st, out);
   if (allArgs.some((a) => a.udyn)) return 'opaque';
   if (flags.has('--disable-auto')) return null;
   if (st.cdOpaque || repoDyn) return 'opaque';
@@ -566,14 +574,29 @@ function parseGh(allArgs, st, env, out, raw) {
   return null;
 }
 
-function ghApi(args, pos, method, methodDyn, repo, repoDyn, st, out) {
+function ghApi(args, pos, flags, method, methodDyn, repo, repoDyn, st, out) {
   if (!pos.length) return null;
   if (pos[0].dyn) return 'maybe';
   // R22: gh takes a full URL as the endpoint too; drop scheme+host (any host), GHE's api/v3/, and a leading /.
   const endpoint = pos[0].text.replace(/^[A-Za-z][A-Za-z0-9+.-]*:\/\/[^/]*/, '').replace(/^\/+/, '')
     .replace(/^api\/v3\//, '');
+  const branchMerge = (r) => out.merges.push({ pr: null, repo: r, auto: false, via: 'gh-api-branch-merge' });
   if (endpoint === 'graphql' || endpoint === 'api/graphql') {
+    // R34: mergeBranch merges one branch into another with no PR; its repo is a node id the hook cannot read
+    if (args.some((a) => /mergeBranch/.test(a.text))) branchMerge(null);
     return args.some((a) => /mergePullRequest|enablePullRequestAutoMerge/.test(a.text)) ? 'opaque' : null;
+  }
+  // R34: a write to repos/<o>/<n>/merges merges a branch with no PR. gh api sends GET unless -X names another method
+  // or a field / --input is given (then POST); an unknown method or an unquoted dynamic word may be a write.
+  const path = endpoint.replace(/[?#].*$/, '');
+  if (/(^|\/)merges(\/|$)/i.test(path)) {
+    const fields = [...flags].some((f) => /^(-[fF]|--raw-field|--field|--input)/.test(f));
+    const write = methodDyn || args.some((a) => a.udyn) || (method !== null ? !/^(GET|HEAD)$/.test(method) : fields);
+    if (!write) return null;
+    const bm = /^repos\/([^/]+)\/([^/]+)\/merges\/?$/i.exec(path);
+    if (!bm) return 'opaque';  // names the merges endpoint yet does not read exactly
+    branchMerge(bm[1] === '{owner}' || bm[2] === '{repo}' ? (repoDyn ? null : repo) : `${bm[1]}/${bm[2]}`);
+    return null;
   }
   const m = /^repos\/([^/]+)\/([^/]+)\/pulls\/(\d+)\/merge\/?$/.exec(endpoint);
   if (!m) {
@@ -655,8 +678,12 @@ function segment(it, st, out, ctx) {
   // R28 / R28a: code that may run git/gh from any dir; its git/gh aliases are resolved too (I3)
   const listCode = (raw, text) => { aliasesInText(text, raw, out); return list(true, false, raw); };
   const opaque = () => (mentions ? list() : null);
-  if (it.broken) return opaque();
   const ws = it.words;
+  // R28d: `coproc` starts a command that reads what is later written to ${NAME[1]}: a feed and a runner at once
+  let k0 = 0;
+  while (k0 < ws.length && !ws[k0].quoted && KEYWORDS.has(ws[k0].text)) k0++;
+  if (ws[k0] && !ws[k0].quoted && ws[k0].text === 'coproc') { out._fed = true; out._runner = true; }
+  if (it.broken) return opaque();
   let k = 0, wrapped = false;
   for (;;) {
     while (k < ws.length && !ws[k].quoted && KEYWORDS.has(ws[k].text)) k++;  // R27a: keywords as written
@@ -668,6 +695,9 @@ function segment(it, st, out, ctx) {
     const t = k < ws.length ? wordName(ws[k].text) : '';
     if (ws[k] && ws[k].dyn) {
       const rest = ws.slice(k + 1);
+      // R28d: a dynamic command word is itself a runner given dynamic code ("$SHELL" -c "$x", and $x alone, which
+      // word-splits x='git push origin main' into that very command)
+      out._dynRunner = true;
       // R28a (I2): a dynamic command word may be any code runner ("$SHELL" -c '...'): mentioning git/gh, dir unknown
       if (rest.some((w) => GIT_WORD.test(w.text))) return listCode(it.raw, rest.map((w) => w.text).join(' '));
       out._runner = true;  // R28c: a dynamic command word may be a code runner fed on stdin (whole-command pass)
@@ -741,6 +771,7 @@ function segment(it, st, out, ctx) {
     const ri = all.findIndex((w) => !w.dyn && isCodeRunner(wordName(w.text)));
     if (ri >= 0) {
       out._runner = true;  // R28c: seen at any depth; the whole-command pass in parseCommand decides
+      if (all.slice(ri + 1).some(isDynArg)) out._dynRunner = true;  // R28d: eval "$x", bash -c "$x", source "$f"
       if (args.some((a) => GIT_WORD.test(a.text))) return listCode(it.raw, args.map((a) => a.text).join(' '));
       if (ri === 0) return EXECS.has(name) ? opaque() : null;
     }
@@ -794,9 +825,11 @@ function parseCommand(cmd, opts = {}) {
   // R28c (NC1, NC2): a pipe or a < redirection (heredoc, here-string, file, process substitution) anywhere, a code
   // runner / eval / source / . / dynamic command word at any depth, and git/gh in the text: some runner may read its
   // code from that stdin, inside a subshell, loop or if as well, so the whole command is one row with an unknown dir.
-  // No nesting or argument tracking (rulings R28b, R28c).
-  const fedRunner = out._fed && out._runner && GIT_WORD.test(text);
-  delete out._fed; delete out._runner;
+  // No nesting or argument tracking (rulings R28b, R28c). R28d: >( ... ) and coproc feed too (coproc also runs), and
+  // a runner (eval, source, ., a shell, a dynamic command word) given a dynamic argument ("$x") may run the git text
+  // stored earlier in the same command (x='git push origin main'; eval "$x"): the same one row.
+  const fedRunner = ((out._fed && out._runner) || out._dynRunner) && GIT_WORD.test(text);
+  delete out._fed; delete out._runner; delete out._dynRunner;
   if (fedRunner) {
     const at = out.opaque.indexOf(text);  // a one-segment command may already be a row with this text: make it unknown
     if (at >= 0) out.opaqueDirs[at] = { ...out.opaqueDirs[at], unknown: true };

@@ -91,6 +91,21 @@ git -C "$W" config --unset alias.nb
 printf '[alias]\n\tx = !git checkout -b t/43-z\n' > "$TMP/evil"
 run "$W" "GIT_CONFIG_GLOBAL='$TMP/evil' git x"; expect 2 "M4: an any row is not dropped by the t/ filter"
 run "$W" "GIT_CONFIG_GLOBAL='$TMP/evil' git status"; expect 0 "no-regression: injected config, harmless builtin"
+# --- fix round 4 (ruling R28d, NC3) ---
+run "$W" "echo 'git checkout -b t/43-z' > >(bash)"; expect 2 "R28d/NC3: > >(bash)"
+says 'cannot read this branch command exactly' "R28d text"
+run "$U" "echo 'cd ~/api && git switch -c t/43-z' > >(bash)"; expect 2 "R28d/NC3: > >(bash) from an unmanaged cwd"
+run "$W" "coproc bash; echo 'git checkout -b t/43-z' >&\"\${COPROC[1]}\""; expect 2 "R28d/NC3: coproc bash"
+run "$W" "x='git checkout -b t/43-z'; eval \"\$x\""; expect 2 "R28d: eval \"\$x\""
+run "$W" "git commit -F - <<'EOF'
+fix: checkout -b and push
+EOF"; expect 0 "no-regression: heredoc commit"
+run "$W" "git commit -m \"\$(cat <<'EOF'
+fix: run python, eval, then push
+EOF
+)\""; expect 0 "no-regression: \$(cat <<'EOF') commit"
+run "$W" 'cat file > out.txt'; expect 0 "no-regression: cat file > out.txt"
+run "$W" 'gh pr view 5 --json mergeStateStatus'; expect 0 "no-regression: gh pr view --json mergeStateStatus"
 
 run "$W" 'git worktree add ../wt -b t/41-x origin/t/41-x'; expect 0 "claimed worktree add"
 run "$W" 'git checkout -b t/41-x origin/t/41-x'; expect 0 "claimed checkout -b"
