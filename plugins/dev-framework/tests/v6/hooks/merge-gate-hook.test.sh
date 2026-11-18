@@ -173,5 +173,11 @@ runin "$TMP/UU" 'git lg'; expect 0 "R29a: same, from its own unmanaged cwd"
 git -C "$TMP/M" config --unset alias.m; git -C "$TMP/M" config --unset alias.lg
 run 'git status'; expect 0 "no-regression: git status through the widened pre-filter"
 run 'git log --oneline -3'; expect 0 "no-regression: git log"
+# --- fix round 2 (ruling R28b, NC1) ---
+run "echo 'gh pr merge 5 --repo acme/api --squash' | bash -s x"; expect 2 "R28b/NC1: | bash -s x"
+grep -q 'cannot read this merge command exactly' <<<"$ERR" || fail "R28b text: $ERR"
+run "echo 'gh pr merge 5 --repo acme/api --squash' | bash /dev/stdin"; expect 2 "R28b/NC1: | bash /dev/stdin"
+run 'git log | python summarize.py'; expect 0 "no-regression: git log | python summarize.py"
+run 'npm test | tail'; expect 0 "no-regression: npm test | tail"
 unset DEVFW_CORE_DIR; run 'gh pr merge 1 --repo acme/api'; expect 0 "DEVFW_CORE_DIR unset"
 echo "PASS: merge-gate-hook"

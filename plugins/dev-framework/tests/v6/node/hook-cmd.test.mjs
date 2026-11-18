@@ -505,10 +505,26 @@ test('R28a/I1: a shell or interpreter fed code on stdin', () => {
     assert.equal(x.opaqueDirs[0].unknown, true, c);
     assert.equal(x.opaque[0], c, `the row text is the whole command: ${c}`);
   }
-  for (const c of ['git log | python script.py', 'git diff | python -c "import sys"', 'echo hi | bash',
-    'git status | sort', "cat <<'EOF' | bash\necho hi\nEOF"]) {
+  for (const c of ['echo hi | bash', 'git status | sort', "cat <<'EOF' | bash\necho hi\nEOF", 'npm test | tail',
+    'npm test 2>&1 | tail -5', 'git diff | head -5', 'git log --oneline | grep merge']) {
     assert.deepEqual(P(c).opaque, [], c);
   }
+});
+test('R28b/NC1: a code runner or dynamic word fed on stdin, whatever its arguments, when the text mentions git/gh', () => {
+  for (const c of ["echo 'git push origin main' | bash -s x", "echo 'git push origin main' | sh -s -- x",
+    "echo 'git push origin main' | bash /dev/stdin", "echo 'git push origin main' | python3 /dev/stdin",
+    "echo 'cd ~/api && git push origin main' | bash -s x", "bash -s x <<< 'cd ~/api && git push origin main'",
+    "source /dev/stdin <<< 'cd ~/api && git push origin main'", ". /dev/fd/0 <<< 'git push origin main'",
+    "echo 'gh pr merge 5 --repo acme/api --squash' | bash -s x", "echo 'git commit -m x' | bash -s x",
+    `echo 'git push origin main' | "$SHELL"`, "echo 'git push origin main' | stdbuf -oL bash -s x"]) {
+    const x = P(c);
+    assert.equal(x.opaque.length, 1, c);
+    assert.equal(x.opaqueDirs[0].unknown, true, c);
+    assert.equal(x.opaque[0], c, `the row text is the whole command: ${c}`);
+  }
+  // R28b's accepted cost: a runner fed data from git is a row too; it blocks only when the text names a guard's verb
+  assert.deepEqual(D('git log | python summarize.py').map((d) => d.unknown), [true]);
+  assert.equal(P('git log | python summarize.py').opaque[0].includes('push'), false);
 });
 test('R28a/I3: a git/gh alias named inside an interpreter string is an alias candidate (dir unknown)', () => {
   const a = (c) => P(c).aliases.map(({ tool, name, dir, unknown }) => ({ tool, name, dir, unknown }));

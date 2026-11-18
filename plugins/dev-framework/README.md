@@ -272,9 +272,10 @@ Each item is a path on which a rule above does NOT block. They are accepted resi
    R28, R28a): a segment where ANY word is a code runner (`eval`, `xargs`, `sh`/`bash -c`, `script`, `python`,
    `perl`, `node`, `sudo`, `nohup`, `wsl`, ... — the `CODE_RUNNERS` set; so `stdbuf -oL bash -c '...'` and
    `winpty python -c '...'` too) and any word mentions `git`/`gh`; a dynamic command word (`"$SHELL" -c '...'`) whose
-   arguments mention them; and a shell or interpreter reading its code from stdin (a pipe, heredoc, here-string or
-   `< file` into it, with `-` or no script argument) when the whole command text mentions them — that row's text is
-   the whole command), else a literal `-C`/`--chdir` in the segment, else the cd dir. A `git <x>` / `gh <x>` written
+   arguments mention them; and a code runner (`source` and `.` included) or dynamic command word fed on stdin (a
+   pipe, heredoc, here-string or `< file` into it, whatever its arguments: `-s x`, `/dev/stdin`, ...; ruling R28b)
+   when the whole command text mentions them — that row's text is the whole command, so `git log | python
+   summarize.py` is a row too, harmless unless the text names a guard's verb), else a literal `-C`/`--chdir` in the segment, else the cd dir. A `git <x>` / `gh <x>` written
    inside such code, where `<x>` is not a command, is looked up as an alias (item 20) from the hook cwd. All Bash
    guards share one rule (`_v6-hook.sh` `hook_opaque_rows` / `hook_opaque_hit`): an unreadable guarded segment is in
    scope when its dir is unknown, when its literal dir or the hook cwd is managed / in core, or when the text names a

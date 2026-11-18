@@ -97,8 +97,6 @@ const CODE_RUNNERS = new Set([...EXECS, 'script', 'python', 'python3', 'py', 'pe
 const isCodeRunner = (name) => CODE_RUNNERS.has(name) || /^(python|pypy)[0-9.]*$/.test(name);
 // R28: git or gh named as a word (git.exe too; .git, github, git-lfs and a path component like tools/git/x are not it).
 const GIT_WORD = /(^|[^\w.-])(git|gh)(\.exe)?(?![\w/-])/i;
-// R28a: runners that take code on stdin when given `-` or no script argument (a pipe, heredoc or < into them).
-const STDIN_RUNNERS = /^(sh|bash|zsh|dash|ksh|fish|pwsh|powershell|cmd|ssh|su|script|python[0-9.]*|py|pypy[0-9.]*|perl|ruby|node|deno|bun|php|lua|osascript|busybox|expect|tclsh|wsl)$/;
 // R28a (I3): `git [global options] <sub>` / `gh [-R x] <group>` written inside an interpreter string.
 const GIT_IN_TEXT = /(?:^|[^\w.\/-])git(?:\.exe)?((?:\s+-[cC]\s+\S+|\s+--?[A-Za-z][\w-]*(?:=\S*)?)*)\s+([A-Za-z][\w-]*)/gi;
 const GH_IN_TEXT = /(?:^|[^\w.\/-])gh(?:\.exe)?((?:\s+(?:-R|--repo)\s+\S+)*)\s+([A-Za-z][\w-]*)/gi;
@@ -669,6 +667,8 @@ function segment(it, st, out, ctx) {
       const rest = ws.slice(k + 1);
       // R28a (I2): a dynamic command word may be any code runner ("$SHELL" -c '...'): mentioning git/gh, dir unknown
       if (rest.some((w) => GIT_WORD.test(w.text))) return listCode(it.raw, rest.map((w) => w.text).join(' '));
+      // R28b: a dynamic command word fed on stdin (echo '...' | "$SHELL") may run what the command text says
+      if ((ctx.piped || it.stdin) && GIT_WORD.test(ctx.text)) return listCode(ctx.text, ctx.text);
       // R12: a dynamic command word (g=gh; $g pr merge) hides the program: listed whenever a later word is a
       // verb we guard, even with no MENTION hit.
       if (rest.some((w) => /^(merge|push|commit|checkout|switch|worktree|branch)$/i.test(w.text))) return list();
@@ -739,12 +739,10 @@ function segment(it, st, out, ctx) {
     const ri = all.findIndex((w) => !w.dyn && isCodeRunner(wordName(w.text)));
     if (ri >= 0) {
       if (args.some((a) => GIT_WORD.test(a.text))) return listCode(it.raw, args.map((a) => a.text).join(' '));
-      // R28a (I1): a shell / interpreter reading its code from stdin (pipe, heredoc, here-string, < file) with `-` or
-      // no script argument: the code is elsewhere in the command, so the whole command text is what it may run.
-      const rargs = all.slice(ri + 1);
-      const fromStdin = (ctx.piped || it.stdin) && STDIN_RUNNERS.test(wordName(all[ri].text))
-        && (rargs.some((a) => a.text === '-') || !rargs.some((a) => !a.text.startsWith('-')));
-      if (fromStdin && GIT_WORD.test(ctx.text)) return listCode(ctx.text, ctx.text);
+      // R28b (I1, NC1): a code runner fed on stdin (piped into, or a heredoc / here-string / < file) may read its code
+      // from there whatever its arguments say (-s x, /dev/stdin, /dev/fd/0, ...: no argument-shape test): when the
+      // whole command text mentions git/gh, that text is what it may run.
+      if ((ctx.piped || it.stdin) && GIT_WORD.test(ctx.text)) return listCode(ctx.text, ctx.text);
       if (ri === 0) return EXECS.has(name) ? opaque() : null;
     }
     // R27a: a wrapper whose target is cd/pushd/popd (stdbuf cd x, COMMAND cd x): the shell's dir is not changed,

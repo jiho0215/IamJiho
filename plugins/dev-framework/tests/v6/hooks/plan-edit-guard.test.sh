@@ -117,6 +117,12 @@ run "$(bash_ "stdbuf -oL bash -c 'git commit -m x'")"; expect 2 "R28a/C2: stdbuf
 run "$(bash_ "stdbuf -oL bash -c 'git commit -m x'" "$TMP")"; expect 2 "R28a/C2: from outside core (dir unknown)"
 run "$(bash_ "echo 'git commit -m x' | bash" "$TMP")"; expect 2 "R28a/I1: echo | bash from outside core"
 run "$(bash_ "cd '$TMP' && git commit -m x")"; expect 0 "no-regression: a real cd out of core"
+# --- fix round 2 (ruling R28b, NC1) ---
+run "$(bash_ "echo 'git commit -m x' | bash -s x")"; expect 2 "R28b/NC1: | bash -s x in core"
+run "$(bash_ "echo 'git commit -m x' | bash -s x" "$TMP")"; expect 2 "R28b/NC1: | bash -s x from outside core"
+run "$(bash_ "source /dev/stdin <<< 'git commit -m x'" "$TMP")"; expect 2 "R28b/NC1: source /dev/stdin from outside core"
+run "$(bash_ 'git log | python summarize.py')"; expect 0 "no-regression: git log | python summarize.py"
+run "$(bash_ 'npm test | tail')"; expect 0 "no-regression: npm test | tail"
 g -C "$CORE" reset -q; g -C "$CORE" checkout -q -- docs/plan/PLAN.md
 echo r2 >> "$CORE/README.md"; g -C "$CORE" add README.md
 run "$(bash_ 'git commit -m x')"; expect 0 "only README staged"

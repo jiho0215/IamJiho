@@ -154,6 +154,18 @@ git -C "$W" config --unset alias.p
 run "$U" "CDPATH='$TMP'; cd W && git push origin main"; expect 2 "M1: CDPATH=...; cd"
 # M2: a path component named git is not git
 run "$U" 'python tools/git/push_stats.py'; expect 0 "M2: tools/git/ is not the word git"
+# --- fix round 2 (ruling R28b, NC1): fed on stdin, whatever the arguments ---
+run "$W" "echo 'git push origin main' | bash -s x"; expect 2 "R28b/NC1: | bash -s x"
+says 'cannot read this push command exactly' "R28b text"
+run "$W" "echo 'git push origin main' | sh -s -- x"; expect 2 "R28b/NC1: | sh -s -- x"
+run "$W" "echo 'git push origin main' | bash /dev/stdin"; expect 2 "R28b/NC1: | bash /dev/stdin"
+run "$W" "echo 'git push origin main' | python3 /dev/stdin"; expect 2 "R28b/NC1: | python3 /dev/stdin"
+run "$W" "echo 'git push origin main' | \"\$SHELL\""; expect 2 "R28b/NC1: | \"\$SHELL\" (dynamic word)"
+run "$U" "echo 'cd ~/api && git push origin main' | bash -s x"; expect 2 "R28b/NC1: | bash -s x from an unmanaged cwd"
+run "$U" "bash -s x <<< 'cd ~/api && git push origin main'"; expect 2 "R28b/NC1: bash -s x <<< from an unmanaged cwd"
+run "$U" "source /dev/stdin <<< 'cd ~/api && git push origin main'"; expect 2 "R28b/NC1: source /dev/stdin <<< from an unmanaged cwd"
+run "$W" 'git log | python summarize.py'; expect 0 "no-regression: git log | python summarize.py"
+run "$W" 'npm test | tail'; expect 0 "no-regression: npm test | tail"
 # C2 / R21: destinations as git resolves them (W is on main)
 run "$W" 'git push origin @'; expect 2 "C2: @ is the current branch (main)"
 says 'merge to main goes through the merge gate' "@ text"
