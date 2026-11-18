@@ -168,6 +168,9 @@ for c in "printf -v x 'git 2>&1 commit -m x'; sudo bash -c \"\$x\"" "declare -i 
   run "$(bash_ "$c" "$TMP")"; expect 2 "R35 round 1 outside core: $c"
 done
 run "$(bash_ 'npm test && git status # then git commit -m x' "$TMP")"; expect 0 "M2: a trailing comment is no mention"
+# --- R35 fix round 2 (ruling R35c) ---
+run "$(bash_ "printf -v x \"git -C \$(echo \".\" ) commit -m x\"; sudo bash -c \"\$x\"" "$TMP")"; expect 2 "R35c B: nested \"...\" in \$( ) (commit)"
+run "$(bash_ "echo \${x:- #}; printf -v y 'git commit -m x'; sudo bash -c \"\$y\"" "$TMP")"; expect 2 "R35c A: # inside \${ } is no comment"
 g -C "$CORE" reset -q; g -C "$CORE" checkout -q -- docs/plan/PLAN.md
 echo r2 >> "$CORE/README.md"; g -C "$CORE" add README.md
 run "$(bash_ 'git commit -m x')"; expect 0 "only README staged"

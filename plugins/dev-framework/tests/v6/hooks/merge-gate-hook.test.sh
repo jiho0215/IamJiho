@@ -258,5 +258,9 @@ for c in "printf -v x 'gh pr --repo \"acme/api|x\" merge 1'; node -p \"require('
   run "$c"; expect 2 "R35 round 1: $c"
 done
 run "echo 'gh pr view 1 | grep merge' && npm test"; expect 0 "C1: | ends the run (merge)"
+# --- R35 fix round 2 (ruling R35c) ---
+run "printf -v x \"gh pr --repo \$(echo \"acme/api\") merge 1\"; sudo bash -c \"\$x\""; expect 2 "R35c B: nested \"...\" in \$( ) inside \"...\""
+run "x=\$(true)#; printf -v y 'gh pr merge 1 --repo acme/api'; sudo bash -c \"\$y\""; expect 2 "R35c A: # after ) is no comment"
+run 'npm test && (true) # gh pr merge 1 --repo acme/api'; expect 0 "R35c: a # after ') ' is still a comment (merge)"
 unset DEVFW_CORE_DIR; run 'gh pr merge 1 --repo acme/api'; expect 0 "DEVFW_CORE_DIR unset"
 echo "PASS: merge-gate-hook"

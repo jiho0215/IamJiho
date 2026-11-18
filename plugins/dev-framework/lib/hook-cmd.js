@@ -164,92 +164,131 @@ const R35_VERBS = {
     `${r35b('branch')}(?:\\s+-\\S+)*\\s+[^\\s-]`, `${r35b('worktree')}\\s+add${'(?![A-Za-z0-9_])'}`].join('|'), 'i'),
 };
 // mentions(text): [{ at, text }] for every git/gh word followed in its run by a guard's verb.
+// Ruling R35c (fail direction): ending a run early or dropping a mention as a comment is a bypass; ending a run late is
+// at most a false block. So nesting is tracked with a frame stack (frameScan); a mention's run is the text of the frame
+// that holds it, from the mention to where the STACK says that frame closes, read again as code from a fresh stack, and
+// a terminator ends it only at that fresh stack's top level. An unbalanced or unknown frame never closes: the run goes
+// to the end of the text, and no comment is dropped inside it.
 function mentions(text) {
   const t = text.replace(/\\\r?\n/g, (m) => ' '.repeat(m.length));  // a line continuation joins the run
   const words = [...t.matchAll(R35_GIT_WORD)];
-  const ctx = quoteContexts(t, new Set(words.map((m) => m.index)));
+  const starts = new Map(words.map((m) => [m.index, null]));
+  frameScan(t, 0, t.length, { comments: true, visit: (i, st, comment) => {
+    if (starts.has(i) && starts.get(i) === null) starts.set(i, { frame: st[st.length - 1], comment });
+  } });
   const found = [];
   for (const m of words) {
-    const c = ctx.get(m.index) || { q: '', comment: false, sub: '' };
-    if (c.comment) continue;  // M2: after an unquoted word-start `#`, as the scanner reads it
+    const c = starts.get(m.index) || { frame: { k: 'top', end: t.length }, comment: false };
+    if (c.comment) continue;  // M2: after a `#` at a true word start in the top frame
     const from = m.index + m[0].length;
-    const run = t.slice(from, runEnd(t, from, c));
+    const end = c.frame.end === null || c.frame.end === undefined ? t.length : c.frame.end;
+    const run = relRun(frameText(t.slice(from, Math.max(from, end)), c.frame.k));
     if (Object.values(R35_VERBS).some((re) => re.test(run))) found.push({ at: m.index, text: m[0] + run });
   }
   return found;
 }
-// R35 fix round 1 (C1). quoteContexts(t, starts): for each git/gh word start, the quote it sits in at the outer shell
-// level (q: '' | "'" | '"'), whether it is inside a comment, and whether it is inside a $( ) or `...` body
-// (sub: ')' | '`' | ''). $( ) and backtick bodies start a fresh quote level; a heredoc body is read as a fresh script.
-function quoteContexts(t, starts) {
-  const ctx = new Map();
-  const scan = (lo, hi) => {
-    const stack = [{ q: '', sub: '' }];
-    let comment = false, hds = [];
-    for (let i = lo; i < hi;) {
-      const f = stack[stack.length - 1];
-      if (starts.has(i) && !ctx.has(i)) ctx.set(i, { q: f.q, comment, sub: f.sub });
-      const c = t[i];
-      if (comment) { if (c === '\n') comment = false; else { i++; continue; } }
-      if (f.q === "'") { if (c === "'") f.q = ''; i++; continue; }
-      if (c === '\\') { i += 2; continue; }
-      if (c === '`' && f.sub === '`' && f.q === '') { stack.pop(); i++; continue; }
-      if (c === '`' && (f.q === '' || f.q === '"')) { stack.push({ q: '', sub: '`' }); i++; continue; }
-      if (c === '$' && t[i + 1] === '(' && (f.q === '' || f.q === '"')) { stack.push({ q: '', sub: ')' }); i += 2; continue; }
-      if (f.q === '"') { if (c === '"') f.q = ''; i++; continue; }
-      if (c === "'" || c === '"') { f.q = c; i++; continue; }
-      if (c === '(' ) { stack.push({ q: '', sub: '(' }); i++; continue; }
-      if (c === ')' && stack.length > 1) { stack.pop(); i++; continue; }
-      if (c === '#' && (i === lo || /[\s;&|()]/.test(t[i - 1]))) { comment = true; i++; continue; }
-      if (c === '<' && t[i + 1] === '<' && t[i + 2] !== '<') {
-        let j = i + 2; const strip = t[j] === '-'; if (strip) j++;
-        while (t[j] === ' ' || t[j] === '\t') j++;
-        const d = /^(?:'([^']*)'|"([^"]*)"|\\?([^\s;&|<>()]+))/.exec(t.slice(j));
-        if (d) { hds.push({ delim: d[1] ?? d[2] ?? d[3], strip }); i = j + d[0].length; continue; }
-      }
-      if (c === '\n' && hds.length) {
-        let k = i + 1;
-        for (const h of hds) {
-          const b = k;
-          while (k < hi) {
-            const eol = t.indexOf('\n', k); const e = eol < 0 || eol > hi ? hi : eol;
-            const line = t.slice(k, e);
-            if ((h.strip ? line.replace(/^\t+/, '') : line) === h.delim) { scan(b, k); k = e + 1; break; }
-            k = e + 1;
-            if (k >= hi) scan(b, hi);
-          }
-        }
-        hds = []; i = k; continue;
-      }
-      i++;
-    }
-  };
-  scan(0, t.length);
-  return ctx;
-}
-// runEnd(t, from, c): where the run after a git/gh word ends. Quotes are tracked RELATIVE to the mention (C1): a quote
-// opened after it hides ; | & newline; the quote the mention sits in (c.q) ends the run when it closes; inside a $( )
-// or backtick body, its closing ) or ` ends it. Terminators: newline ; && || | & — but not a redirection: >| and the
-// & of >& <& &> &>> (2>&1, >&2, &>/dev/null) never end a run.
-function runEnd(t, from, c) {
-  let rel = '', pd = 0;
-  for (let i = from; i < t.length; i++) {
-    const ch = t[i];
-    // inside an outer "...", \" is a quote of the inner level (bash -c "git -C \"a;b\" push"); the outer quote itself
-    // ends the run whatever the inner level holds
-    if (ch === '\\' && c.q === '"' && t[i + 1] === '"' && rel !== "'") { rel = rel ? '' : '"'; i++; continue; }
-    if (ch === '\\' && (c.q === '"' || (rel !== "'" && c.q !== "'"))) { i++; continue; }
-    if (c.q && ch === c.q) return i;
-    if (rel) { if (ch === rel) rel = ''; continue; }
-    if (ch === "'" || ch === '"') { rel = ch; continue; }
-    if (ch === '\n' || ch === ';') return i;
-    if (ch === '|') { if (t[i - 1] === '>') continue; return i; }
-    if (ch === '&') { if (t[i - 1] === '>' || t[i - 1] === '<' || t[i + 1] === '>') continue; return i; }
-    if (ch === '(') { pd++; continue; }
-    if (ch === ')') { if (pd === 0 && c.sub === ')') return i; if (pd > 0) pd--; continue; }
-    if (ch === '`' && c.sub === '`') return i;
+// frameText(s, kind): the text a frame's body hands to the shell that runs it. "..." and `...` drop their \-escapes
+// (bash -c "git -C \"a;b\" push" runs git -C "a;b" push); $'...' decodes its escapes; '...' and code frames are as is.
+function frameText(s, k) {
+  if (k === '"') return s.replace(/\\\n/g, '').replace(/\\(["\\$`])/g, '$1');
+  if (k === '`') return s.replace(/\\([`\\$])/g, '$1');
+  if (k === "$'") {
+    return s.replace(/\\(.)/g, (m, e) => ({ n: '\n', t: '\t', r: '\r', "'": "'", '"': '"', '\\': '\\' })[e] ?? m);
   }
-  return t.length;
+  return s;
+}
+// relRun(s): the run at the start of s: up to the first newline ; && || | & at the TOP of a fresh frame stack (never
+// inside a frame opened in s). A redirection never ends it: >| and the & of >& <& &> &>> (2>&1, >&2, &>/dev/null).
+// The text may be shell for a shell, or a string inside other code (python -c '...os.system("git -C \"a;b\" push")'),
+// where \" is a real quote of the command that finally runs. Each reading can end the run where the other does not, so
+// (R35c: late is safe, early is a bypass) the run is the LONGER of the two: \-escapes as the shell reads them, and \" \'
+// read as quotes.
+function relRun(s) {
+  const stopAt = (looseEsc) => {
+    let stop = s.length;
+    frameScan(s, 0, s.length, { comments: false, looseEsc, visit: (i, st) => {
+      if (st.length !== 1) return false;
+      const ch = s[i];
+      const term = ch === '\n' || ch === ';' || (ch === '|' && s[i - 1] !== '>')
+        || (ch === '&' && s[i - 1] !== '>' && s[i - 1] !== '<' && s[i + 1] !== '>');
+      if (term) stop = i;
+      return term;
+    } });
+    return stop;
+  };
+  return s.slice(0, Math.max(stopAt(false), stopAt(true)));
+}
+// frameScan(t, lo, hi, { visit, comments }): walk t[lo, hi) with a stack of frames { k, end }: top, ( (a subshell,
+// <( ), >( )), $( , $(( and (( (arithmetic: no heredoc, no comment), ${ , ` , " , ' , $' , and hd (a heredoc body,
+// read as code). visit(i, stack, inComment) runs before each character; returning true stops the walk. A frame's
+// `end` is the index of its closing character (its body is t[open+len, end)); a frame that never closes keeps end null.
+// With comments, a `#` starts a comment only in the top frame, at a true word start (text start, or after whitespace
+// ; & | or ( — never after `)`).
+function frameScan(t, lo, hi, { visit, comments, looseEsc }) {
+  const st = [{ k: 'top', end: hi }];
+  let comment = false, pending = [];
+  const push = (k, extra) => { st.push({ k, end: null, ...extra }); };
+  const pop = (i) => { st.pop().end = i; };
+  const heredocAt = (b, list) => {  // the next heredoc body, starting at b: { bodyEnd, after }
+    const h = list[0];
+    let k = b;
+    while (k < hi) {
+      const eol = t.indexOf('\n', k); const e = eol < 0 || eol >= hi ? hi : eol;
+      if ((h.strip ? t.slice(k, e).replace(/^\t+/, '') : t.slice(k, e)) === h.delim) {
+        return { k: 'hd', end: null, bodyEnd: k, after: Math.min(hi, e + 1), rest: list.slice(1) };
+      }
+      k = e + 1;
+    }
+    return { k: 'hd', end: null, bodyEnd: hi, after: hi, rest: [] };  // no delimiter line: the body runs to the end
+  };
+  for (let i = lo; i < hi;) {
+    // a heredoc body ends at its delimiter line, whatever is still open inside it (unbalanced: those keep end null)
+    const hdAt = st.findIndex((f) => f.k === 'hd' && i >= f.bodyEnd);
+    if (hdAt > 0) {
+      const h = st[hdAt];
+      while (st.length > hdAt + 1) st.pop();
+      pop(h.bodyEnd); i = h.after;
+      if (h.rest.length) st.push(heredocAt(i, h.rest));
+      continue;
+    }
+    const f = st[st.length - 1];
+    if (visit && visit(i, st, comment)) return;
+    const c = t[i], n1 = t[i + 1];
+    if (comment) { if (c === '\n') comment = false; else { i++; continue; } }
+    if (f.k === "'") { if (c === "'") pop(i); i++; continue; }
+    if (f.k === "$'") { if (c === '\\') { i += 2; continue; } if (c === "'") pop(i); i++; continue; }
+    // looseEsc (relRun): \" and \' read as quotes, for text that is a string inside other code
+    if (c === '\\') { i += looseEsc && (n1 === '"' || n1 === "'") ? 1 : 2; continue; }
+    if (c === '`' && f.k === '`') { pop(i); i++; continue; }
+    if (c === '$' && n1 === '(' && t[i + 2] === '(') { push('$((', { p: 0 }); i += 3; continue; }
+    if (c === '$' && n1 === '(') { push('$('); i += 2; continue; }
+    if (c === '$' && n1 === '{') { push('${'); i += 2; continue; }
+    if (c === '`') { push('`'); i++; continue; }
+    if (f.k === '"') { if (c === '"') pop(i); i++; continue; }
+    if (c === '$' && n1 === "'") { push("$'"); i += 2; continue; }
+    if (c === "'") { push("'"); i++; continue; }
+    if (c === '"') { push('"'); i++; continue; }
+    if (f.k === '${') { if (c === '}') pop(i); i++; continue; }
+    if (f.k === '$((') {
+      if (c === '(') f.p++;
+      else if (c === ')') { if (f.p > 0) f.p--; else if (n1 === ')') { pop(i); i += 2; continue; } }
+      i++; continue;
+    }
+    // code frames: top ( $( ` hd
+    if (c === '(' && n1 === '(') { push('$((', { p: 0 }); i += 2; continue; }  // (( arithmetic ))
+    if ((c === '<' || c === '>') && n1 === '(') { push('('); i += 2; continue; }
+    if (c === '(') { push('('); i++; continue; }
+    if (c === ')') { if (f.k === '(' || f.k === '$(') pop(i); i++; continue; }
+    if (comments && c === '#' && f.k === 'top' && (i === lo || /[\s;&|(]/.test(t[i - 1]))) { comment = true; i++; continue; }
+    if (c === '<' && n1 === '<' && t[i + 2] !== '<') {
+      let j = i + 2; const strip = t[j] === '-'; if (strip) j++;
+      while (t[j] === ' ' || t[j] === '\t') j++;
+      const d = /^[^\s;&|<>()]+/.exec(t.slice(j, hi));
+      if (d) { pending.push({ delim: d[0].replace(/['"\\]/g, ''), strip }); i = j + d[0].length; continue; }
+    }
+    if (c === '\n' && pending.length) { st.push(heredocAt(i + 1, pending)); pending = []; i++; continue; }
+    i++;
+  }
 }
 // Words that never run text: the DATA commands, and these builtins (they change shell state only). Shell reserved words
 // open or close a compound command; a for/select/case header runs nothing itself (its substitutions are walked apart).
@@ -1149,4 +1188,5 @@ function parseCommand(cmd, opts = {}) {
 }
 
 // R29: the command names an alias step may resolve to (the hook walks alias chains with these).
-module.exports = { parseCommand, GIT_COMMANDS: [...GIT_COMMANDS], GH_COMMANDS: [...GH_COMMANDS] };
+// _mentions: the R35 mention reader alone, for its fences (no guard reads it).
+module.exports = { parseCommand, GIT_COMMANDS: [...GIT_COMMANDS], GH_COMMANDS: [...GH_COMMANDS], _mentions: mentions };

@@ -307,10 +307,19 @@ Each item is a path on which a rule above does NOT block. They are accepted resi
    **Backstop: the unaccounted-mention rule (ruling R35).** The rules above enumerate execution shapes; R35 does not.
    A *mention* is a `git`/`gh` word anywhere in the raw command text — any quoting level, heredoc bodies, `$( )` /
    backtick / process-substitution bodies, array literals and assignment values included; case-folded, with a path
-   and `.exe` allowed, never after an unquoted word-start `#` (a comment) — followed, within its run of words, by a
-   guard's verb. The run ends at a `;`, `&&`, `||`, `|`, bare `&` or newline that is outside every quote opened after
-   the mention, or where the quote, `$( )` or backtick the mention sits in closes; a redirection (`2>&1`, `>&2`,
-   `&>`, `&>>`, `>|`, `<&`) never ends it, and a `\`-newline joins. The verbs are: `push`; `commit`; `pr ... merge`, `pulls/<n>/merge`, `repos/.../merges`,
+   and `.exe` allowed — followed, within its run of words, by a guard's verb. Nesting is read with a frame stack
+   (ruling R35c): `"..."`, `'...'`, `$'...'` (with its `\'` / `\\` escapes), `$( )`, `$(( ))` / `(( ))`, `${ }`,
+   backticks, `( )` / `<( )` / `>( )` and heredoc bodies (`<<-` and quoted delimiters included; `<<` inside
+   arithmetic is a shift, not a heredoc). A mention's run is the body of the frame that holds it — from the mention to
+   where the stack closes that frame, with `"..."` / backtick escapes and `$'...'` decoded — read as code from a fresh
+   stack, and it ends at the first `;`, `&&`, `||`, `|`, bare `&` or newline at that fresh stack's top level, never
+   inside a deeper frame; a redirection (`2>&1`, `>&2`, `&>`, `&>>`, `>|`, `<&`) never ends it, and a `\`-newline
+   joins. Because that text may be a string inside other code (`python -c '…os.system("git -C \"a;b\" push")'`),
+   the run is the longer of two readings: `\"` / `\'` as shell escapes, and as quotes. A `#` drops the mentions after it (to the line end) only in the top frame at a true word start: text start,
+   or after whitespace, `;`, `&`, `|` or `(` — never after `)` (`x=$(true)#`, `a=(1 2)#`) and never inside a frame
+   (`${x:- #}`, a `$( )` or heredoc body). The fail direction is fixed: ending a run early or dropping a comment would
+   be a bypass, ending it late is at most a false block, so an unbalanced or unknown frame never closes — the run goes
+   to the end of the text and no comment is dropped in it. The verbs are: `push`; `commit`; `pr ... merge`, `pulls/<n>/merge`, `repos/.../merges`,
    `mergePullRequest` / `enablePullRequestAutoMerge` / `mergeBranch`; a branch creation (`checkout -b/-B`,
    `switch -c/-C`, `branch <name>`, `worktree add`). Each git/gh call the parser read accounts for the mention that
    starts in its own command word, by source position (not by counting); so does a call already reported as a row of

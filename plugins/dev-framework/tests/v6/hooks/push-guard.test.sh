@@ -280,6 +280,19 @@ done
 run "$W" 'npm test && git commit -m "x" && git push origin t/12-x # git push origin main'; expect 0 "M2: a trailing comment is no mention"
 run "$W" "echo 'git log | grep push' && npm test && git push origin t/12-x"; expect 0 "C1: | ends the run"
 run "$W" "git rebase -x 'npm test' main"; expect 0 "R35b: rebase -x with no guarded mention"
+# --- R35 fix round 2 (ruling R35c): # after ) or in ${ }, nested "..." in $( ) / ${ }, $'...' escapes ---
+PY="printf -v y 'cd ~/W && git push origin main'; sudo bash -c \"\$y\""
+for c in "x=\$(true)#; $PY" "echo \${x:- #}; $PY" "z=\${x// #/}; $PY" "a=(1 2)#; $PY" \
+  "printf -v x \"cd ~/W && git -C \$(echo \".\" ) push origin main\"; sudo bash -c \"\$x\"" \
+  "printf -v x \"cd ~/W && git -C \${d:-\".\"} push origin main\"; sudo bash -c \"\$x\"" \
+  "printf -v x \$'cd ~/W && git -C \\'.\\' push origin main'; sudo bash -c \"\$x\""; do
+  HOME="$TMP" run "$U" "$c"; expect 2 "R35c, unmanaged cwd (unknown dir): $c"
+done
+HOME="$TMP" run "$W" "x=\$(true)#; $PY"; expect 2 "R35c, managed cwd"
+run "$W" 'npm test && (true) # git push origin main'; expect 0 "R35c: a # after ') ' is still a comment"
+run "$W" "printf -v x 'import os; os.system(\"cd ~/W && git -C \\\"a;b\\\" push origin main\")'; python3 -c 'import sys; exec(sys.argv[1])' \"\$x\""
+expect 2 "R35c: \\\" read as a quote too (a string inside python)"
+run "$W" "x=a#b; npm test && git push origin t/12-x"; expect 0 "R35c: x=a#b is ordinary"
 # C2 / R21: destinations as git resolves them (W is on main)
 run "$W" 'git push origin @'; expect 2 "C2: @ is the current branch (main)"
 says 'merge to main goes through the merge gate' "@ text"

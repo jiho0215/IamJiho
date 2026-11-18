@@ -129,6 +129,11 @@ for c in "printf -v x 'git 2>&1 checkout -b t/43-z'; sudo bash -c \"\$x\"" "prin
   "git rebase -x 'git checkout -b t/43-z' main"; do
   run "$W" "$c"; expect 2 "R35 round 1: $c"
 done
+# --- R35 fix round 2 (ruling R35c) ---
+for c in "printf -v x \$'git -C \\'.\\' checkout -b t/43-z'; sudo bash -c \"\$x\"" \
+  "a=(1 2)#; printf -v y 'git checkout -b t/43-z'; sudo bash -c \"\$y\""; do
+  run "$W" "$c"; expect 2 "R35c: $c"
+done
 
 run "$W" 'git worktree add ../wt -b t/41-x origin/t/41-x'; expect 0 "claimed worktree add"
 run "$W" 'git checkout -b t/41-x origin/t/41-x'; expect 0 "claimed checkout -b"

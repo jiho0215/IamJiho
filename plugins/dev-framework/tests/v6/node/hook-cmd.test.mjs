@@ -847,7 +847,7 @@ test('C1: the run is quote-aware relative to the mention, and a redirection neve
     [`printf -v x 'git 2>&1 commit -m x'; sudo bash -c "$x"`, 'git 2>&1 commit -m x'],
     [`printf -v x 'git 2>&1 checkout -b t/43-z'; sudo bash -c "$x"`, 'git 2>&1 checkout -b t/43-z'],
     // an escaped inner quote inside an outer "..." is a quote of the inner level
-    [`printf -v x "git -C \\"a;b\\" push origin main"; sudo bash -c "$x"`, 'git -C \\"a;b\\" push origin main'],
+    [`printf -v x "git -C \\"a;b\\" push origin main"; sudo bash -c "$x"`, 'git -C "a;b" push origin main'],
   ]) assert.deepEqual(r35Mentions(c), [m], c);
   // a terminator outside every quote opened after the mention ends the run (M1: | ; && || & newline each matter)
   for (const c of [`echo 'git log | grep push'; npm test`, `echo 'git log; echo push'; npm test`,
@@ -907,4 +907,66 @@ test('R35b: a git call that runs text is non-data and does not account for that 
     `GIT_AUTHOR_NAME=bot git commit -m 'git push docs'`]) {
     assert.equal(r35Row(c), undefined, c);
   }
+});
+
+// ---- R35 fix round 2 (ruling R35c: frames by a stack; fail toward a longer run) ----
+const { _mentions } = require('../../../lib/hook-cmd.js');
+const SB = `sudo bash -c "$y"`;
+test('R35c A: a # after ) or inside ${ } is no comment; a true word-start # still is', () => {
+  for (const c of [`x=$(true)#; printf -v y 'cd ~/api && git push origin main'; ${SB}`,
+    `echo \${x:- #}; printf -v y 'cd ~/api && git push origin main'; ${SB}`,
+    `z=\${x// #/}; printf -v y 'cd ~/api && git push origin main'; ${SB}`,
+    `a=(1 2)#; printf -v y 'cd ~/api && git push origin main'; ${SB}`,
+    `x=a#b; echo 'git push origin main'; npm test`]) {
+    assert.ok(unknownRow(c), c);
+    assert.deepEqual(r35Mentions(c), ['git push origin main'], c);
+  }
+  for (const c of ['(true) # git push origin main', 'npm test && (true) # git push origin main',
+    'npm test;# git push origin main', 'npm test |# git push origin main']) {
+    assert.equal(r35Row(c), undefined, c);
+  }
+});
+test('R35c B: a nested "..." inside $( ), ${ } or ` ` within an outer "..." does not close it', () => {
+  for (const [c, m] of [
+    [`printf -v x "cd ~/api && git -C $(echo "." ) push origin main"; ${'sudo bash -c "$x"'}`, 'git -C $(echo "." ) push origin main'],
+    [`printf -v x "cd ~/api && git -C \${d:-"."} push origin main"; ${'sudo bash -c "$x"'}`, 'git -C ${d:-"."} push origin main'],
+    [`printf -v x "git -C $(echo "." ) commit -m x"; ${'sudo bash -c "$x"'}`, 'git -C $(echo "." ) commit -m x'],
+    [`printf -v x "gh pr --repo $(echo "acme/api") merge 5"; ${'sudo bash -c "$x"'}`, 'gh pr --repo $(echo "acme/api") merge 5'],
+    [`printf -v x "git -C \`echo "."\` push origin main"; ${'sudo bash -c "$x"'}`, 'git -C `echo "."` push origin main'],
+  ]) assert.deepEqual(r35Mentions(c), [m], c);
+});
+test("R35c C: $'...' honours \\' and \\\\, and its text is decoded", () => {
+  assert.deepEqual(r35Mentions(`printf -v x $'cd ~/api && git -C \\'.\\' push origin main'; sudo bash -c "$x"`),
+    ["git -C '.' push origin main"]);
+  assert.deepEqual(r35Mentions(`printf -v x $'git -C \\'.\\' checkout -b t/43-z'; sudo bash -c "$x"`),
+    ["git -C '.' checkout -b t/43-z"]);
+  assert.deepEqual(r35Mentions(`printf -v x $'git -C \\\\ push origin main'; sudo bash -c "$x"`), ['git -C \\ push origin main']);
+});
+test('R35c: an unbalanced frame never closes: the run goes to the end of the text', () => {
+  assert.deepEqual(_mentions(`printf -v x "git -C $(echo "." push origin main"; npm test`).map((m) => m.text),
+    [`git -C $(echo "." push origin main"; npm test`]);
+  // the ${ opened after the mention never closes, so the ; inside it is not a terminator
+  assert.deepEqual(_mentions(`echo "git -C \${y:-; push origin main`).map((m) => m.text), [`git -C \${y:-; push origin main`]);
+  // an unclosed quote before a # hides it: no comment is dropped
+  assert.deepEqual(_mentions(`echo "x # git push origin main`).map((m) => m.text), ['git push origin main']);
+  // the run is the longer of two readings of \": shell (an escaped char) and string-in-code (a quote)
+  assert.deepEqual(r35Mentions(`printf -v x 'import os; os.system("cd ~/api && git -C \\"a;b\\" push origin main")'; ` +
+    `python3 -c 'import sys; exec(sys.argv[1])' "$x"`), ['git -C \\"a;b\\" push origin main")']);
+  assert.deepEqual(r35Mentions(`printf -v x 'git -C "x\\";y" push origin main'; sudo bash -c "$x"`),
+    ['git -C "x\\";y" push origin main']);
+  // a # inside any frame (a $( ) body, a heredoc body) is never dropped as a comment: over-include (R35c)
+  assert.deepEqual(_mentions('y=$(echo a # git push origin main\n); npm test').map((m) => m.text), ['git push origin main']);
+  assert.deepEqual(_mentions("bash <<'EOF'\necho a # git push origin main\nEOF").map((m) => m.text), ['git push origin main']);
+});
+test('R35c siblings: arithmetic << is no heredoc; <( ) >( ); heredoc delimiters <<- and quoted', () => {
+  // each one has a real comment after it that must still be dropped
+  for (const c of ['echo $((1<<2))\nnpm test # git push origin main', '((x=1<<2))\nnpm test # git push origin main',
+    'cat <(echo a) # git push origin main', 'echo a > >(cat) # git push origin main',
+    "cat <<-EOF\n\tx\n\tEOF\nnpm test # git push origin main", "cat <<'EOF'\nit's\nEOF\nnpm test # git push origin main",
+    'cat <<"EOF"\nx\nEOF\nnpm test # git push origin main', 'cat <<\\EOF\nx\nEOF\nnpm test # git push origin main',
+    'cat <<E"O"F\nx\nEOF\nnpm test # git push origin main']) {
+    assert.deepEqual(_mentions(c), [], c);
+  }
+  // a heredoc body is code: its mention is read, and its newline ends the run
+  assert.deepEqual(_mentions("cat <<-EOF\n\tgit push origin main\n\tEOF\nnpm test").map((m) => m.text), ['git push origin main']);
 });
