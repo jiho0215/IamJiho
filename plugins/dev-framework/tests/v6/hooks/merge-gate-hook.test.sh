@@ -231,5 +231,24 @@ grep -q 'branch merges into a managed repo go through a PR' <<<"$ERR" || fail "R
 run 'gh api repos/acme/api/merges -fi base=main'; expect 2 "R34a: -fi cluster is a field"
 run 'gh api repos/acme/api/merges -i base=main'; expect 0 "R34a: -i alone is not a field (GET, no merge)"
 run "GH_REPO=github.com/other/x gh api -X POST 'repos/{owner}/{repo}/merges' -f base=main"; expect 0 "NC5: an unmanaged host-qualified repo is not ours"
+# --- ruling R35: an unaccounted mention + a non-data program = one whole-command row, unknown dir ---
+for c in "printf -v x 'gh pr merge 1 --repo acme/api --squash'; bash -lc \"\$x\"" \
+  "printf -v x 'gh pr merge 1 --repo acme/api --squash'; sudo bash -c \"\$x\"" \
+  "cmd=(gh pr merge 1 --repo acme/api --squash); \"\${cmd[@]}\"" \
+  "declare -x X='gh pr merge 1 --repo acme/api'; python -c 'import os; os.system(os.environ[\"X\"])'" \
+  "printf -v x 'gh pr merge 1 --repo acme/api'; python -c 'import os,sys; os.system(sys.argv[1])' \"\$x\"" \
+  "printf -v x 'gh api -X POST repos/acme/api/merges -f base=main -f head=x'; nohup bash -c \"\$x\""; do
+  run "$c"; expect 2 "R35 (NC6-NC9): $c"
+done
+grep -q 'cannot read this merge command exactly' <<<"$ERR" || fail "R35 text: $ERR"
+# per-guard verb: an unaccounted `git push` mention is not a merge, though the command text says merge (a read git merge)
+run 'npm test && git commit -m "docs: explain git push flow" && git merge --ff-only main'; expect 0 "R35: a push mention is not merge-gate's"
+run 'npm test && git commit -m "docs: then gh pr merge it"'; expect 2 "R35: a gh pr merge mention in a message beside npm (the stated cost)"
+run 'BR=$(git branch --show-current); npm test && node scripts/lint.js && git push origin t/12-x'; expect 0 "R35/NI2"
+run 'npm test && gh pr view 5 --json mergeStateStatus'; expect 0 "R35: a read gh call accounts for itself"
+run "gh pr create --title x --body \"\$(cat <<'EOF'
+Explains git push and gh pr merge.
+EOF
+)\""; expect 0 "R35: gh pr create body naming gh pr merge"
 unset DEVFW_CORE_DIR; run 'gh pr merge 1 --repo acme/api'; expect 0 "DEVFW_CORE_DIR unset"
 echo "PASS: merge-gate-hook"

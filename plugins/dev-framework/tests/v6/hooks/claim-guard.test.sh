@@ -112,6 +112,18 @@ run "$U" "X='cd ~/api && git switch -c t/43-z' bash -c 'eval \"\$X\"'"; expect 2
 run "$W" "x='git checkout -b t/43-z'; eval \"\$x\""; expect 2 "R28e(a): eval \"\$x\" still blocks"
 run "$W" 'node --test tests/*.mjs && git checkout -b t/41-x origin/t/41-x'; expect 0 "NI1: node --test glob then a claimed branch"
 run "$W" 'python3 summarize.py *.json && git switch -c feature/x'; expect 0 "NI1: python script + glob then a non-ticket branch"
+# --- ruling R35: an unaccounted mention + a non-data program = one whole-command row, unknown dir ---
+for c in "printf -v x 'git checkout -b t/43-z'; bash -lc \"\$x\"" "printf -v x 'git switch -c t/43-z'; sudo bash -c \"\$x\"" \
+  "cmd=(git checkout -b t/43-z); \"\${cmd[@]}\"" "printf -v x 'git branch t/43-z'; \${x:-}" \
+  "declare -x X='git checkout -b t/43-z'; python -c 'import os; os.system(os.environ[\"X\"])'" \
+  "printf -v x 'git worktree add ../wt -b t/43-z'; python -c 'import os,sys; os.system(sys.argv[1])' \"\$x\""; do
+  run "$U" "$c"; expect 2 "R35 (NC6-NC9), unmanaged cwd: $c"
+done
+says 'cannot read this branch command exactly' "R35 text"
+run "$W" 'BR=$(git branch --show-current); npm test && node scripts/lint.js && git push origin t/12-x'; expect 0 "R35/NI2: was a false block"
+# per-guard verb: an unaccounted `git push` mention is not a branch creation, though the text names t/ and $( )
+run "$W" 'BR=$(git branch --show-current); npm test && git commit -m "t/12: explain git push"'; expect 0 "R35: a push mention is not claim-guard's"
+run "$W" "echo 'git checkout -b t/43-z' > notes.md"; expect 0 "R35: echo is data"
 
 run "$W" 'git worktree add ../wt -b t/41-x origin/t/41-x'; expect 0 "claimed worktree add"
 run "$W" 'git checkout -b t/41-x origin/t/41-x'; expect 0 "claimed checkout -b"

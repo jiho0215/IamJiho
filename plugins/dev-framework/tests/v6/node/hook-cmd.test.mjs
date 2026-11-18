@@ -407,7 +407,9 @@ test('R27a/C1: shell builtins match exactly; a mis-cased or wrapped cd/export/un
   // exact builtins still work
   assert.deepEqual(P('cd /r/api && git push origin main').pushes, p('/r/api'));
   assert.deepEqual(P('command cd /r/api && git push origin main').pushes, p('/r/api'));
-  assert.equal(P('EVAL "git push"').opaque.length, 0, 'EVAL is not eval');
+  // EVAL is not eval: no R28 code row. (R35 reseed: EVAL is still a non-data word, maybe an alias, so the unaccounted
+  // `git push` text makes the R35 backstop row, which carries `mentions`; the R28 row would not.)
+  assert.deepEqual(P('EVAL "git push"').opaqueDirs, [{ dir: null, unknown: true, mentions: ['git push"'] }], 'EVAL is not eval');
   assert.equal(P('eval "git push"').opaque.length, 1);
   // no-regression: a plain builtin in any case is still nothing
   assert.deepEqual(P('Git status'), { ...r({}), opaqueDirs: [], aliases: [] });
@@ -710,4 +712,120 @@ test('R34a/NC5: a host-qualified GH_REPO and a combined -if flag reach the branc
   assert.deepEqual(P('gh api repos/acme/api/merges -fi base=main').merges, bm('acme/api'));
   // -i alone (no field) is still a GET: not a merge
   assert.deepEqual(P('gh api repos/acme/api/merges -i base=main').merges, []);
+});
+
+// ---- ruling R35: the unaccounted-mention backstop ----
+// r35Row(c): the whole-command row (unknown dir; an R35 row carries `mentions`, the unaccounted mention texts).
+const r35Row = (c) => { const x = P(c); const at = x.opaque.indexOf(c); return at >= 0 ? x.opaqueDirs[at] : undefined; };
+const r35Mentions = (c) => (r35Row(c) || {}).mentions;
+const PV = `printf -v x 'cd ~/api && git push origin main';`;
+test('R35 fire: NC6-NC9 carry a literal guarded command into a non-data program: one whole-command row, unknown dir', () => {
+  for (const c of [`${PV} bash -lc "$x"`, `${PV} bash -ec "$x"`, `${PV} bash -c"$x"`, `${PV} sudo bash -c "$x"`,
+    `${PV} nohup bash -c "$x"`, `${PV} xargs bash -c "$x"`, `${PV} setsid bash -c "$x"`, `${PV} wsl bash -c "$x"`,
+    `${PV} busybox sh -c "$x"`, `${PV} find . -maxdepth 0 -exec bash -c "$x" \\;`,
+    `${PV} node -p "require('child_process').execSync(process.argv[1]).toString()" "$x"`,
+    `${PV} perl -E 'system($ARGV[0])' "$x"`, `${PV} script -qc "$x" /dev/null`, `${PV} watch -n1 "$x"`,
+    `printf -v x 'cd ~/api && git push origin main'; \${x:-}`,                                     // NC7
+    `declare -x X='cd ~/api && git push origin main'; python -c 'import os; os.system(os.environ["X"])'`,  // NC8
+    `typeset -x X='cd ~/api && git push origin main'; python -c 'import os; os.system(os.environ["X"])'`,
+    `printf -v X 'cd ~/api && git push origin main'; export X; python -c 'import os; os.system(os.environ["X"])'`,
+    `declare -x X='cd ~/api && git push origin main'; node -e 'require("child_process").execSync(process.env.X)'`,
+    `${PV} python -c 'import os,sys; os.system(sys.argv[1])' "$x"`]) {                             // NC9
+    const row = r35Row(c);
+    assert.ok(row && row.unknown === true, c);
+    assert.deepEqual(row.mentions, ["git push origin main'"], c);
+  }
+  // NC7 array forms: one whole-command unknown row (R28e/NC4 or R35, whichever comes first)
+  for (const c of ['cmd=(git push origin main); "${cmd[@]}"', 'declare -a cmd=(git push origin main); "${cmd[@]}"',
+    'cmd=(cd ~/api); cd "${cmd[1]}"; x=(git push origin main); "${x[@]}"', 'cmd=(gh pr merge 5 --repo acme/api); "${cmd[@]}"']) {
+    assert.equal((r35Row(c) || {}).unknown, true, c);
+  }
+});
+test('R35 mention: where a mention may sit, and which verbs make one (per guard)', () => {
+  const nd = 'npm test';  // a non-data program, so only the mention decides
+  for (const [c, m] of [
+    // heredoc body, $( ) body, backtick body, array literal, assignment value, path + .exe + case, a -C between,
+    // a line continuation inside the run
+    [`cat <<'EOF' > s.sh\ngit push origin main\nEOF\n${nd}`, 'git push origin main'],
+    [`y=$(echo 'git push origin main'); ${nd}`, "git push origin main')"],
+    [`y=\`echo 'git push origin main'\`; ${nd}`, "git push origin main'`"],
+    [`a=(x 'git push origin main'); ${nd}`, "git push origin main')"],
+    [`X='git push origin main'; ${nd}`, "git push origin main'"],
+    [`echo "/usr/bin/GIT.EXE  push"; ${nd}`, 'GIT.EXE  push"'],
+    [`echo 'git -C ~/api push'; ${nd}`, "git -C ~/api push'"],
+    [`echo 'git \\\npush origin main'; ${nd}`, "git   push origin main'"],
+    // each guard's verbs
+    [`echo 'gh pr merge 5'; ${nd}`, "gh pr merge 5'"], [`echo 'gh pr -R a/b merge 5'; ${nd}`, "gh pr -R a/b merge 5'"],
+    [`echo 'gh api -X PUT repos/a/b/pulls/5/merge'; ${nd}`, "gh api -X PUT repos/a/b/pulls/5/merge'"],
+    [`echo 'gh api -X POST repos/a/b/merges'; ${nd}`, "gh api -X POST repos/a/b/merges'"],
+    [`echo 'gh api graphql -f query=mutation{mergeBranch}'; ${nd}`, "gh api graphql -f query=mutation{mergeBranch}'"],
+    [`echo 'git checkout -b t/43-z'; ${nd}`, "git checkout -b t/43-z'"],
+    [`echo 'git checkout -qB t/43-z'; ${nd}`, "git checkout -qB t/43-z'"],
+    [`echo 'git switch -c t/43-z'; ${nd}`, "git switch -c t/43-z'"], [`echo 'git branch t/43-z'; ${nd}`, "git branch t/43-z'"],
+    [`echo 'git worktree add ../w'; ${nd}`, "git worktree add ../w'"], [`echo 'git commit -m x'; ${nd}`, "git commit -m x'"],
+  ]) assert.deepEqual(r35Mentions(c), [m], c);
+  // not a mention: no guarded verb in the run, the verb in another run, a verb glued to a word (R33), not a git/gh word,
+  // and the documented residuals (a verb or word that is never spelled)
+  for (const c of [`echo 'git status'; ${nd}`, `echo 'gh pr view 5'; ${nd}`, `echo 'git log'; echo push; ${nd}`,
+    `echo 'git pushd x'; ${nd}`, `echo 'gh pr view --json mergeStateStatus'; ${nd}`, `echo 'git branch --show-current'; ${nd}`,
+    `echo 'git checkout main'; ${nd}`, `echo 'git switch main'; ${nd}`, `echo 'github push'; ${nd}`, `echo 'tools/git/push'; ${nd}`,
+    `echo '.git push'; ${nd}`, `echo 'git-lfs push'; ${nd}`, `echo 'git pu""sh'; ${nd}`, `echo 'g""it push'; ${nd}`,
+    `echo "git $V origin"; ${nd}`]) {
+    assert.equal(r35Row(c), undefined, c);
+  }
+});
+test('R35 accounting: a call the parser read accounts for the mention in its own command word, by position', () => {
+  // read: no row (the pushes / commits / merges / branches themselves are reported as before)
+  for (const c of ['npm test && git push origin t/12-x', 'npm test && gh pr merge 5 --repo acme/api --squash',
+    'npm test && git checkout -b t/43-z', 'node x.js && GIT.exe commit -m x', 'npm test && env A=1 git push origin t/12-x',
+    'npm test && timeout 60 git push origin t/12-x', 'npm test && git log --grep push',
+    'npm test; echo "$(git push origin t/12-x)"', 'npm test; echo `git push origin t/12-x`',
+    'npm test; echo `echo \\`git push origin t/12-x\\``',   // escaped backticks: the body map keeps the offsets
+    'BR=$(git branch --show-current); npm test && node scripts/lint.js && git push origin t/12-x']) {  // NI2
+    assert.equal(r35Row(c), undefined, c);
+  }
+  // the SAME text as an argument is not that call: a commit message, a --body, a rebase -x string (the stated cost)
+  assert.deepEqual(r35Mentions('npm test && git commit -m "docs: explain git push flow"'), ['git push flow"']);
+  assert.deepEqual(r35Mentions('npm test && gh pr create --body "fix the git push docs"'), ['git push docs"']);
+  assert.deepEqual(r35Mentions("npm test && git rebase -x 'git push origin main' main"), ["git push origin main' main"]);
+  // positions, not counts: a read git call does not account for a mention elsewhere
+  assert.deepEqual(r35Mentions(`printf -v x 'git push origin main'; git status; bash -lc "$x"`), ["git push origin main'"]);
+  assert.deepEqual(r35Mentions(`git push origin t/12-x; printf -v x 'git push origin main'; bash -lc "$x"`),
+    ["git push origin main'"]);
+  // a call that is unreadable but already a row of its own accounts for itself (its R20 dir is kept)
+  const x = P('git push origin "$BR" && npm test');
+  assert.deepEqual(x.opaque, ['git push origin "$BR"']);
+  assert.deepEqual(x.opaqueDirs, [{ dir: null, unknown: false }]);
+});
+test('R35 non-data: the row needs a segment, at any depth, whose command word is not git, gh or data', () => {
+  for (const c of ['grep -rn "git push" docs/', "echo 'run git push later' > notes.md", 'git commit -m "docs: explain git push flow"',
+    "git commit -F - <<'EOF'\ndocs: the git push flow\nEOF", "git commit -m \"$(cat <<'EOF'\ndocs: the git push flow\nEOF\n)\"",
+    "gh pr create --title x --body \"$(cat <<'EOF'\nExplains git push and gh pr merge.\nEOF\n)\"",
+    "printf -v x 'git push origin main'; echo \"$x\"", "x='git push origin main'", 'cmd=(git push origin main)',
+    "declare -x X='git push origin main'; export Y=1", "cd sub && git commit -m 'explain git push'",
+    'for f in a b; do echo "git push $f"; done', 'if git diff --quiet; then echo "git push"; fi',
+    'read -r l <<< "git push origin main"', "test -n 'git push'"]) {
+    assert.equal(r35Row(c), undefined, c);
+  }
+  for (const c of ["printf -v x 'git push origin main'; y=$(node -e 1)", "echo 'git push origin main'; (make)",
+    "echo 'git push origin main' | tee notes.md", "echo 'git push origin main'; \"$EDITOR\" notes.md",
+    "echo 'git push origin main'; if true; then npm test; fi", "echo 'git push origin main'; env -S 'echo x'",
+    "echo 'git push origin main'; EXPORT X=1", "echo 'git push origin main'; some_alias"]) {
+    assert.equal((r35Row(c) || {}).unknown, true, c);
+  }
+});
+test('R35 scanner: an array literal is one assignment word', () => {
+  assert.deepEqual(P('cmd=(git push origin main); echo "${cmd[@]}"').opaque, []);
+  assert.deepEqual(P('cmd=(\n git push origin main\n); echo ok').opaque, []);
+  // a $( ) inside an array literal still runs: its call is read
+  assert.deepEqual(P('a=($(git push origin t/12-x)); echo ok').pushes, [push({ remote: 'origin', refspecs: ['t/12-x'] })]);
+});
+test('NI2: a command substitution in an assignment value is not git text carried into a runner', () => {
+  for (const c of ['BR=$(git branch --show-current); npm test && node scripts/lint.js && git push origin t/12-x',
+    'export BR=$(git branch --show-current); node x.js && git push origin t/12-x',
+    'BR=`git branch --show-current`; node x.js && git push origin t/12-x']) {
+    assert.deepEqual(P(c).opaque, [], c);
+  }
+  // literal git text in the value still carries (NC4 unchanged)
+  assert.ok(wholeRow(`X='cd ~/api && git push origin main' bash -c 'eval "$X"'`));
 });

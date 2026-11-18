@@ -48,6 +48,9 @@
 //   argument, plus git/gh anywhere in the text, makes the whole command one row with an unknown dir.
 // - R34: a write to repos/<o>/<n>/merges and GraphQL mergeBranch merge a branch with no PR: a `merges` entry with
 //   pr null, via 'gh-api-branch-merge', repo null when it cannot be read.
+// - R35: the unaccounted-mention backstop (see `mentions` below and parseCommand): a git/gh + guard-verb mention in the
+//   raw text that no read call accounts for, in a command with a non-data program, is one whole-command row with an
+//   unknown dir that carries the unaccounted mentions (`opaqueDirs[i].mentions`).
 
 const MENTION = new RegExp([
   String.raw`\bgh\b[\s\S]*\bpr\b[\s\S]*\bmerge\b`,
@@ -137,6 +140,96 @@ const GIT_CONFIG_KEY_RISK = /^(alias|include|includeif|remote|url|branch|push)\.
 // git subcommands some guard reads; a call to one of them under injected config is never read exactly.
 const GIT_GUARDED = new Set(['push', 'commit', 'worktree', 'checkout', 'switch', 'branch']);
 
+// ---------------------------------------------------------------- R35: the unaccounted-mention backstop
+// A MENTION is a git or gh word anywhere in the raw text (any quoting level, heredoc bodies, substitution bodies, array
+// literals and assignment values included; case-folded, path and .exe allowed) followed, within its run of words (up to
+// the next ; & | or newline in the raw text), by a guard's verb. A call the parser read (git/gh as a segment's command
+// word, reached by segment()) accounts for the mention that starts in its own command word; so does a call already
+// listed as a row of its own (an unreadable guarded call, R25 `stdbuf git ...`, `env -C d git ...`), and a code-runner
+// row (R28 listCode) accounts for every mention inside its segment. Text inside a call's arguments (a commit message, a
+// --body, a rebase -x string) is not that call, so it is not accounted. Spans are source offsets, never counts.
+// An unaccounted mention plus any segment, at any depth, whose command word is not git, gh or data makes the whole
+// command one row with an unknown dir; the row carries the unaccounted mentions, and each guard's own verb (R33) is
+// tested against them.
+const R35_GIT_WORD = /(?<=^|[\s;&|()<>'"`{}=\\/])(?:git|gh)(?:\.exe)?(?=$|[\s;&|()<>'"`{}])/gi;
+const r35b = (w) => `(?<![A-Za-z0-9_])(?:${w})(?![A-Za-z0-9_])`;
+// the guards' verbs; `branch` = claim-guard's creation forms (checkout -b/-B, switch -c/-C, branch <name>, worktree add)
+const R35_VERBS = {
+  push: new RegExp(r35b('push'), 'i'),
+  commit: new RegExp(r35b('commit'), 'i'),
+  merge: new RegExp([`${r35b('pr')}[\\s\\S]*${r35b('merge')}`, 'pulls/[^\\s/]*/merge(?![A-Za-z0-9_])',
+    'repos/\\S*/merges(?![A-Za-z0-9_])', r35b('mergePullRequest|enablePullRequestAutoMerge|mergeBranch')].join('|'), 'i'),
+  branch: new RegExp([`${r35b('checkout')}[\\s\\S]*?(?:^|[\\s'"])(?:-[A-Za-z]*b|--orphan)`,
+    `${r35b('switch')}[\\s\\S]*?(?:^|[\\s'"])(?:-[A-Za-z]*c|--create|--force-create|--orphan)`,
+    `${r35b('branch')}(?:\\s+-\\S+)*\\s+[^\\s-]`, `${r35b('worktree')}\\s+add${'(?![A-Za-z0-9_])'}`].join('|'), 'i'),
+};
+// mentions(text): [{ at, text }] for every git/gh word followed in its run by a guard's verb.
+function mentions(text) {
+  const t = text.replace(/\\\r?\n/g, (m) => ' '.repeat(m.length));  // a line continuation joins the run
+  const found = [];
+  for (const m of t.matchAll(R35_GIT_WORD)) {
+    const from = m.index + m[0].length;
+    const stop = t.slice(from).search(/[;&|\n]/);
+    const run = t.slice(from, stop < 0 ? t.length : from + stop);
+    if (Object.values(R35_VERBS).some((re) => re.test(run))) found.push({ at: m.index, text: m[0] + run });
+  }
+  return found;
+}
+// Words that never run text: the DATA commands, and these builtins (they change shell state only). Shell reserved words
+// open or close a compound command; a for/select/case header runs nothing itself (its substitutions are walked apart).
+const R35_DATA_BUILTINS = new Set(['export', 'cd', 'pushd', 'popd', 'unset']);
+const R35_CLOSERS = new Set(['done', 'fi', 'esac']);
+const R35_HEADERS = new Set(['for', 'select', 'case']);
+const ASSIGN_WORD = /^[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?\+?=/;
+// r35NonData(ws): does this segment's command word run something other than git, gh or a data command? Assignment-only
+// segments do not; the wrappers the parser reads through (command, builtin, exec, env, timeout, nice) are looked past.
+function r35NonData(ws) {
+  let k = 0;
+  while (k < ws.length && !ws[k].quoted && (KEYWORDS.has(ws[k].text) || R35_CLOSERS.has(ws[k].text))) k++;
+  if (ws[k] && !ws[k].quoted && R35_HEADERS.has(ws[k].text)) return false;
+  for (;;) {
+    while (k < ws.length && ASSIGN_WORD.test(ws[k].text)) k++;
+    if (k >= ws.length) return false;
+    if (ws[k].dyn) return true;  // $x, "${cmd[@]}", ${x:-}, $(...): may be anything
+    const t = wordName(ws[k].text);
+    if (t === 'command' || t === 'builtin' || t === 'exec') {
+      k++;
+      while (k < ws.length && ws[k].text.startsWith('-')) k += ws[k].text === '-a' ? 2 : 1;
+      continue;
+    }
+    if (t === 'env') {
+      k++;
+      while (k < ws.length && ws[k].text.startsWith('-')) {
+        if (/^(-[a-zA-Z]*S|--split-string)/.test(ws[k].text)) return true;  // -S re-splits a string into a command
+        k += /^(-u|-C|--chdir|--unset)$/.test(ws[k].text) ? 2 : 1;
+      }
+      continue;
+    }
+    if (t === 'timeout' || t === 'nice') {
+      k++;
+      while (k < ws.length && ws[k].text.startsWith('-')) k += /^(-s|-k|-n)$/.test(ws[k].text) ? 2 : 1;
+      if (t === 'timeout') k++;
+      continue;
+    }
+    return !(t === 'git' || t === 'gh' || DATA.has(t) || R35_DATA_BUILTINS.has(t));
+  }
+}
+// The text of an assignment value outside its command substitutions: $( ... ) and `...` run now, so their git text
+// cannot ride the environment into a runner (NI2: BR=$(git branch --show-current) is not a carried command).
+function outsideSubs(t) {
+  let o = '';
+  for (let i = 0; i < t.length;) {
+    if (t[i] === '$' && t[i + 1] === '(') {
+      let d = 0, j = i + 1;
+      for (; j < t.length; j++) { if (t[j] === '(') d++; else if (t[j] === ')' && --d === 0) break; }
+      i = j + 1; continue;
+    }
+    if (t[i] === '`') { const j = t.indexOf('`', i + 1); i = j < 0 ? t.length : j + 1; continue; }
+    o += t[i++];
+  }
+  return o;
+}
+
 // ---------------------------------------------------------------- scanner
 
 function scanAt(s, start, mode, opts = {}) {
@@ -149,15 +242,19 @@ function scanAt(s, start, mode, opts = {}) {
   const heredocs = [];
 
   const markBroken = () => { broken = true; segBroken = true; };
-  const w = () => {
+  // R35: a word records where it starts and ends in `s` (start..end), so a call read exactly can account for the
+  // mentions that start in its command word.
+  const w = (at) => {
     if (!word) {
-      word = { text: '', dyn: false, udyn: false, quoted: false, brace: false, redir: pendingRedir, hd: pendingHeredoc };
+      word = { text: '', dyn: false, udyn: false, quoted: false, brace: false, redir: pendingRedir, hd: pendingHeredoc,
+        start: at, arr: false };
       pendingRedir = false; pendingHeredoc = null;
     }
     return word;
   };
   const endWord = () => {
     if (!word) return;
+    word.end = i;
     if (word.brace && word.text !== '{' && word.text !== '}') { word.dyn = true; word.udyn = true; }
     if (word.hd) heredocs.push({ delim: word.text, strip: word.hd.strip });
     else if (!word.redir) words.push(word);
@@ -166,14 +263,15 @@ function scanAt(s, start, mode, opts = {}) {
   const endSeg = (sep, at) => {
     endWord();
     const raw = s.slice(segStart, at).trim();
-    if (words.length || raw) items.push({ kind: 'seg', words, subs, raw, sep, broken: segBroken, stdin: segStdin });
+    if (words.length || raw) items.push({ kind: 'seg', words, subs, raw, sep, broken: segBroken, stdin: segStdin,
+      start: segStart, end: at });  // R35: the segment's span in s
     words = []; subs = []; segBroken = false; segStdin = false;
   };
   const sub = (from) => {  // scan a $( … ) / <( … ) body starting at `from`; returns the index after ')'
     const r = scanAt(s, from, 'subst', opts);
     if (r.broken) markBroken();
     // (a body's own pipes / < reach out._fed when walk() re-scans the body, so r.fed is not needed here)
-    subs.push(s.slice(from, Math.max(from, r.end - 1)));
+    subs.push({ text: s.slice(from, Math.max(from, r.end - 1)), base: from });  // R35: where the body sits in s
     return r.end;
   };
   const consumeHeredocs = (k) => {
@@ -189,7 +287,7 @@ function scanAt(s, start, mode, opts = {}) {
     return k;
   };
   const dollar = (k, inDq) => {  // k at '$'; returns next index
-    const ww = w();
+    const ww = w(k);
     const c = s[k + 1];
     if (c === '(') {
       const end = sub(k + 2);
@@ -225,13 +323,20 @@ function scanAt(s, start, mode, opts = {}) {
     let j = k + 1;
     while (j < n && s[j] !== '`') j += s[j] === '\\' ? 2 : 1;
     if (j >= n) { markBroken(); j = n; }
-    subs.push(s.slice(k + 1, j).replace(/\\([`\\$])/g, '$1'));
-    const ww = w();
+    // the body without its \` \\ \$ escapes; map[x] = where body char x sits in s (R35 spans; map[length] = the end)
+    let body = ''; const map = [];
+    for (let q = k + 1; q < j; q++) {
+      if (s[q] === '\\' && q + 1 < j && '`\\$'.includes(s[q + 1])) q++;
+      map.push(q); body += s[q];
+    }
+    map.push(j);
+    subs.push({ text: body, map });
+    const ww = w(k);
     ww.text += s.slice(k, j + 1); ww.dyn = true; if (!inDq) ww.udyn = true;
     return Math.min(n, j + 1);
   };
   const dquote = (k) => {  // k just after the opening "
-    const ww = w(); ww.quoted = true;
+    const ww = w(k - 1); ww.quoted = true;
     while (k < n) {
       const c = s[k];
       if (c === '"') return k + 1;
@@ -251,6 +356,14 @@ function scanAt(s, start, mode, opts = {}) {
 
   while (i < n) {
     const c = s[i];
+    // R35: an array literal (cmd=(git push origin main)) is ONE assignment word up to its `)`: its blanks and newlines
+    // are part of it, quotes and $( ... ) inside it are read as usual. (Before, its words read as a command.)
+    if (word && word.arr) {
+      if (c === ')') { word.text += c; word.arr = false; i++; continue; }
+      if (' \t\r\n;&|<>('.includes(c)) { word.text += c === '\n' ? ' ' : c; i++; continue; }
+    } else if (c === '(' && word && !word.quoted && /^[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?\+?=$/.test(word.text)) {
+      word.arr = true; word.text += c; i++; continue;
+    }
     if (c === '#' && !word) { while (i < n && s[i] !== '\n') i++; continue; }
     if (c === ' ' || c === '\t' || c === '\r') { endWord(); i++; continue; }
     if (c === '\n') { endSeg('\n', i); i = consumeHeredocs(i + 1); segStart = i; continue; }
@@ -273,7 +386,7 @@ function scanAt(s, start, mode, opts = {}) {
     if (c === '<' || c === '>') {
       if (s[i + 1] === '(') {  // process substitution: it runs
         fed = true;  // R28c / R28d: <( ... ) feeds a command; so does >( ... ) (its body reads the outer output)
-        const end = sub(i + 2); const ww = w();
+        const end = sub(i + 2); const ww = w(i);
         ww.text += s.slice(i, end); ww.dyn = true; ww.udyn = true; i = end; continue;
       }
       if (word && /^\d+$/.test(word.text) && !word.quoted && !word.dyn) word = null; else endWord();
@@ -290,18 +403,18 @@ function scanAt(s, start, mode, opts = {}) {
       pendingRedir = true; continue;
     }
     if (c === "'") {
-      const j = s.indexOf("'", i + 1); const ww = w(); ww.quoted = true;
+      const j = s.indexOf("'", i + 1); const ww = w(i); ww.quoted = true;
       if (j < 0) { ww.text += s.slice(i + 1); markBroken(); i = n; } else { ww.text += s.slice(i + 1, j); i = j + 1; }
       continue;
     }
     if (c === '"') { i = dquote(i + 1); continue; }
     if (c === '\\') {
       if (s[i + 1] === '\n') { i += 2; continue; }
-      const ww = w(); ww.text += s[i + 1] ?? ''; ww.quoted = true; i += 2; continue;
+      const ww = w(i); ww.text += s[i + 1] ?? ''; ww.quoted = true; i += 2; continue;
     }
     if (c === '`') { i = backtick(i, false); continue; }
     if (c === '$') { i = dollar(i, false); continue; }
-    const ww = w();
+    const ww = w(i);
     if (c === '~' && ww.text === '' && !ww.quoted) {              // tilde expansion
       const nx = s[i + 1];
       if (home && (nx === undefined || /[/\s;&|()<>]/.test(nx))) { ww.text += home; i++; continue; }
@@ -311,6 +424,7 @@ function scanAt(s, start, mode, opts = {}) {
     if (c === '{') ww.brace = true;                               // brace expansion (unless a bare { group)
     ww.text += c; i++;
   }
+  if (word && word.arr) markBroken();  // an array literal with no `)`
   endSeg(null, n);
   if (mode === 'subst') markBroken();
   return { items, end: n, broken, fed };
@@ -700,7 +814,11 @@ function segment(it, st, out, ctx) {
     return null;
   };
   // R28 / R28a: code that may run git/gh from any dir; its git/gh aliases are resolved too (I3)
-  const listCode = (raw, text) => { aliasesInText(text, raw, out); return list(true, false, raw); };
+  // R35: such a row (unknown dir, the segment's text) already reports every mention inside the segment.
+  const listCode = (raw, text) => {
+    out._acct.push([ctx.map(it.start), ctx.map(it.end)]);
+    aliasesInText(text, raw, out); return list(true, false, raw);
+  };
   const opaque = () => (mentions ? list() : null);
   const ws = it.words;
   // R28d: `coproc` starts a command that reads what is later written to ${NAME[1]}: a feed and a runner at once
@@ -716,7 +834,8 @@ function segment(it, st, out, ctx) {
       env[ws[k].text.slice(0, eq)] = { text: ws[k].text.slice(eq + 1), dyn: ws[k].dyn };
       // NC4: a prefix assignment whose value is itself a git command (cd ~/x && git push) carries the git text to a
       // runner in the same command through the environment, bypassing the dynamic-code clauses.
-      if (MENTION.test(ws[k].text.slice(eq + 1))) out._assignGit = true;
+      // NI2: only the value's own text counts, not what its command substitutions run now
+      if (MENTION.test(outsideSubs(ws[k].text.slice(eq + 1)))) out._assignGit = true;
       k++;
     }
     const t = k < ws.length ? wordName(ws[k].text) : '';
@@ -747,7 +866,18 @@ function segment(it, st, out, ctx) {
       k++; wrapped = true;
       while (k < ws.length && ws[k].text.startsWith('-')) {
         // -C/--chdir moves the command elsewhere; -S re-splits a string into a command: unreadable.
-        if (/^(-[a-zA-Z]*[CS]|--chdir|--split-string)/.test(ws[k].text)) return opaque();
+        if (/^(-[a-zA-Z]*[CS]|--chdir|--split-string)/.test(ws[k].text)) {
+          const rows = out.opaque.length;
+          opaque();
+          // R35: an -C/--chdir row (its R20 dir is the literal --chdir) accounts for the git/gh words it names; an -S
+          // string is code, so its mentions stay for R35
+          if (out.opaque.length > rows && !/^(-[a-zA-Z]*S|--split-string)/.test(ws[k].text)) {
+            for (const a of ws.slice(k)) {
+              if (!a.dyn && /^(git|gh)$/.test(cmdName(a.text))) out._acct.push([ctx.map(a.start), ctx.map(a.end)]);
+            }
+          }
+          return null;
+        }
         k += ws[k].text === '-u' ? 2 : 1;
       }
       continue;
@@ -783,7 +913,7 @@ function segment(it, st, out, ctx) {
       if (GH_CONFIG_ENV.test(key)) next = { ...(next || st), ghConfig: true };
       if (key === 'CDPATH' && v !== null) next = { ...(next || st), cdpath: a.dyn || v !== '' };
       // NC4: an exported git command carries into a runner through the environment (export X='...git push...')
-      if (v !== null && MENTION.test(v)) out._assignGit = true;
+      if (v !== null && MENTION.test(outsideSubs(v))) out._assignGit = true;
     }
     return next;
   }
@@ -810,11 +940,18 @@ function segment(it, st, out, ctx) {
     // but what the author meant is unclear: later dirs are unknown.
     if (args.some((a) => !a.dyn && /^(cd|pushd|popd)$/.test(a.text))) return { ...st, cdOpaque: true };
     // R25: an unknown command word (stdbuf -oL, winpty, flock f, ...) followed by git/gh may run it: unreadable.
-    if (args.some((a) => !a.dyn && /^(git|gh)$/.test(cmdName(a.text)))) return opaque();
+    const gitArgs = args.filter((a) => !a.dyn && /^(git|gh)$/.test(cmdName(a.text)));
+    if (gitArgs.length) {
+      const rows = out.opaque.length;
+      opaque();
+      // R35: listed with its R20 dir, the row accounts for the git/gh words it names (by their own spans)
+      if (out.opaque.length > rows) for (const a of gitArgs) out._acct.push([ctx.map(a.start), ctx.map(a.end)]);
+    }
     return null;
   }
   if (name !== 'git' && name !== 'gh') return null;  // DATA
   let verdict = null;
+  const rows = out.opaque.length;
   try {
     if (name === 'git') verdict = parseGit(args, st, env, out, it.raw);
     else verdict = parseGh(args, st, env, out, it.raw);
@@ -825,10 +962,14 @@ function segment(it, st, out, ctx) {
   if (verdict === 'opaque') list();  // guarded and unreadable: listed even with no MENTION hit
   else if (verdict === 'opaque-any') list(false, true);
   else if (verdict === 'maybe') opaque();
+  // R35: this call accounts for the mention starting in its own command word: it was read (verdict null: a report or a
+  // known non-guarded call or an alias for the hook to resolve), or it is already a row of its own.
+  if (verdict === null || out.opaque.length > rows) out._acct.push([ctx.map(ws[k].start), ctx.map(ws[k].end)]);
   return null;
 }
 
-function walk(src, out, initial, opts) {
+// map(x): where offset x of src sits in the whole command text (R35 spans).
+function walk(src, out, initial, opts, map = (x) => x) {
   const { items, fed } = scanAt(src, 0, 'top', opts);
   if (fed) out._fed = true;  // R28c: a pipe or < redirection anywhere (substitution bodies included)
   let st = initial;
@@ -837,8 +978,11 @@ function walk(src, out, initial, opts) {
   for (const it of items) {
     if (it.kind === 'open') { stack.push(st); st = { ...st }; prevSep = null; continue; }
     if (it.kind === 'close') { if (stack.length) st = stack.pop(); prevSep = null; continue; }
-    for (const body of it.subs) walk(body, out, st, opts);  // substitutions run, in the segment's cwd
-    const next = segment(it, st, out, { text: src, piped: prevSep === '|' });
+    for (const body of it.subs) {  // substitutions run, in the segment's cwd
+      walk(body.text, out, st, opts, body.map ? (x) => map(body.map[x]) : (x) => map(body.base + x));
+    }
+    if (r35NonData(it.words)) out._nonData = true;  // R35: at any depth
+    const next = segment(it, st, out, { text: src, piped: prevSep === '|', map });
     // Pipelines and background jobs run in subshells: their cd/export does not carry.
     if (next && it.sep !== '|' && it.sep !== '&' && prevSep !== '|') st = next;
     prevSep = it.sep;
@@ -848,7 +992,7 @@ function walk(src, out, initial, opts) {
 // parseCommand(cmd, { home, cdpath }): home (optional) is the literal path `~` and $HOME stand for; cdpath (optional)
 // is true when the hook's own environment has a non-empty CDPATH (R31).
 function parseCommand(cmd, opts = {}) {
-  const out = { merges: [], pushes: [], branches: [], commits: [], opaque: [], opaqueDirs: [], aliases: [] };
+  const out = { merges: [], pushes: [], branches: [], commits: [], opaque: [], opaqueDirs: [], aliases: [], _acct: [] };
   const o = opts || {};
   const text = String(cmd == null ? '' : cmd);
   walk(text, out,
@@ -868,6 +1012,18 @@ function parseCommand(cmd, opts = {}) {
     if (at >= 0) out.opaqueDirs[at] = { ...out.opaqueDirs[at], unknown: true };
     else { out.opaque.push(text); out.opaqueDirs.push({ dir: null, unknown: true }); }
     aliasesInText(text, text, out);
+  }
+  // R35: a mention no read call accounts for (by position: it starts inside that call's command word), in a command
+  // that runs at least one non-data program, is one row: the whole command, unknown dir. `mentions` carries the
+  // unaccounted mention texts; hook_opaque_rows tests each guard's verb against them. A row already holding the whole
+  // text (R28c-R28e, or a one-segment row) is made unknown and keeps matching on its text, as before.
+  const acct = out._acct, nonData = !!out._nonData;
+  delete out._acct; delete out._nonData;
+  const loose = mentions(text).filter((m) => !acct.some(([s, e]) => m.at >= s && m.at < e));
+  if (loose.length && nonData) {
+    const at = out.opaque.indexOf(text);
+    if (at >= 0) out.opaqueDirs[at] = { ...out.opaqueDirs[at], unknown: true };
+    else { out.opaque.push(text); out.opaqueDirs.push({ dir: null, unknown: true, mentions: loose.map((m) => m.text) }); }
   }
   return out;
 }

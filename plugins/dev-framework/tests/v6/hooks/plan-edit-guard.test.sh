@@ -150,6 +150,18 @@ run "$(bash_ "x='git commit -m x'; eval \"\$x\"")"; expect 2 "R28e(a): eval \"\$
 # NI1: the repo's own node test command chained before an ordinary commit must NOT be read as a plan commit
 run "$(bash_ 'node --test tests/v6/node/*.test.mjs && git add -A && git commit -m x' "$TMP")"; expect 0 "NI1: node --test glob then a commit outside core"
 run "$(bash_ 'python -m pytest -k "$K" && git commit -m x' "$TMP")"; expect 0 "NI1: pytest -k then a commit outside core"
+# --- ruling R35: an unaccounted mention + a non-data program = one whole-command row, unknown dir (from outside core) ---
+for c in "printf -v x 'git commit -m x'; bash -lc \"\$x\"" "printf -v x 'git commit -m x'; nohup bash -c \"\$x\"" \
+  "cmd=(git commit -m x); \"\${cmd[@]}\"" "printf -v x 'git commit -m x'; \${x:-}" \
+  "declare -x X='git commit -m x'; python -c 'import os; os.system(os.environ[\"X\"])'" \
+  "printf -v x 'git commit -m x'; python -c 'import os,sys; os.system(sys.argv[1])' \"\$x\""; do
+  run "$(bash_ "$c" "$TMP")"; expect 2 "R35 (NC6-NC9) outside core: $c"
+done
+# per-guard verb: the unaccounted mention is a push, not a commit, though the text holds `git commit` (read, outside core)
+run "$(bash_ 'npm test && git commit -m "docs: explain git push flow"' "$TMP")"; expect 0 "R35: a push mention is not plan-edit's"
+run "$(bash_ 'npm test && git commit -m "docs: run git commit -a later"' "$TMP")"; expect 2 "R35: a commit mention in a message beside npm (the stated cost)"
+run "$(bash_ 'BR=$(git branch --show-current); npm test && node x.js && git commit -m x' "$TMP")"; expect 0 "R35/NI2: outside core"
+run "$(bash_ "echo 'git commit -m x' > notes.md" "$TMP")"; expect 0 "R35: echo is data"
 g -C "$CORE" reset -q; g -C "$CORE" checkout -q -- docs/plan/PLAN.md
 echo r2 >> "$CORE/README.md"; g -C "$CORE" add README.md
 run "$(bash_ 'git commit -m x')"; expect 0 "only README staged"

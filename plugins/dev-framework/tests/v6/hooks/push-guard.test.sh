@@ -232,6 +232,37 @@ run "$W" 'find . -name "$pat" -delete && git push origin t/12-x'; expect 0 "NI1:
 run "$W" 'sudo -u "$USER" true && git push origin t/12-x'; expect 0 "NI1: sudo with a var option"
 run "$W" '"$REPO/scripts/test.sh" && git push origin t/12-x'; expect 0 "NI1: a path with an expansion is the script-file residual"
 run "$W" 'ssh "$HOST" uptime && git push origin t/12-x'; expect 0 "NI1: ssh remote command"
+# --- ruling R35: an unaccounted mention + a non-data program = one whole-command row, unknown dir ---
+PV="printf -v x 'cd ~/W && git push origin main';"
+for c in "$PV bash -lc \"\$x\"" "$PV sudo bash -c \"\$x\"" "$PV nohup bash -c \"\$x\"" "$PV bash -c\"\$x\"" \
+  "$PV node -p \"require('child_process').execSync(process.argv[1]).toString()\" \"\$x\"" \
+  "cmd=(git push origin main); \"\${cmd[@]}\"" "printf -v x 'git push origin main'; \${x:-}" \
+  "declare -x X='cd ~/W && git push origin main'; python -c 'import os; os.system(os.environ[\"X\"])'" \
+  "printf -v X 'cd ~/W && git push origin main'; export X; python -c 'import os; os.system(os.environ[\"X\"])'" \
+  "$PV python -c 'import os,sys; os.system(sys.argv[1])' \"\$x\""; do
+  HOME="$TMP" run "$U" "$c"; expect 2 "R35 (NC6-NC9), unmanaged cwd: $c"
+done
+says 'cannot read this push command exactly' "R35 text"
+run "$U" 'npm test && git commit -m "docs: explain git push flow"'; expect 2 "R35 stated cost: a git push in a message beside npm"
+# ordinary rows stay allowed (managed cwd)
+run "$W" 'BR=$(git branch --show-current); npm test && node scripts/lint.js && git push origin t/12-x'; expect 0 "R35/NI2"
+run "$W" 'grep -rn "git push" docs/'; expect 0 "R35: grep is data"
+run "$W" "echo 'run git push later' > notes.md"; expect 0 "R35: echo is data"
+run "$W" 'git commit -m "docs: explain git push flow"'; expect 0 "R35: a message with git push, no non-data program"
+run "$W" "git commit -F - <<'EOF'
+docs: explain the git push flow
+
+git push origin t/12-x is how a worker ships.
+EOF"; expect 0 "R35: heredoc commit body naming git push"
+run "$W" "git commit -m \"\$(cat <<'EOF'
+docs: explain the git push flow
+EOF
+)\" && git push origin t/12-x"; expect 0 "R35: \$(cat <<'EOF') commit naming git push, then a push"
+run "$W" "gh pr create --title x --body \"\$(cat <<'EOF'
+Explains git push.
+EOF
+)\""; expect 0 "R35: gh pr create body naming git push"
+run "$W" 'npm test && git push origin t/12-x'; expect 0 "R35: a read push accounts for its own mention"
 # C2 / R21: destinations as git resolves them (W is on main)
 run "$W" 'git push origin @'; expect 2 "C2: @ is the current branch (main)"
 says 'merge to main goes through the merge gate' "@ text"

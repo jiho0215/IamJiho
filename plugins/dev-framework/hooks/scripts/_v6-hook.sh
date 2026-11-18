@@ -115,7 +115,7 @@ hook_parse() {
   if [ -n "$PARSED" ] && ! jq -e . >/dev/null 2>&1 <<<"$PARSED"; then PARSED=""; fi
 }
 
-# hook_opaque_rows <jq-regex> [<alias-regex>]: rulings R20/R25, the ONE place opaque scope facts are read. From
+# hook_opaque_rows <jq-regex> [<alias-regex>]: rulings R20/R25/R35, the ONE place opaque scope facts are read. From
 # $PARSED, every opaque segment matching <jq-regex> (case-insensitive; R33: as a whole word) or flagged `any` (R30: an alias defined by
 # injected config, whose expansion the hook cannot read), plus every git/gh alias call whose
 # expansion matches <alias-regex> (default: <jq-regex>), becomes a row "<unknown 0|1><TAB><dir>" in the array HOOK_OPQ_ROWS (dir empty = the hook cwd). Scope pass: no
@@ -138,9 +138,12 @@ hook_opaque_rows() {
     [ -n "$row" ] && HOOK_OPQ_ROWS+=("$row")
   # R33: the verb must stand as a word in the row text (mergeStateStatus, --merges, pushd are not merge / push): no
   # word character right before it, and none right after it unless it ends in one that is not a word char (pulls/5)
+  # R35: a row that carries `mentions` (the parser's unaccounted-mention row: the whole command, unknown dir) is this
+  # guard's when one of those mentions holds its verb; the rest of the command text does not count for it.
   done < <(jq -r --arg re "$re" '("(?<![A-Za-z0-9_])(?:" + $re + ")(?:(?<=[^A-Za-z0-9_])|(?![A-Za-z0-9_]))") as $wre
       | [.opaque, (.opaqueDirs // [])] | transpose[]
-      | select(((.[0] // "") | test($wre; "i")) or (.[1].any == true))
+      | select((if ((.[1].mentions | type) == "array") then any(.[1].mentions[]; test($wre; "i"))
+                else ((.[0] // "") | test($wre; "i")) end) or (.[1].any == true))
       | "\(if .[1].unknown == false then 0 else 1 end)\t\(.[1].dir // "")"' <<<"$PARSED" | tr -d '\r')
   while IFS= read -r w; do
     [ -n "$w" ] && cmds["$w"]=1

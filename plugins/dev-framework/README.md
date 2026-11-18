@@ -300,10 +300,39 @@ Each item is a path on which a rule above does NOT block. They are accepted resi
    R33: `mergeStateStatus`, `--merges`, `pushd`, `committed` are not verbs), so code that deliberately hides the verb
    or the git word (`bash -c "git $V"`, `pu""sh`, `g""it`) is not seen — no stronger than running a script file (item
    18); code stored in a variable by an EARLIER Bash call and run now (`eval "$x"` with no git text in this command)
-   is not seen either; a code runner not in `CODE_RUNNERS` that
-   mentions git only inside a string (`npx foo -c 'git push'`, `uv run x -c '...'`) is not seen; an alias inside an
+   is not seen either; an alias inside an
    interpreter string run from an unmanaged cwd is looked up there (only global aliases are seen); `sudo` and `nohup`
    are not read through, so `sudo git push ...` blocks as unreadable from any cwd.
+
+   **Backstop: the unaccounted-mention rule (ruling R35).** The rules above enumerate execution shapes; R35 does not.
+   A *mention* is a `git`/`gh` word anywhere in the raw command text — any quoting level, heredoc bodies, `$( )` /
+   backtick / process-substitution bodies, array literals and assignment values included; case-folded, with a path
+   and `.exe` allowed — followed, within its run of words (up to the next `;`, `&`, `|` or newline; a `\`-newline
+   joins), by a guard's verb: `push`; `commit`; `pr ... merge`, `pulls/<n>/merge`, `repos/.../merges`,
+   `mergePullRequest` / `enablePullRequestAutoMerge` / `mergeBranch`; a branch creation (`checkout -b/-B`,
+   `switch -c/-C`, `branch <name>`, `worktree add`). Each git/gh call the parser read accounts for the mention that
+   starts in its own command word, by source position (not by counting); so does a call already reported as a row of
+   its own (an unreadable guarded call, `stdbuf git ...`, `env -C dir git ...`), and a code-runner row (R28) accounts
+   for every mention inside its segment. Text inside a call's ARGUMENTS is not that call: a commit message, a
+   `--body`, a `rebase -x` string. If any mention is unaccounted and the command has at least one segment, at any
+   depth, whose command word is not `git`, `gh` or data (the parser's `DATA` set — `echo`, `printf` incl. `printf -v`,
+   `grep`, `cat`, `test`, `read`, `declare`/`typeset`/`local`, ... — plus `export`, `cd`, `pushd`, `popd`, `unset`;
+   assignment-only segments and `for`/`case` headers count as data; `env`/`timeout`/`nice`/`command`/`exec` are
+   looked through), the whole command becomes ONE row with an unknown dir. The row carries its unaccounted mentions,
+   and `hook_opaque_rows` tests each guard's own verb (R33) against those mentions, not against the rest of the text.
+   This closes `printf -v x '...git push...'; bash -lc "$x"` (and `sudo` / `nohup` / `xargs` / `setsid` / `wsl` /
+   `busybox` / `find -exec` / `-c"$x"` / `node -p` / `perl -E` / `script -qc` / `watch`), `cmd=(git push origin
+   main); "${cmd[@]}"`, `${x:-}`, `declare -x` / `typeset -x` / `printf -v; export` into a `python`/`node` env, git text
+   handed to `python -c '...sys.argv[1]...' "$x"`, and a runner not in `CODE_RUNNERS` (`npx foo -c 'git push'`).
+   Ordinary work stays allowed: a read call accounts for itself (`BR=$(git branch --show-current); npm test && git
+   push origin t/12-x`), and data-only commands never fire (`grep -rn "git push" docs/`, `echo 'run git push later' >
+   notes.md`, `git commit -m "docs: explain git push flow"`, a heredoc commit or `gh pr create --body "$(cat
+   <<'EOF' ...)"` whose body says `git push`). **Cost** (accepted by the owner): a guarded command spelled as data in
+   a command that also runs a non-data program blocks, e.g. `npm test && git commit -m "... git push ..."`,
+   `git log --grep "git push" | head`, `echo 'git push later' | tee notes.md`; workaround: split the command, or pass
+   the message with `-F <file>`. **Residuals** (not seen by R35 either): text that never spells the command (`git $V`,
+   `pu""sh`, `g""it`, `$'\x67it push'`), code in a file (`bash scripts/x.sh`), and a variable set by an earlier Bash
+   call.
 4. **Web merges** (GitHub UI, API outside Claude's Bash tool) never pass `merge-gate-hook.sh`; they are caught after
    the fact by `bin/reconcile --post-merge` (`lib/reconcile.js`).
 5. **`owner-said` authorship**: `freeze-gate.sh` rule 8 proves an `owner-said` record for this exact plan content
