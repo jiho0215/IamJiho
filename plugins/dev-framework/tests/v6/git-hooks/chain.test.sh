@@ -106,6 +106,19 @@ expect ch_worktree_add_runs_chain 0 - hk git -C "$W" worktree add -q -b feature-
 git -C "$W" worktree remove --force "$TMP/wt" 2>/dev/null
 reset_w
 
+# ch_chain_msys_env_restored: the repo's own hook runs with the CALLER's MSYS path-conversion settings, not the
+# no-pathconv ones bin/_lib.sh sets for our own git.exe calls (both unset, and set by the caller, one of them empty)
+hookfile "$W/.git/hooks/pre-commit" "printf '%s|%s\n' \"\${MSYS_NO_PATHCONV-unset}\" \"\${MSYS2_ARG_CONV_EXCL-unset}\" > '$(mp "$TMP/msys.env")'"
+rm -f "$TMP/msys.env"
+expect ch_chain_msys_env_unset 0 - hk env -u MSYS_NO_PATHCONV -u MSYS2_ARG_CONV_EXCL git -C "$(mp "$W")" commit -q --allow-empty -m m1
+GOT=$(tr -d '\r' < "$TMP/msys.env" 2>/dev/null)
+[ "$GOT" = "unset|unset" ] && ok ch_chain_msys_env_unset || fail "ch_chain_msys_env_unset: chained hook saw '$GOT', want 'unset|unset'"
+rm -f "$TMP/msys.env"
+expect ch_chain_msys_env_set 0 - hk env MSYS_NO_PATHCONV=0 MSYS2_ARG_CONV_EXCL= git -C "$(mp "$W")" commit -q --allow-empty -m m2
+GOT=$(tr -d '\r' < "$TMP/msys.env" 2>/dev/null)
+[ "$GOT" = "0|" ] && ok ch_chain_msys_env_set || fail "ch_chain_msys_env_set: chained hook saw '$GOT', want '0|'"
+reset_w
+
 # --- the dispatcher's own exits
 # ch_depth_bound_blocks: a dir that chains to itself would nest; the bound blocks it
 DEVFW_GK_DEPTH=8 expect ch_depth_bound_blocks block "devfw pre-commit: git hooks nested 8 deep" \
@@ -154,6 +167,12 @@ HK="$RHK" expect ch_rule_allow_runs_chain 0 - hk git -C "$W" commit -q --allow-e
 rules_hk 'gk_pre_commit() { return 3; }'
 HK="$RHK" expect ch_rule_bad_return_blocks block "internal error: gk_pre_commit returned 3" \
   hk git -C "$W" commit -q --allow-empty -m rb3 && ok ch_rule_bad_return_blocks
+# ch_rules_keep_no_pathconv: our own code (the rules) still runs with conversion off, whatever the caller had
+rm -f "$TMP/rules.env"
+rules_hk "gk_pre_commit() { printf '%s|%s\n' \"\${MSYS_NO_PATHCONV-unset}\" \"\${MSYS2_ARG_CONV_EXCL-unset}\" > '$(mp "$TMP/rules.env")'; }"
+HK="$RHK" expect ch_rules_keep_no_pathconv 0 - hk env -u MSYS_NO_PATHCONV -u MSYS2_ARG_CONV_EXCL git -C "$(mp "$W")" commit -q --allow-empty -m rb5
+GOT=$(tr -d '\r' < "$TMP/rules.env" 2>/dev/null)
+[ "$GOT" = "1|*" ] && ok ch_rules_keep_no_pathconv || fail "ch_rules_keep_no_pathconv: rules saw '$GOT', want '1|*'"
 rules_hk 'gk_something_else() { return 0; }'
 HK="$RHK" expect ch_rule_missing_fn_blocks block "rules/pre-commit.sh defines no gk_pre_commit" \
   hk git -C "$W" commit -q --allow-empty -m rb4 && ok ch_rule_missing_fn_blocks

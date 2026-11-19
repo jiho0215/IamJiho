@@ -134,6 +134,21 @@ gk_chain() {
   [ -f "$dir/$name" ] && [ -x "$dir/$name" ] || return 0
   [ ! "$dir" -ef "$GK_HK" ] || return 0
   local rc=0
-  "$dir/$name" "$@" < "$in" || rc=$?
+  # in a subshell, with the caller's MSYS path-conversion settings restored (dispatch.sh captured them before
+  # bin/_lib.sh switched conversion off for our own git.exe calls)
+  ( _gk_restore_caller_env; "$dir/$name" "$@" ) < "$in" || rc=$?
   return "$rc"
+}
+
+# _gk_restore_caller_env: MSYS_NO_PATHCONV and MSYS2_ARG_CONV_EXCL back to the caller's values from
+# GK_CALLER_<var> ("unset" or "set:<value>"); a variable with no captured value is left as it is.
+_gk_restore_caller_env() {
+  local v c
+  for v in MSYS_NO_PATHCONV MSYS2_ARG_CONV_EXCL; do
+    c="GK_CALLER_$v"; c="${!c-}"
+    case "$c" in
+      unset) unset "$v" ;;
+      set:*) export "$v=${c#set:}" ;;
+    esac
+  done
 }

@@ -8,6 +8,10 @@
 #   4. gk_chain: run the hook git would have run without us, and exit with its code.
 # DEVFW_GK_TRACE=1 (tests only; off by default) appends one line per run to <state>/dispatch.log.
 GK_DISPATCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The caller's MSYS path-conversion settings, captured BEFORE bin/_lib.sh overrides them: our own git.exe calls run
+# with conversion off, but the repo's own hook (gk_chain) runs with exactly the caller's values ("unset" or "set:<v>").
+if [ -n "${MSYS_NO_PATHCONV+x}" ]; then GK_CALLER_MSYS_NO_PATHCONV="set:$MSYS_NO_PATHCONV"; else GK_CALLER_MSYS_NO_PATHCONV=unset; fi
+if [ -n "${MSYS2_ARG_CONV_EXCL+x}" ]; then GK_CALLER_MSYS2_ARG_CONV_EXCL="set:$MSYS2_ARG_CONV_EXCL"; else GK_CALLER_MSYS2_ARG_CONV_EXCL=unset; fi
 . "$GK_DISPATCH_DIR/../../bin/_lib.sh"
 . "$GK_DISPATCH_DIR/../../bin/_scope.sh"
 . "$GK_DISPATCH_DIR/_git-lib.sh"
