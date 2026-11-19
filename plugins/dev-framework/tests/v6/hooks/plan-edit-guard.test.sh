@@ -205,6 +205,7 @@ grep -q 'too complex to check in time' <<<"$ERR" || fail "R35f O1 text: $ERR"
 g -C "$CORE" reset -q; g -C "$CORE" checkout -q -- docs/plan/PLAN.md
 echo r2 >> "$CORE/README.md"; g -C "$CORE" add README.md
 run "$(bash_ 'git commit -m x')"; expect 0 "only README staged"
+run "$(bash_ 'git commit -m "Add test case" -- README.md')"; expect 0 "Plan 3b: a case word in a message, README only"
 g -C "$CORE" reset -q; echo r3 >> "$CORE/docs/plan/PLAN.md"
 run "$(bash_ 'git commit -am x')"; expect 2 "R2: unstaged tracked plan change with -a"
 g -C "$CORE" checkout -q -- docs/plan/PLAN.md README.md

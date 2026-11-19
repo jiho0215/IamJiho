@@ -1006,7 +1006,7 @@ test('R35d Crit2: a case pattern ) does not close $( or (; esac ends the case', 
     `printf -v x "gh pr --repo $(case a in a) echo "acme/api" ;; esac) merge 5"; sudo bash -c "$x"`,
     `printf -v x "git -C $(case a in a) echo "." ;; esac) checkout -b t/43-z"; sudo bash -c "$x"`];
   for (const c of rows) assert.ok(unknownRow(c), c);
-  // R35f: a case word makes it the whole-command text row; the reader still finds the full run
+  // the reader finds the full run (R35f(2)'s whole-command fallback is gone, Plan 3b Task 2)
   assert.deepEqual(_mentions(rows[0]).map((m) => m.text), ['git -C $(case a in a) echo "." ;; esac) push origin main']);
   // structure: inside the case the ) is a pattern; after esac the ) closes $(
   assert.deepEqual(stackAt('x=$(case a in a) PAT ;; esac) NEXT', 'PAT'), ['top', '$(']);
@@ -1117,8 +1117,6 @@ test('R35e Crit2: esac ends a case only in command position; an argument esac (e
   assert.deepEqual(stackAt('x=$(case a in esac) NEXT', 'NEXT'), ['top', '$(']);
   assert.deepEqual(stackAt('x=$(case a in a) : # ; esac) NEXT', 'NEXT'), ['top', '$(']);
   // ordinary commands with a case stay readable
-  // R35f stated cost (was R35e: no row): a case word beside a git push is the whole-command row
-  assert.ok(textRow('x=$(case a in a) echo . ;; esac); npm test && git push origin t/12-x'));
 });
 test('R35e: a ) inside a comment (# at word start in code) closes nothing until the line ends', () => {
   for (const [g, c] of [['push', `printf -v x "git -C $(: # )\n) push origin main"; sudo bash -c "$x"`],
@@ -1171,7 +1169,7 @@ test('R35e timing: adversarial shapes at 27 KB, 100 KB and 1 MB (and just under 
     const ms = Number(process.hrtime.bigint() - t0) / 1e6;
     assert.ok(ms < 3000, `${name} took ${ms.toFixed(0)} ms (bound 3000)`);
     assert.ok(ok, `${name} blocks push`);
-    // deep $( is budget-stopped; case / esac / # ) shapes are the R35f fallback row (text, no mentions) by design
+    // deep $( is budget-stopped; case / esac / # ) shapes are exempt from the mentions-array check below
     if (!/^(\$\(|case |echo esac|: # \))/.test(name)) assert.ok(Array.isArray(r35Row(c).mentions), `${name}: read, not stopped by the budget`);
   };
   for (const [name, mk] of Object.entries(SLOW)) {
@@ -1253,31 +1251,8 @@ test('R35f B2: a quote or << inside a # comment opens nothing (the scanner stays
   assert.deepEqual(stackAt('x=$(: # <<E\nMID ) NEXT', 'NEXT'), ['top']);
   assert.deepEqual(stackAt('x=$(: # "\nMID ) NEXT', 'NEXT'), ['top']);
 });
-test('R35f (2) complexity fallback: guard verb after a git/gh word AND (a case word OR an exotic # comment) => whole row', () => {
-  const push = 'git push origin t/12-x';
-  // each trigger alone, beside a push the parser reads exactly (so nothing else makes a row)
-  for (const c of [`case "$1" in a) : ;; esac; ${push}`, `echo case; ${push}`,
-    ...["'", '"', '`', '$(', ')', '<<'].map((ch) => `x=1 # note ${ch}\n${push}`)]) {
-    assert.ok(textRow(c), c);
-  }
-  // no trigger: ordinary comments and words that merely contain "case"
-  for (const c of [`x=1 # a plain note\n${push}`, `echo showcase; ${push}`, `echo lowercase_x; ${push}`, `echo case-x; ${push}`,
-    `echo x#'y'; ${push}`, `echo '# not a comment ('; ${push}`]) {
-    assert.equal(r35Row(c), undefined, c);
-  }
-  // the coarse predicate must hold: a guard verb AFTER a git/gh word (here only before it, or no verb at all)
-  for (const c of ['echo push; case a in a) : ;; esac; git status', 'case a in a) : ;; esac; git status',
-    "x=1 # it's\ngit log --oneline"]) {
-    assert.equal(r35Row(c), undefined, c);
-  }
-  // it is the whole command, unknown dir: every guard whose verb the text names reads it as its own
-  for (const [g, s] of [['merge', 'gh pr merge 1 --repo acme/api'], ['commit', 'git commit -m x'], ['branch', 'git checkout -b t/43-z']]) {
-    assert.ok(guardBlocks(`case a in a) : ;; esac; ${s}`, g), g);
-  }
-  // a comment inside a substitution body counts too
-  assert.ok(textRow(`x=$(: # it's\n); ${push}`));
-  // an R35 row already there (with its mentions) becomes the text row: no precise reading is trusted for it
-  const both = 'case a in a) : ;; esac; npm test && echo "git push origin main"';
-  assert.ok(Array.isArray(_mentions(both)) && _mentions(both).length === 1);
-  assert.ok(textRow(both), both);
+test('Plan 3b: a case word or a quote in a comment no longer makes a whole-command row', () => {
+  const r = parseCommand('git commit -m "fix the upper case bug" && git push origin t/12-x');
+  assert.equal(r.opaque.length, 0);
+  assert.deepEqual(r.pushes[0].refspecs, ['t/12-x']);
 });

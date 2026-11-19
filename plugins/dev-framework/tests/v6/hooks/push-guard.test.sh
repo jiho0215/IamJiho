@@ -212,6 +212,8 @@ EOF
 run "$W" 'cat file > out.txt'; expect 0 "no-regression: cat file > out.txt"
 run "$W" 'gh pr view 5 --json mergeStateStatus'; expect 0 "no-regression: gh pr view --json mergeStateStatus"
 run "$W" 'git push origin t/12-x'; expect 0 "no-regression: claimed push"
+run "$W" 'git commit -m "fix the upper case bug" && git push origin t/12-x'; expect 0 "Plan 3b: a case word in a message, claimed push"
+run "$W" "git push origin t/12-x # don't (re)push"; expect 0 "Plan 3b: a quote in a trailing comment, claimed push"
 run "$W" "find . -name '*.orig' -exec rm {} \\; && git push origin t/12-x"; expect 0 "R28d: a bare {} is not a dynamic argument"
 # --- fix round 5 (ruling R28e, NC4; NI1 no-regressions) ---
 run "$U" "export X='cd ~/api && git push origin main'; bash -c 'eval \"\$X\"'"; expect 2 "NC4: export carries git into a runner"
@@ -310,7 +312,7 @@ run "$W" "printf -v x \"git -C \$(case a in b) echo esac ;; a) echo . ;; esac) p
 expect 2 "R35e Crit2: an argument esac does not end the case"
 run "$W" "printf -v x \"git -C \$(: # )${NL}) push origin main\"; sudo bash -c \"\$x\""
 expect 2 "R35e: a ) in a comment does not close \$("
-run "$W" "x=\$(case a in a) echo . ;; esac); npm test && git push origin t/12-x"; expect 2 "R35f stated cost: a case word beside a git push (was R35e: 0)"
+run "$W" "x=\$(case a in a) echo . ;; esac); npm test && git push origin t/12-x"; expect 0 "Plan 3b: a case word beside a claimed git push is read exactly (R35f(2) reverted)"
 t0=$(date +%s%N)
 run "$W" "echo $(printf 'gh pr %.0s' $(seq 4500))${NL}printf -v x 'import os; os.system(\"git push origin main\")'; $PYS"
 ms=$(( ($(date +%s%N) - t0) / 1000000 ))
@@ -324,7 +326,7 @@ run "$W" "printf -v x \"git -C \$(: # '${NL}: '${NL}) \" '; echo .) push origin 
 expect 2 "R35f B2: a quote inside a # comment opens nothing"
 run "$W" "printf -v x \"git -C \$(: # <<E${NL}: '${NL}E${NL}) \" '; echo .) push origin main\"; sudo bash -c \"\$x\""
 expect 2 "R35f B2: a << inside a # comment opens no heredoc"
-run "$W" "x=1 # it's done${NL}git push origin t/12-x"; expect 2 "R35f stated cost: a quote in a comment beside a git push"
+run "$W" "x=1 # it's done${NL}git push origin t/12-x"; expect 0 "Plan 3b: a quote in a comment beside a claimed git push (R35f(2) reverted)"
 run "$W" "x=1 # done${NL}git push origin t/12-x"; expect 0 "R35f: a plain comment beside a git push"
 # O1: many ordinary calls must not run the hook past its timeout (which would allow the command): past the 10 s
 # local-work budget the hook blocks; measured end to end

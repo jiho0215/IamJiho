@@ -1312,7 +1312,6 @@ function walk(src, out, initial, opts, map = (x) => x) {
   for (const it of items) {
     tick();
     if (it.kind === 'comment') {
-      if (R35F_COMMENT.test(it.text)) out._exoticComment = true;  // R35f (2)
       if (!out._nonData && r35NonDataIn(it.text, opts, 0)) out._nonData = true;
       continue;
     }
@@ -1382,24 +1381,8 @@ function readCommand(text, o) {
     if (at >= 0) out.opaqueDirs[at] = { ...out.opaqueDirs[at], unknown: true };
     else { out.opaque.push(text); out.opaqueDirs.push({ dir: null, unknown: true, mentions: loose.map((m) => m.text) }); }
   }
-  // R35f (2) complexity fallback: syntax the frame reader has misread in every round — a `case` word anywhere, or a
-  // comment (as the scanner sets it aside) holding ' " ` $( ) or << — together with the coarse predicate (a guard's
-  // verb anywhere after a git/gh word) makes the whole command one unknown-dir row matched on its TEXT (no mentions
-  // list: every guard whose verb the text names reads it as its own). No precise reading is trusted for it.
-  const exotic = !!out._exoticComment;
-  delete out._exoticComment;
-  if ((exotic || R35F_CASE.test(text)) && coarseHit(text)) {
-    const at = out.opaque.indexOf(text);
-    if (at >= 0) out.opaqueDirs[at] = { dir: null, unknown: true };
-    else { out.opaque.push(text); out.opaqueDirs.push({ dir: null, unknown: true }); }
-  }
   return out;
 }
-// R35f (2): a `case` word (not part of a longer word, path or option) and a comment holding a quote, backtick, $(, )
-// or <<; coarseHit(t): the size-cap predicate on the whole text (a guard verb anywhere after the first git/gh word).
-const R35F_CASE = /(?<![A-Za-z0-9_.\-/$])case(?![A-Za-z0-9_.\-/])/;
-const R35F_COMMENT = /['"`)]|\$\(|<</;
-const coarseHit = (t) => coarseMentions(t, [...t.matchAll(R35_GIT_WORD)].slice(0, 1)).length > 0;
 
 // R29: the command names an alias step may resolve to (the hook walks alias chains with these).
 // _mentions / _frameScan: the R35 mention reader and its frame scanner alone, for their fences (no guard reads them).
