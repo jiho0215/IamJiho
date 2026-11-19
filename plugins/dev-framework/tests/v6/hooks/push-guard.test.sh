@@ -298,6 +298,24 @@ for c in "false && echo \$[ #]; $PY" ": \$[ #]; $PY" "[[ x =~ x|#b ]]; $PY" \
   HOME="$TMP" run "$U" "$c"; expect 2 "R35d, unmanaged cwd: $c"
 done
 run "$W" "x=a#b; npm test && git push origin t/12-x"; expect 0 "R35c: x=a#b is ordinary"
+# --- R35 fix round 4 (ruling R35e) ---
+NL=$'\n'
+PADX="echo \"$(printf '%17000s' '' | tr ' ' x)\"; "
+PYS="python3 -c 'import sys; exec(sys.argv[1])' \"\$x\""
+run "$W" "${PADX}printf -v x 'import os; os.system(\"git \"${NL}\"push origin main\")'; $PYS"
+expect 2 "R35e N1: above the size cap the verb on the next line still counts"
+run "$W" "$(printf 'git status; %.0s' $(seq 201))printf -v x 'git \$(:${NL}) push origin main'; python3 -c 'import os,sys; os.system(sys.argv[1])' \"\$x\""
+expect 2 "R35e N1: above the word cap the verb on the next line still counts"
+run "$W" "printf -v x \"git -C \$(case a in b) echo esac ;; a) echo . ;; esac) push origin main\"; sudo bash -c \"\$x\""
+expect 2 "R35e Crit2: an argument esac does not end the case"
+run "$W" "printf -v x \"git -C \$(: # )${NL}) push origin main\"; sudo bash -c \"\$x\""
+expect 2 "R35e: a ) in a comment does not close \$("
+run "$W" "x=\$(case a in a) echo . ;; esac); npm test && git push origin t/12-x"; expect 0 "R35e: an ordinary case in \$( )"
+t0=$(date +%s%N)
+run "$W" "echo $(printf 'gh pr %.0s' $(seq 4500))${NL}printf -v x 'import os; os.system(\"git push origin main\")'; $PYS"
+ms=$(( ($(date +%s%N) - t0) / 1000000 ))
+expect 2 "R35e Imp3: 27 KB of gh pr words, push on the next line"
+[ "$ms" -lt 10000 ] || fail "R35e Imp3: 27 KB took ${ms} ms (bound 10000; the hook timeout is 30 s)"
 # C2 / R21: destinations as git resolves them (W is on main)
 run "$W" 'git push origin @'; expect 2 "C2: @ is the current branch (main)"
 says 'merge to main goes through the merge gate' "@ text"

@@ -174,6 +174,21 @@ run "$(bash_ "echo \${x:- #}; printf -v y 'git commit -m x'; sudo bash -c \"\$y\
 # --- R35 fix round 3 (ruling R35d) ---
 run "$(bash_ ": \$[ #]; printf -v y 'git commit -m x'; sudo bash -c \"\$y\"" "$TMP")"; expect 2 "R35d Crit1: \$[ #] (commit)"
 run "$(bash_ "printf -v x \"git -C \$(case a in a) echo \".\" ;; esac) commit -m x\"; sudo bash -c \"\$x\"" "$TMP")"; expect 2 "R35d Crit2: case ) in \$( (commit)"
+# --- R35 fix round 4 (ruling R35e) ---
+NL=$'\n'
+PADX="echo \"$(printf '%17000s' '' | tr ' ' x)\"; "
+PYS="python3 -c 'import sys; exec(sys.argv[1])' \"\$x\""
+run "$(bash_ "${PADX}printf -v x 'import os; os.system(\"git \"${NL}\"commit -m x\")'; $PYS" "$TMP")"
+expect 2 "R35e N1: above the size cap the verb on the next line still counts (commit)"
+run "$(bash_ "printf -v x \"git -C \$(case a in b) echo esac ;; a) echo . ;; esac) commit -m x\"; sudo bash -c \"\$x\"" "$TMP")"
+expect 2 "R35e Crit2: an argument esac does not end the case (commit)"
+run "$(bash_ "printf -v x \"git -C \$(: # )${NL}) commit -m x\"; sudo bash -c \"\$x\"" "$TMP")"
+expect 2 "R35e: a ) in a comment does not close \$( (commit)"
+t0=$(date +%s%N)
+run "$(bash_ "echo $(printf 'gh pr %.0s' $(seq 4500))${NL}printf -v x 'import os; os.system(\"git commit -m x\")'; $PYS" "$TMP")"
+ms=$(( ($(date +%s%N) - t0) / 1000000 ))
+expect 2 "R35e Imp3: 27 KB of gh pr words, commit on the next line"
+[ "$ms" -lt 10000 ] || fail "R35e Imp3: 27 KB took ${ms} ms (bound 10000; the hook timeout is 30 s)"
 g -C "$CORE" reset -q; g -C "$CORE" checkout -q -- docs/plan/PLAN.md
 echo r2 >> "$CORE/README.md"; g -C "$CORE" add README.md
 run "$(bash_ 'git commit -m x')"; expect 0 "only README staged"

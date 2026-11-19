@@ -31,8 +31,10 @@ fi
 NOPAQUE=0; NUNRES=0
 if [ "$PARSER_OK" -eq 1 ]; then
   NMERGE=$(jq -r '.merges | length' <<<"$PARSED" | tr -d '\r')
-  # the GraphQL merge mutations are words of their own (R33 matches whole words); so is the branch-merge API (R34)
-  hook_opaque_rows 'merge|pulls/|mergePullRequest|enablePullRequestAutoMerge|mergeBranch|repos/\S*/merges' 'merge|pulls/' '\bgh\b|merge|pulls/'
+  # the GraphQL merge mutations are words of their own (R33 matches whole words); so is the branch-merge API (R34):
+  # a path segment `merges` (repos/<o>/<n>/merges). R35e: written `(?<=/)merges`, not `repos/\S*/merges`, which
+  # retried from every `repos/` (quadratic: a 1 MB whole-command row of repos/repos/... passed the hook timeout)
+  hook_opaque_rows 'merge|pulls/|mergePullRequest|enablePullRequestAutoMerge|mergeBranch|(?<=/)merges' 'merge|pulls/' '\bgh\b|merge|pulls/'
   for row in "${HOOK_OPQ_ROWS[@]}"; do
     case "$row" in
       2*) NUNRES=$((NUNRES + 1)) ;;

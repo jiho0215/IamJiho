@@ -312,7 +312,10 @@ Each item is a path on which a rule above does NOT block. They are accepted resi
    `${ }`, backticks, `( )` / `<( )` / `>( )` and heredoc bodies (`<<-` and quoted delimiters included; `<<` inside
    arithmetic is a shift, and `<<<` a here-string, not a heredoc). A `)` closes a `( )` / `$( )` only when the
    scanner is sure (R35d): while a `case` opened in that frame waits for its `esac`, a `)` is a pattern and closes
-   nothing; a frame the scanner is not sure has closed stays open. A mention's run is the body of the frame that holds it — from the mention to
+   nothing, and (R35e) an `esac` ends the case only as a command word — after `;` / `&` / `|` / a
+   newline (so after `;;` / `;&` / `;;&`), not escaped, not a redirection target — so an argument `esac`
+   (`echo esac`) keeps it open; nor does a `)` or an `esac` close anything after a word-start `#` until the line
+   ends (it may be a comment: `$(: # )`); a frame the scanner is not sure has closed stays open. A mention's run is the body of the frame that holds it — from the mention to
    where the stack closes that frame, with `"..."` / backtick escapes and `$'...'` decoded — read as code from a fresh
    stack, and it ends at the first `;`, `&&`, `||`, `|`, bare `&` or newline at that fresh stack's top level, never
    inside a deeper frame; a redirection (`2>&1`, `>&2`, `&>`, `&>>`, `>|`, `<&`) never ends it, and a `\`-newline
@@ -321,10 +324,12 @@ Each item is a path on which a rule above does NOT block. They are accepted resi
    as a comment** (R35d: every round found a `#` bash does not treat as one — `x=$(true)#`, `${x:- #}`, `$[ #]`,
    `[[ x =~ x|#b ]]`), and text the parser sets aside as a comment still counts for the non-data test. The fail
    direction is fixed: ending a run early or dropping a mention would be a bypass, ending it late is at most a false
-   block, so an unbalanced or unknown frame never closes — the run goes to the end of the text. **Size cap** (R35d):
-   above 16 KB or 200 git/gh words the fine reading is skipped — every git/gh word followed on its own line by a
-   guard's verb is a mention and none is accounted — and the parser stays linear (about 0.1 s on 1 MB; nesting deeper
-   than the stack is one whole-command row). The verbs are: `push`; `commit`; `pr ... merge`, `pulls/<n>/merge`, `repos/.../merges`,
+   block, so an unbalanced or unknown frame never closes — the run goes to the end of the text. **Size cap** (R35d, R35e):
+   above 16 KB or 200 git/gh words the fine reading is skipped — the whole text is one run: a guard's verb ANYWHERE
+   after the first git/gh word (any line, quote or frame) is a mention, and none is accounted. Every verb test is
+   linear, and a **time budget** (R35e) bounds the rest: past 2 s the parser stops and the whole command is one
+   unknown-dir row matched on its text (fail closed, as nesting deeper than the stack is), so a slow shape costs a
+   false block, never an allow by the 30 s hook timeout (the adversarial 1 MB shapes in the tests parse in < 0.4 s). The verbs are: `push`; `commit`; `pr ... merge`, `pulls/<n>/merge`, `repos/.../merges`,
    `mergePullRequest` / `enablePullRequestAutoMerge` / `mergeBranch`; a branch creation (`checkout -b/-B`,
    `switch -c/-C`, `branch <name>`, `worktree add`). Each git/gh call the parser read accounts for the mention that
    starts in its own command word, by source position (not by counting); so does a call already reported as a row of
@@ -358,8 +363,13 @@ Each item is a path on which a rule above does NOT block. They are accepted resi
    (`npm test && gh pr create --body "fixes the git push docs"`), `git log --grep "git push" | head`,
    `echo 'git push later' | tee notes.md`, and (R35a) `echo "$(git log -1)"; echo 'run git push later'`;
    a trailing comment that names a guarded command beside a test run (R35d:
-   `npm test && git commit -m "x" && git push origin t/12-x # git push origin main`), and any command over 16 KB that
-   names a guarded command beside a non-data program (the size cap); workaround: split the command, drop the comment,
+   `npm test && git commit -m "x" && git push origin t/12-x # git push origin main`), any command over 16 KB or with
+   over 200 git/gh words that has a guard's verb anywhere after a git/gh word beside a non-data program (the size cap;
+   e.g. a long heredoc commit message saying `git push` before `npm test`), any command whose parse passes the 2 s
+   budget and whose text names a guard's verb, and a word-start `#` that is no comment
+   (`[[ x =~ a|#b ]]` inside `$( )`) holding that frame open to the line end; and in `merge-gate-hook.sh`, a
+   whole-command row (unknown dir, matched on its text) counts any path segment `merges` (`(?<=/)merges`, R35e: the
+   old `repos/\S*/merges` was quadratic on a long text); workaround: split the command, drop the comment,
    or pass the message with `-F <file>`. **Residuals** (not seen by R35 either): text
    that never spells the command (`git $V`, `pu""sh`, `g""it`, `$'\x67it push'`, a command word renamed through the
    hash table: `hash -p /usr/bin/git ls; ls push origin main`), code in a file (`bash scripts/x.sh`), and a variable

@@ -266,5 +266,33 @@ run 'npm test && (true) # gh pr merge 1 --repo acme/api'; expect 2 "R35d: no men
 run ": \$[ #]; printf -v y 'gh pr merge 1 --repo acme/api'; sudo bash -c \"\$y\""; expect 2 "R35d Crit1: \$[ #] (merge)"
 run "printf -v x \"gh pr --repo acme/api\$[ 0|0 ] merge 1\"; sudo bash -c \"\$x\""; expect 2 "R35d: the | inside \$[ ] is arithmetic, not a terminator"
 run "printf -v x \"gh pr --repo \$(case a in a) echo \"acme/api\" ;; esac) merge 1\"; sudo bash -c \"\$x\""; expect 2 "R35d Crit2: case ) in \$( (merge)"
+# --- R35 fix round 4 (ruling R35e) ---
+NL=$'\n'
+PADX="echo \"$(printf '%17000s' '' | tr ' ' x)\"; "
+PYS="python3 -c 'import sys; exec(sys.argv[1])' \"\$x\""
+run "${PADX}printf -v x 'import os; os.system(\"gh pr \"${NL}\"merge 1 --repo acme/api\")'; $PYS"
+expect 2 "R35e N1: above the size cap the verb on the next line still counts (merge)"
+run "${PADX}printf -v x 'import os; os.system(\"gh api -X PUT \"${NL}\"repos/acme/api/merges\")'; $PYS"
+expect 2 "R35e N1: above the size cap, the branch-merge API on the next line"
+run "printf -v x \"gh pr --repo \$(case a in b) echo esac ;; a) echo acme/api ;; esac) merge 1\"; sudo bash -c \"\$x\""
+expect 2 "R35e Crit2: an argument esac does not end the case (merge)"
+run "printf -v x \"gh pr --repo \$(: # )${NL}echo acme/api) merge 1\"; sudo bash -c \"\$x\""
+expect 2 "R35e: a ) in a comment does not close \$( (merge)"
+t0=$(date +%s%N)
+run "echo $(printf 'gh pr %.0s' $(seq 4500))${NL}printf -v x 'import os; os.system(\"gh pr merge 1 --repo acme/api\")'; $PYS"
+ms=$(( ($(date +%s%N) - t0) / 1000000 ))
+expect 2 "R35e Imp3: 27 KB of gh pr words, merge on the next line"
+[ "$ms" -lt 10000 ] || fail "R35e Imp3: 27 KB took ${ms} ms (bound 10000; the hook timeout is 30 s)"
+# a whole-command row (here: nesting deeper than the parser reads) is matched on its text by this hook's own regex:
+# 1 MB of repos/repos/... must not make that regex pass the hook timeout (it did with repos/\S*/merges)
+# (1 MB is past the Windows command-line limit, so the command goes to jq through a file, not --arg)
+printf '%s' "echo $(printf 'repos/%.0s' $(seq 170000)) \$($(printf '$(%.0s' $(seq 60000)); printf -v x 'import os; os.system(\"gh pr merge 1 --repo acme/api\")'; $PYS" > "$TMP/big.txt"
+t0=$(date +%s%N)
+ERR=$(jq -cn --rawfile c "$TMP/big.txt" --arg cwd "$TMP" '{tool_name:"Bash",cwd:$cwd,tool_input:{command:$c}}' | TMPDIR="$TMP/hooktmp" bash "$HOOK" 2>&1 >/dev/null); RC=$?
+ms=$(( ($(date +%s%N) - t0) / 1000000 ))
+expect 2 "R35e: 1 MB whole-command row over repos/ words"
+[ "$ms" -lt 10000 ] || fail "R35e: 1 MB repos/ row took ${ms} ms (bound 10000; the hook timeout is 30 s)"
+run "sudo gh api -X PUT repos/acme/api/merges -f base=main -f head=x"; expect 2 "R34/R35e: a branch-merge API path in a whole-segment row"
+run "sudo gh api repos/acme/api/mergesx"; expect 0 "R35e: mergesx is not the merges endpoint"
 unset DEVFW_CORE_DIR; run 'gh pr merge 1 --repo acme/api'; expect 0 "DEVFW_CORE_DIR unset"
 echo "PASS: merge-gate-hook"

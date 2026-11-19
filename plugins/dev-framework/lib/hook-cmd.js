@@ -56,13 +56,38 @@
 // searching forward from the FIRST A, which answers the same question as the old [\s\S]* regex in linear time (that
 // regex backtracked from every A to the end: quadratic on a long command).
 const MENTION_FLAT = new RegExp([
-  String.raw`pulls/\S*/merge`,
   String.raw`mergePullRequest|enablePullRequestAutoMerge|mergeBranch`,
-  String.raw`repos/\S*/merges\b`,  // R34: the branch-merge endpoint
   String.raw`worktree\s+add`,
   String.raw`checkout\s+-[bB]`,
   String.raw`switch\s+(-[cC]\b|--create|--force-create)`,
 ].join('|'), 'i');  // R27: GIT push mentions push too
+
+// ---------------------------------------------------------------- R35e: the time budget
+// Ruling R35e (2): parseCommand has a wall-clock budget. Every loop that can run long calls tick(); past the budget it
+// throws, and parseCommand returns the whole command as one unknown-dir row (fail closed), so a superlinear path that
+// was missed costs a false block, never an allow by the hook timeout. Regexes that tick() cannot interrupt are linear.
+const R35_BUDGET_MS = 2000;
+let deadline = Infinity, ticks = 0;
+class Budget extends Error {}
+function tick() {
+  if ((++ticks & 255) === 0 && Date.now() >= deadline) throw new Budget('parse budget');
+}
+// inToken(s, a, b, bounded): some whitespace-free token of s holds a (case-insensitive) and, after its first a, b (with
+// bounded: not followed by a word char): `a\S*b` (pulls/<n>/merge, repos/<o>/<n>/merges). One pass over the tokens:
+// linear, where the `a\S*b` regex retried from every a (quadratic on a long token of a's).
+const TOKEN = /\S+/g;
+function inToken(s, a, b, bounded) {
+  const lo = s.toLowerCase();
+  if (!lo.includes(a)) return false;
+  const end = new RegExp(bounded ? `${b}(?![a-z0-9_])` : b);
+  TOKEN.lastIndex = 0;
+  for (let m; (m = TOKEN.exec(lo));) {
+    tick();
+    const at = m[0].indexOf(a);
+    if (at >= 0 && end.test(m[0].slice(at + a.length))) return true;
+  }
+  return false;
+}
 // inOrder(s, [re1, re2, ...]): does s hold a match of re1, then (after it) one of re2, and so on? Each re is global.
 function inOrder(s, res) {
   let at = 0;
@@ -76,7 +101,9 @@ function inOrder(s, res) {
 }
 const M_GH = /\bgh\b/gi, M_PR = /\bpr\b/gi, M_MERGE = /\bmerge\b/gi, M_GIT = /\bgit\b/gi, M_GITVERB = /\b(push|commit|branch)\b/gi;
 const MENTION = {
-  test: (s) => MENTION_FLAT.test(s) || inOrder(s, [M_GH, M_PR, M_MERGE]) || inOrder(s, [M_GIT, M_GITVERB]),
+  test: (s) => MENTION_FLAT.test(s) || inToken(s, 'pulls/', '/merge', false)
+    || inToken(s, 'repos/', '/merges', true)  // R34: the branch-merge endpoint
+    || inOrder(s, [M_GH, M_PR, M_MERGE]) || inOrder(s, [M_GIT, M_GITVERB]),
 };
 
 // Commands that run their arguments (or a script) as code: unreadable when they mention a guarded command.
@@ -170,15 +197,54 @@ const GIT_GUARDED = new Set(['push', 'commit', 'worktree', 'checkout', 'switch',
 const R35_GIT_WORD = /(?<=^|[\s;&|()<>'"`{}=\\/])(?:git|gh)(?:\.exe)?(?=$|[\s;&|()<>'"`{}])/gi;
 const r35b = (w) => `(?<![A-Za-z0-9_])(?:${w})(?![A-Za-z0-9_])`;
 // the guards' verbs; `branch` = claim-guard's creation forms (checkout -b/-B, switch -c/-C, branch <name>, worktree add)
+// R35e (Imp3): each test is linear in its text. "A anywhere before B" is inOrder (forward from the first A), `a\S*b`
+// is inToken, and `branch (-opt)* <name>` is branchNamed — never a regex that retries from every A.
+const g35 = (w) => new RegExp(r35b(w), 'gi');
+const V_PR = g35('pr'), V_MERGE = g35('merge'), V_CHECKOUT = g35('checkout'), V_SWITCH = g35('switch');
+const V_BFLAG = /[\s'"](?:-[A-Za-z]*b|--orphan)/gi;
+const V_CFLAG = /[\s'"](?:-[A-Za-z]*c|--create|--force-create|--orphan)/gi;
+const V_BRANCH = g35('branch');
+const V_PULLS = /pulls\/[^\s/]*\/merge(?![A-Za-z0-9_])/i;
+const V_GQL = new RegExp(r35b('mergePullRequest|enablePullRequestAutoMerge|mergeBranch'), 'i');
+const V_WTADD = new RegExp(`${r35b('worktree')}\\s+add(?![A-Za-z0-9_])`, 'i');
+// branchNamed(s): `branch` (a word), then whitespace-separated -options, then a word not starting with `-` (the old
+// /branch(?:\s+-\S+)*\s+[^\s-]/). A walk that fails at q also fails for every `branch` start before q (they share its
+// tail), so the next start is searched from q: each character is walked once.
+function branchNamed(s) {
+  V_BRANCH.lastIndex = 0;
+  for (let m; (m = V_BRANCH.exec(s));) {
+    let j = m.index + m[0].length;
+    for (;;) {
+      tick();
+      let k = j;
+      while (k < s.length && /\s/.test(s[k])) k++;
+      if (k === j || k >= s.length) break;  // no whitespace, or the end: this start fails at k
+      if (s[k] !== '-') return true;
+      let e = k + 1;
+      while (e < s.length && !/\s/.test(s[e])) e++;
+      if (e === k + 1) { j = k; break; }  // a lone `-`: not an option, not a name
+      j = e;
+    }
+    if (V_BRANCH.lastIndex < j) V_BRANCH.lastIndex = j;
+  }
+  return false;
+}
 const R35_VERBS = {
   push: new RegExp(r35b('push'), 'i'),
   commit: new RegExp(r35b('commit'), 'i'),
-  merge: new RegExp([`${r35b('pr')}[\\s\\S]*${r35b('merge')}`, 'pulls/[^\\s/]*/merge(?![A-Za-z0-9_])',
-    'repos/\\S*/merges(?![A-Za-z0-9_])', r35b('mergePullRequest|enablePullRequestAutoMerge|mergeBranch')].join('|'), 'i'),
-  branch: new RegExp([`${r35b('checkout')}[\\s\\S]*?(?:^|[\\s'"])(?:-[A-Za-z]*b|--orphan)`,
-    `${r35b('switch')}[\\s\\S]*?(?:^|[\\s'"])(?:-[A-Za-z]*c|--create|--force-create|--orphan)`,
-    `${r35b('branch')}(?:\\s+-\\S+)*\\s+[^\\s-]`, `${r35b('worktree')}\\s+add${'(?![A-Za-z0-9_])'}`].join('|'), 'i'),
+  merge: { test: (s) => inOrder(s, [V_PR, V_MERGE]) || V_PULLS.test(s) || inToken(s, 'repos/', '/merges', true)
+    || V_GQL.test(s) },
+  branch: { test: (s) => inOrder(s, [V_CHECKOUT, V_BFLAG]) || inOrder(s, [V_SWITCH, V_CFLAG]) || branchNamed(s)
+    || V_WTADD.test(s) },
 };
+// R35e (1), above the size cap: a guard verb ANYWHERE after the first git/gh word (no run, no line). Each family is one
+// forward search; the mention text names the family so the guard's own verb (R33) finds it in the row.
+const R35_COARSE = [
+  [/(?<![A-Za-z0-9_])push(?![A-Za-z0-9_])/gi, 'push'],
+  [/(?<![A-Za-z0-9_])commit(?![A-Za-z0-9_])/gi, 'commit'],
+  [/(?<![A-Za-z0-9_])(?:merges?|mergePullRequest|enablePullRequestAutoMerge|mergeBranch)(?![A-Za-z0-9_])/gi, 'pr merge'],
+  [/(?<![A-Za-z0-9_])(?:checkout|switch|branch|worktree)(?![A-Za-z0-9_])/gi, 'checkout -b'],
+];
 // mentions(text): [{ at, text }] for every git/gh word followed in its run by a guard's verb.
 // Ruling R35c (fail direction): ending a run early is a bypass; ending a run late is at most a false block. So nesting
 // is tracked with a frame stack (frameScan); a mention's run is the text of the frame that holds it, from the mention to
@@ -196,6 +262,7 @@ function mentions(text) {
   } });
   const found = [];
   for (const m of words) {
+    tick();
     const f = starts.get(m.index) || { k: 'top', end: t.length };
     const from = m.index + m[0].length;
     const end = f.end === null || f.end === undefined ? t.length : f.end;
@@ -204,24 +271,21 @@ function mentions(text) {
   }
   return found;
 }
-// R35d size cap: fine accounting (frames, runs, positions) only up to 16 KB and 200 git/gh words. Above that, every
-// git/gh word followed on its own line by a guard's verb is a mention, and none is accounted, so with a non-data segment
-// the command is one unknown-dir row. Linear: one pass over the lines.
+// R35d size cap: fine accounting (frames, runs, positions) only up to 16 KB and 200 git/gh words. Above that (R35e
+// (1)) the whole text is one run: a guard verb ANYWHERE after the first git/gh word (other lines, quotes and frames
+// included) is a mention, none is accounted, so with a non-data segment the command is one unknown-dir row. Linear: one
+// forward search per verb family. The mention text names the family (`git … push`, `gh … pr merge`, ...), so each
+// guard's own verb test (R33) finds it; the words actually matched follow in brackets.
 const R35_FINE_MAX_CHARS = 16 * 1024;
 const R35_FINE_MAX_WORDS = 200;
 function coarseMentions(t, words) {
+  if (!words.length) return [];
+  const first = words[0], from = first.index + first[0].length;
   const found = [];
-  let lineEnd = -1, lineHit = false;
-  for (const m of words) {
-    if (m.index > lineEnd) {
-      const e = t.indexOf('\n', m.index);
-      lineEnd = e < 0 ? t.length : e;
-      lineHit = false;
-    }
-    if (lineHit) continue;  // one mention per line is enough to fire, and keeps this linear
-    const from = m.index + m[0].length;
-    const run = t.slice(from, lineEnd);
-    if (Object.values(R35_VERBS).some((re) => re.test(run))) { found.push({ at: m.index, text: m[0] + run, coarse: true }); lineHit = true; }
+  for (const [re, name] of R35_COARSE) {
+    re.lastIndex = from;
+    const v = re.exec(t);
+    if (v) found.push({ at: first.index, text: `${first[0]} … ${name} [${v[0]}]`, coarse: true });
   }
   return found;
 }
@@ -260,8 +324,9 @@ function relRun(s) {
 // <( ), >( )), $( , $(( and (( (arithmetic: no heredoc), $[ (old arithmetic), ${ , ` , " , ' , $' , and hd (a heredoc
 // body, read as code; <<< is a here-string, not a heredoc). visit(i, stack) runs before each character; returning true
 // stops the walk. A frame's `end` is the index of its closing character; a frame that never closes keeps end null.
-// R35d: there are no comments here (a `#` is an ordinary character), and a `)` closes a ( or $( only when no `case`
-// opened in that frame is still waiting for its `esac` — a case pattern's `)` closes nothing.
+// R35d: no text is skipped as a comment, and a `)` closes a ( or $( only when no `case` opened in that frame is still
+// waiting for its `esac` — a case pattern's `)` closes nothing. R35e: a word-start `#` only stops `)` and `esac` from
+// closing anything until the line ends (f.cm), and only an esac in command position ends a case (cmdPos).
 const R35_WORD_START = /[\s;&|()]/;
 const R35_DELIM = /[^\s;&|<>()]+/y;
 function frameScan(t, lo, hi, { visit, looseEsc }) {
@@ -274,6 +339,7 @@ function frameScan(t, lo, hi, { visit, looseEsc }) {
     const h = list[0];
     let k = b;
     while (k < hi) {
+      tick();
       const eol = t.indexOf('\n', k); const e = eol < 0 || eol >= hi ? hi : eol;
       if ((h.strip ? t.slice(k, e).replace(/^\t+/, '') : t.slice(k, e)) === h.delim) {
         return { k: 'hd', end: null, cs: 0, bodyEnd: k, after: Math.min(hi, e + 1), rest: list.slice(1) };
@@ -284,7 +350,19 @@ function frameScan(t, lo, hi, { visit, looseEsc }) {
   };
   const wordAt = (i, w) => t.startsWith(w, i) && (i === lo || R35_WORD_START.test(t[i - 1]))
     && (i + w.length >= hi || /[\s;&|()]/.test(t[i + w.length]));
+  // cmdPos(i): does i start a command word? Back over blanks to ; & | or a newline that no backslash precedes (an
+  // escaped one, or \\; , is unsure: no) and that is no redirection (>| >& <& take a word). Nothing before it but
+  // blanks: no (no case can be open in this scan there anyway; when unsure, the case stays open).
+  const cmdPos = (i) => {
+    let j = i - 1;
+    while (j >= lo && (t[j] === ' ' || t[j] === '\t')) j--;
+    if (j < lo) return false;
+    if (!';&|\n'.includes(t[j])) return false;
+    const p = j > lo ? t[j - 1] : '';
+    return p !== '\\' && p !== '>' && p !== '<';
+  };
   for (let i = lo; i < hi;) {
+    tick();
     // a heredoc body ends at its delimiter line, whatever is still open inside it (unbalanced: those keep end null)
     if (i >= hdEnd) {
       const hdAt = st.findIndex((f) => f.k === 'hd' && i >= f.bodyEnd);
@@ -324,13 +402,21 @@ function frameScan(t, lo, hi, { visit, looseEsc }) {
       i++; continue;
     }
     // code frames: top ( $( ` hd
+    // R35e: a # at word start may begin a comment, and a comment's ) or esac closes nothing for bash; so until the
+    // line ends neither closes anything here (if the # was not a comment, the frame just stays open: late is safe)
+    if (c === '#' && (i === lo || R35_WORD_START.test(t[i - 1]))) { f.cm = true; i++; continue; }
+    if (c === '\n') f.cm = false;
     if (wordAt(i, 'case')) { f.cs++; i += 4; continue; }
-    if (wordAt(i, 'esac')) { if (f.cs > 0) f.cs--; i += 4; continue; }
+    // R35e (3): esac ends a case only as a command word: at the start, or after ; & | or a newline (so after ;; ;&
+    // ;;& too), not escaped, not in a comment. Any other esac (echo esac, x|esac after `in`, \; esac) is an argument
+    // or unsure, and the case stays open.
+    if (wordAt(i, 'esac')) { if (f.cs > 0 && !f.cm && cmdPos(i)) f.cs--; i += 4; continue; }
     if (c === '(' && n1 === '(') { push('$((', { p: 0 }); i += 2; continue; }  // (( arithmetic ))
     if ((c === '<' || c === '>') && n1 === '(') { push('('); i += 2; continue; }
     if (c === '(') { push('('); i++; continue; }
-    // only a ) the scanner is sure of closes: none while a case in this frame waits for its esac (a pattern's `)`)
-    if (c === ')') { if ((f.k === '(' || f.k === '$(') && f.cs === 0) pop(i); i++; continue; }
+    // only a ) the scanner is sure of closes: none while a case in this frame waits for its esac (a pattern's `)`),
+    // none in what may be a comment
+    if (c === ')') { if ((f.k === '(' || f.k === '$(') && f.cs === 0 && !f.cm) pop(i); i++; continue; }
     if (c === '<' && n1 === '<' && t[i + 2] === '<') { i += 3; continue; }  // <<< here-string: not a heredoc
     if (c === '<' && n1 === '<') {
       let j = i + 2; const strip = t[j] === '-'; if (strip) j++;
@@ -388,6 +474,7 @@ function r35NonData(ws) {
   if (ws[k] && !ws[k].quoted && R35_HEADERS.has(ws[k].text)) return false;
   if (ws.some((w) => w.text.includes('${!'))) return true;  // R35a: indirection
   for (;;) {
+    tick();
     while (k < ws.length && ASSIGN_WORD.test(ws[k].text)) {
       if (R35_GIT_RUN_ENV.test(ws[k].text)) return true;  // R35b: GIT_SSH_COMMAND=... on this segment
       k++;
@@ -431,6 +518,7 @@ function r35NonData(ws) {
 function outsideSubs(t) {
   let o = '';
   for (let i = 0; i < t.length;) {
+    tick();
     if (t[i] === '$' && t[i + 1] === '(') {
       let d = 0, j = i + 1;
       for (; j < t.length; j++) { if (t[j] === '(') d++; else if (t[j] === ')' && --d === 0) break; }
@@ -489,6 +577,7 @@ function scanAt(s, start, mode, opts = {}) {
   const consumeHeredocs = (k) => {
     for (const h of heredocs) {
       while (k < n) {
+        tick();
         const eol = s.indexOf('\n', k);
         const line = s.slice(k, eol < 0 ? n : eol);
         k = eol < 0 ? n : eol + 1;
@@ -519,6 +608,7 @@ function scanAt(s, start, mode, opts = {}) {
     if (c === "'" && !inDq) {  // $'…' ANSI-C quoting: literal
       let j = k + 2, t = '';
       while (j < n && s[j] !== "'") {
+        tick();
         if (s[j] === '\\' && j + 1 < n) { const e = s[j + 1]; t += e === 'n' ? '\n' : e === 't' ? '\t' : e; j += 2; } else t += s[j++];
       }
       if (j >= n) markBroken();
@@ -533,11 +623,12 @@ function scanAt(s, start, mode, opts = {}) {
   };
   const backtick = (k, inDq) => {
     let j = k + 1;
-    while (j < n && s[j] !== '`') j += s[j] === '\\' ? 2 : 1;
+    while (j < n && s[j] !== '`') { tick(); j += s[j] === '\\' ? 2 : 1; }
     if (j >= n) { markBroken(); j = n; }
     // the body without its \` \\ \$ escapes; map[x] = where body char x sits in s (R35 spans; map[length] = the end)
     let body = ''; const map = [];
     for (let q = k + 1; q < j; q++) {
+      tick();
       if (s[q] === '\\' && q + 1 < j && '`\\$'.includes(s[q + 1])) q++;
       map.push(q); body += s[q];
     }
@@ -550,6 +641,7 @@ function scanAt(s, start, mode, opts = {}) {
   const dquote = (k) => {  // k just after the opening "
     const ww = w(k - 1); ww.quoted = true;
     while (k < n) {
+      tick();
       const c = s[k];
       if (c === '"') return k + 1;
       if (c === '\\') {
@@ -567,6 +659,7 @@ function scanAt(s, start, mode, opts = {}) {
   };
 
   while (i < n) {
+    tick();
     const c = s[i];
     // R35: an array literal (cmd=(git push origin main)) is ONE assignment word up to its `)`: its blanks and newlines
     // are part of it, quotes and $( ... ) inside it are read as usual. (Before, its words read as a command.)
@@ -1047,6 +1140,7 @@ function segment(it, st, out, ctx) {
   if (it.broken) return opaque();
   let k = 0, wrapped = false;
   for (;;) {
+    tick();
     while (k < ws.length && !ws[k].quoted && KEYWORDS.has(ws[k].text)) k++;  // R27a: keywords as written
     while (k < ws.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(ws[k].text)) {
       const eq = ws[k].text.indexOf('=');
@@ -1192,6 +1286,7 @@ function segment(it, st, out, ctx) {
 function r35NonDataIn(src, opts, depth) {
   if (depth > 50) return true;  // deeper than we read: count it (fail closed)
   for (const it of scanAt(src, 0, 'top', opts).items) {
+    tick();
     if (it.kind === 'comment') { if (r35NonDataIn(it.text, opts, depth + 1)) return true; continue; }
     if (it.kind !== 'seg') continue;
     if (r35NonData(it.words)) return true;
@@ -1207,6 +1302,7 @@ function walk(src, out, initial, opts, map = (x) => x) {
   const stack = [];
   let prevSep = null;
   for (const it of items) {
+    tick();
     if (it.kind === 'comment') { if (!out._nonData && r35NonDataIn(it.text, opts, 0)) out._nonData = true; continue; }
     if (it.kind === 'open') { stack.push(st); st = { ...st }; prevSep = null; continue; }
     if (it.kind === 'close') { if (stack.length) st = stack.pop(); prevSep = null; continue; }
@@ -1223,20 +1319,28 @@ function walk(src, out, initial, opts, map = (x) => x) {
 
 // parseCommand(cmd, { home, cdpath }): home (optional) is the literal path `~` and $HOME stand for; cdpath (optional)
 // is true when the hook's own environment has a non-empty CDPATH (R31).
+// _budgetMs (tests only) replaces the R35e time budget.
 function parseCommand(cmd, opts = {}) {
-  const out = { merges: [], pushes: [], branches: [], commits: [], opaque: [], opaqueDirs: [], aliases: [], _acct: [] };
   const o = opts || {};
   const text = String(cmd == null ? '' : cmd);
+  deadline = Date.now() + (typeof o._budgetMs === 'number' ? o._budgetMs : R35_BUDGET_MS);
   try {
-    walk(text, out,
-      { dir: null, cdOpaque: false, ghRepo: null, gitDir: false, gitConfig: false, ghConfig: false, cdpath: !!o.cdpath }, o);
+    return readCommand(text, o);
   } catch (e) {
-    if (!(e instanceof RangeError)) throw e;
-    // nesting deeper than the stack (thousands of $( ): unreadable. One whole-command row, unknown dir, matched on its
-    // text: every guard whose verb the text names blocks (fail closed, as a parser failure would)
+    if (!(e instanceof RangeError || e instanceof Budget)) throw e;
+    // nesting deeper than the stack (thousands of $( ), or past the time budget (R35e): unreadable. One whole-command
+    // row, unknown dir, matched on its text: every guard whose verb the text names blocks (fail closed, as a parser
+    // failure would)
     return { merges: [], pushes: [], branches: [], commits: [], opaque: [text], opaqueDirs: [{ dir: null, unknown: true }],
       aliases: [] };
+  } finally {
+    deadline = Infinity;
   }
+}
+function readCommand(text, o) {
+  const out = { merges: [], pushes: [], branches: [], commits: [], opaque: [], opaqueDirs: [], aliases: [], _acct: [] };
+  walk(text, out,
+    { dir: null, cdOpaque: false, ghRepo: null, gitDir: false, gitConfig: false, ghConfig: false, cdpath: !!o.cdpath }, o);
   // R28c (NC1, NC2): a pipe or a < redirection (heredoc, here-string, file, process substitution) anywhere, a code
   // runner / eval / source / . / dynamic command word at any depth, and git/gh in the text: some runner may read its
   // code from that stdin, inside a subshell, loop or if as well, so the whole command is one row with an unknown dir.

@@ -139,6 +139,21 @@ for c in "false && echo \$[ #]; printf -v y 'git checkout -b t/43-z'; sudo bash 
   "printf -v x \"git -C \$(case a in a) echo \".\" ;; esac) checkout -b t/43-z\"; sudo bash -c \"\$x\""; do
   run "$W" "$c"; expect 2 "R35d: $c"
 done
+# --- R35 fix round 4 (ruling R35e) ---
+NL=$'\n'
+PADX="echo \"$(printf '%17000s' '' | tr ' ' x)\"; "
+PYS="python3 -c 'import sys; exec(sys.argv[1])' \"\$x\""
+run "$W" "${PADX}printf -v x 'import os; os.system(\"git checkout \"${NL}\"-b t/43-z\")'; $PYS"
+expect 2 "R35e N1: above the size cap the verb on the next line still counts (branch)"
+run "$W" "printf -v x \"git -C \$(case a in b) echo esac ;; a) echo . ;; esac) checkout -b t/43-z\"; sudo bash -c \"\$x\""
+expect 2 "R35e Crit2: an argument esac does not end the case (branch)"
+run "$W" "printf -v x \"git -C \$(: # )${NL}) checkout -b t/43-z\"; sudo bash -c \"\$x\""
+expect 2 "R35e: a ) in a comment does not close \$( (branch)"
+t0=$(date +%s%N)
+run "$W" "echo $(printf 'gh pr %.0s' $(seq 4500))${NL}printf -v x 'import os; os.system(\"git checkout -b t/43-z\")'; $PYS"
+ms=$(( ($(date +%s%N) - t0) / 1000000 ))
+expect 2 "R35e Imp3: 27 KB of gh pr words, checkout -b on the next line"
+[ "$ms" -lt 10000 ] || fail "R35e Imp3: 27 KB took ${ms} ms (bound 10000; the hook timeout is 30 s)"
 
 run "$W" 'git worktree add ../wt -b t/41-x origin/t/41-x'; expect 0 "claimed worktree add"
 run "$W" 'git checkout -b t/41-x origin/t/41-x'; expect 0 "claimed checkout -b"

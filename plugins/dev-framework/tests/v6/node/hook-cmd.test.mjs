@@ -1058,3 +1058,159 @@ test('R35d size cap: above 16 KB or 200 git words, any line mention + a non-data
   const d = P(deep);
   assert.deepEqual(d.opaqueDirs, [{ dir: null, unknown: true }]);
 });
+
+// ---- R35 fix round 4 (ruling R35e) ----
+// guardBlocks(c, guard): does the whole-command row of c reach that guard, as hook_opaque_rows reads it (its verb, R33
+// word boundaries, against the row's mentions when it has them, else against the whole text)?
+const GUARD_RE = { push: 'push', commit: 'commit', branch: 'worktree|checkout|switch|branch',
+  merge: 'merge|pulls/|mergePullRequest|enablePullRequestAutoMerge|mergeBranch|repos/\\S*/merges' };
+function guardBlocks(c, guard, o) {
+  const x = P(c, o); const at = x.opaque.indexOf(c);
+  if (at < 0 || x.opaqueDirs[at].unknown !== true) return false;
+  const re = new RegExp(`(?<![A-Za-z0-9_])(?:${GUARD_RE[guard]})(?:(?<=[^A-Za-z0-9_])|(?![A-Za-z0-9_]))`, 'i');
+  const ms = x.opaqueDirs[at].mentions;
+  return Array.isArray(ms) ? ms.some((m) => re.test(m)) : re.test(c);
+}
+const PYX = (s) => `printf -v x 'import os; os.system("${s}")'; python3 -c 'import sys; exec(sys.argv[1])' "$x"`;
+const PAD = 'echo "' + 'x'.repeat(17000) + '"; ';
+test('R35e N1: above the cap, a git/gh word and a guard verb ANYWHERE after it (other lines too) is a mention', () => {
+  const rows = [
+    ['push', PAD + PYX('git "\n"push origin main')],
+    ['push', PAD + `printf -v x 'git $(:\n) push origin main'; python3 -c 'import os,sys; os.system(sys.argv[1])' "$x"`],
+    ['push', 'git status; '.repeat(201) + `printf -v x 'git $(:\n) push origin main'; python3 -c 'import os,sys; os.system(sys.argv[1])' "$x"`],
+    ['merge', PAD + PYX('gh pr "\n"merge 1 --repo acme/api')],
+    ['merge', PAD + PYX('gh api -X PUT "\n"repos/acme/api/merges')],
+    ['commit', PAD + PYX('git "\n"commit -m x')],
+    ['branch', PAD + PYX('git checkout "\n"-b t/43-z')],
+    ['branch', PAD + PYX('git "\n\n"worktree add ../w -b t/43-z')],
+  ];
+  for (const [g, c] of rows) assert.ok(guardBlocks(c, g), `${g}: ${c.slice(-90)}`);
+  // the verb must come AFTER a git/gh word: a verb only before the first one is no mention
+  const before = 'echo push commit merge checkout; ' + PAD + 'npm test; git status';
+  assert.equal(r35Row(before), undefined);
+  // above the cap no position is trusted, but a data-only command is still no row
+  assert.equal(r35Row(PAD + 'echo "git\npush"'), undefined);
+});
+test('R35e Crit2: esac ends a case only in command position; an argument esac (echo esac) keeps the case open', () => {
+  const pv = (pre, v) => `printf -v x "${pre} $(case a in b) echo esac ;; a) echo . ;; esac) ${v}"; sudo bash -c "$x"`;
+  for (const [g, c] of [['push', pv('git -C', 'push origin main')], ['commit', pv('git -C', 'commit -m x')],
+    ['branch', pv('git -C', 'checkout -b t/43-z')],
+    ['merge', `printf -v x "gh pr --repo $(case a in b) echo esac ;; a) echo acme/api ;; esac) merge 1"; sudo bash -c "$x"`],
+    ['push', `printf -v x "git -C $(case a in (b) echo esac ;; (a) echo . ;; esac) push origin main"; sudo bash -c "$x"`],
+    ['push', `printf -v x "git -C $(case a in b) echo \\; esac ;; a) echo . ;; esac) push origin main"; sudo bash -c "$x"`],
+    ['push', `printf -v x "git -C $(case a in b) : # ; esac\n;; a) echo . ;; esac) push origin main"; sudo bash -c "$x"`],
+    ['push', `printf -v x "git -C $(case a in b) echo x >| esac ;; a) echo . ;; esac) push origin main"; sudo bash -c "$x"`]]) {
+    assert.ok(guardBlocks(c, g), `${g}: ${c}`);
+  }
+  // structure: an argument esac closes nothing; esac after ;; ; & | or a newline closes the case
+  assert.deepEqual(stackAt('x=$(case a in b) echo esac ;; a) PAT ;; esac) NEXT', 'PAT'), ['top', '$(']);
+  assert.deepEqual(stackAt('x=$(case a in b) echo esac ;; a) PAT ;; esac) NEXT', 'NEXT'), ['top']);
+  assert.deepEqual(stackAt('x=$(case a in a) echo; esac) NEXT', 'NEXT'), ['top']);
+  assert.deepEqual(stackAt('x=$(case a in a) echo\nesac) NEXT', 'NEXT'), ['top']);
+  assert.deepEqual(stackAt('x=$(case a in a) echo & esac) NEXT', 'NEXT'), ['top']);
+  assert.deepEqual(stackAt('x=$(case a in a) echo ;;\tesac) NEXT', 'NEXT'), ['top']);
+  // unsure ones keep the case (and so the frame) open: escaped \; , after a word, after `in`, inside a comment
+  assert.deepEqual(stackAt('x=$(case a in a) echo \\; esac) NEXT', 'NEXT'), ['top', '$(']);
+  assert.deepEqual(stackAt('x=$(case a in a) echo esac) NEXT', 'NEXT'), ['top', '$(']);
+  assert.deepEqual(stackAt('x=$(case a in esac) NEXT', 'NEXT'), ['top', '$(']);
+  assert.deepEqual(stackAt('x=$(case a in a) : # ; esac) NEXT', 'NEXT'), ['top', '$(']);
+  // ordinary commands with a case stay readable
+  assert.equal(r35Row('x=$(case a in a) echo . ;; esac); npm test && git push origin t/12-x'), undefined);
+});
+test('R35e: a ) inside a comment (# at word start in code) closes nothing until the line ends', () => {
+  for (const [g, c] of [['push', `printf -v x "git -C $(: # )\n) push origin main"; sudo bash -c "$x"`],
+    ['commit', `printf -v x "git -C $(: # )\n) commit -m x"; sudo bash -c "$x"`],
+    ['merge', `printf -v x "gh pr --repo $(: # )\necho acme/api) merge 1"; sudo bash -c "$x"`],
+    ['branch', `printf -v x "git -C $(: # )\n) checkout -b t/43-z"; sudo bash -c "$x"`]]) {
+    assert.ok(guardBlocks(c, g), `${g}: ${c}`);
+  }
+  assert.deepEqual(stackAt('x=$(: # )\nMID) NEXT', 'MID'), ['top', '$(']);
+  assert.deepEqual(stackAt('x=$(: # )\nMID) NEXT', 'NEXT'), ['top']);
+  // not a comment: # inside a word, $#, ${#x}: the ) closes as before
+  assert.deepEqual(stackAt('x=$(echo a#b) NEXT', 'NEXT'), ['top']);
+  assert.deepEqual(stackAt('x=$(echo $#) NEXT', 'NEXT'), ['top']);
+  assert.deepEqual(stackAt('x=$(echo ${#x}) NEXT', 'NEXT'), ['top']);
+});
+// the adversarial shapes: each must finish < 3 s and block (an R35 row whose mentions name the verb, or the budget's
+// whole-command row matched on its text); the reviewer's slow shapes are the first five
+const PYP = PYX('git push origin main');
+const SLOW = {
+  'gh pr x n, verb on next line': (b) => 'echo ' + 'gh pr '.repeat(b / 6) + '\n' + PYP,
+  'git checkout x n, no -b': (b) => 'echo git ' + 'checkout '.repeat(b / 9) + '\n' + PYP,
+  '"git x" x n': (b) => 'echo "' + 'git x '.repeat(b / 6) + '"\n' + PYP,
+  'gh x199 then pr x n': (b) => 'echo ' + 'gh '.repeat(199) + 'pr '.repeat(b / 3) + '\n' + PYP,
+  'git x199 then checkout x n': (b) => 'echo ' + 'git '.repeat(199) + 'checkout '.repeat(b / 9) + '\n' + PYP,
+  'git switch x n, no -c': (b) => 'echo git ' + 'switch '.repeat(b / 7) + '\n' + PYP,
+  'git -branch x n': (b) => 'echo git branch ' + '-branch '.repeat(b / 8) + '\n' + PYP,
+  'repos/ x n': (b) => 'echo gh ' + 'repos/'.repeat(b / 6) + '\n' + PYP,
+  'pulls/ x n in a segment': (b) => 'echo ' + 'pulls/'.repeat(b / 6) + '; ' + PYP,
+  'repos/ x n in a segment': (b) => 'echo ' + 'repos/'.repeat(b / 6) + '; ' + PYP,
+  '$( x n': (b) => 'echo ' + '$('.repeat(b / 2) + '; ' + PYP,
+  'case x n': (b) => 'x=$(' + 'case a in a) '.repeat(b / 13) + ')' + '; ' + PYP,
+  'echo esac x n': (b) => 'x=$(case a in a) ' + 'echo esac '.repeat(b / 10) + ')' + '; ' + PYP,
+  ': # ) x n': (b) => 'x=$(' + ': # )\n'.repeat(b / 6) + ')' + '; ' + PYP,
+};
+// just under the cap (16 KB, 200 git/gh words: the fine reading runs, every git/gh word's run is verb-tested)
+const n16 = (head, unit) => Math.floor((16 * 1024 - head.length - PYP.length - 8) / unit.length);
+const UNDER = {
+  'gh x199, pr x n': () => 'echo ' + 'gh '.repeat(199) + 'pr '.repeat(n16('echo ' + 'gh '.repeat(199), 'pr ')) + '\n' + PYP,
+  'git x198, checkout x n': () => 'echo ' + 'git '.repeat(198) + 'checkout '.repeat(n16('echo ' + 'git '.repeat(198), 'checkout ')) + '\n' + PYP,
+  'git x198, switch x n': () => 'echo ' + 'git '.repeat(198) + 'switch '.repeat(n16('echo ' + 'git '.repeat(198), 'switch ')) + '\n' + PYP,
+  'git x198, branch -branch x n': () => 'echo ' + 'git '.repeat(198) + 'branch ' + '-branch '.repeat(n16('echo ' + 'git '.repeat(198) + 'branch ', '-branch ')) + '\n' + PYP,
+  'gh x198, repos/ x n': () => 'echo ' + 'gh '.repeat(198) + 'repos/'.repeat(n16('echo ' + 'gh '.repeat(198), 'repos/')) + '\n' + PYP,
+};
+// every shape except deep nesting must be READ (an R35 row with mentions), not stopped by the budget: so a verb test
+// that turns superlinear again is red here even though the budget would still block it
+test('R35e timing: adversarial shapes at 27 KB, 100 KB and 1 MB (and just under the cap) finish < 3 s and block', () => {
+  const one = (name, c) => {
+    const t0 = process.hrtime.bigint();
+    const ok = guardBlocks(c, 'push');
+    const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+    assert.ok(ms < 3000, `${name} took ${ms.toFixed(0)} ms (bound 3000)`);
+    assert.ok(ok, `${name} blocks push`);
+    if (!name.startsWith('$(')) assert.ok(Array.isArray(r35Row(c).mentions), `${name}: read, not stopped by the budget`);
+  };
+  for (const [name, mk] of Object.entries(SLOW)) {
+    for (const kb of [27, 100, 1024]) one(`${name} ${kb} KB`, mk(Math.floor(kb * 1024)));
+  }
+  for (const [name, mk] of Object.entries(UNDER)) {
+    const c = mk();
+    assert.ok(c.length <= 16 * 1024 && [...c.matchAll(/\b(git|gh)\b/g)].length <= 200, `${name} is under the cap`);
+    one(name, c);
+  }
+  // each guard's verb on the reviewer's worst shape (27 KB took 49 s)
+  for (const [g, s] of [['merge', 'gh pr merge 1 --repo acme/api'], ['commit', 'git commit -m x'], ['branch', 'git checkout -b t/43-z']]) {
+    const c = 'echo ' + 'gh pr '.repeat(4500) + '\n' + PYX(s);
+    const t0 = Date.now();
+    assert.ok(guardBlocks(c, g), g);
+    assert.ok(Date.now() - t0 < 3000, `${g}: ${Date.now() - t0} ms`);
+  }
+});
+test('R35e Imp3: the linear verb tests keep the old regexes\' meaning', () => {
+  const m = (c) => _mentions(`${c}; npm test`).length > 0;
+  for (const c of ['echo git branch -f x', 'echo git branch new', 'echo git checkout -qB y', 'echo git checkout x -b y',
+    'echo git switch --create y', 'echo git switch -qc y', 'echo git worktree add ../w', 'echo gh pr x merge 1',
+    'echo gh api repos/a/b/merges', 'echo gh api REPOS/a/b/MERGES', 'echo gh api pulls/5/merge', 'echo gh api mergeBranch']) {
+    assert.ok(m(c), c);
+  }
+  for (const c of ['echo git branch -a', 'echo git branch - x', 'echo git branch', 'echo git checkout x', 'echo git switch y',
+    'echo gh api repos/a/b/mergesx', 'echo gh pr view 1', 'echo gh merge pr', 'echo git worktree list']) {
+    assert.ok(!m(c), c);
+  }
+  // the MENTION reader (an unreadable segment is a row only when it mentions a guarded command) still reads the
+  // merge endpoints inside a token
+  assert.equal(P('gh api -X PUT repos/acme/api/merges "').opaque.length, 1);
+  assert.equal(P('gh api -X PUT repos/acme/api/pulls/5/merge "').opaque.length, 1);
+  assert.equal(P('gh api -X PUT repos/acme/api/mergesx "').opaque.length, 0);
+  assert.equal(P('gh api -X PUT repos/acme/api/pulls/5/x "').opaque.length, 0);
+});
+test('R35e budget: past the time budget the parser stops and returns the whole command as one unknown-dir row', () => {
+  const c = 'echo ' + 'a '.repeat(50000) + '; git push origin t/12-x';
+  const x = P(c, { _budgetMs: 0 });
+  assert.deepEqual(x.opaque, [c]);
+  assert.deepEqual(x.opaqueDirs, [{ dir: null, unknown: true }]);
+  // the same command within the budget is read exactly (a claimed push, no row)
+  const y = P(c);
+  assert.deepEqual(y.opaque, []);
+  assert.equal(y.pushes.length, 1);
+});
