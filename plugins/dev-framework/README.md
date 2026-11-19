@@ -308,18 +308,23 @@ Each item is a path on which a rule above does NOT block. They are accepted resi
    A *mention* is a `git`/`gh` word anywhere in the raw command text — any quoting level, heredoc bodies, `$( )` /
    backtick / process-substitution bodies, array literals and assignment values included; case-folded, with a path
    and `.exe` allowed — followed, within its run of words, by a guard's verb. Nesting is read with a frame stack
-   (ruling R35c): `"..."`, `'...'`, `$'...'` (with its `\'` / `\\` escapes), `$( )`, `$(( ))` / `(( ))`, `${ }`,
-   backticks, `( )` / `<( )` / `>( )` and heredoc bodies (`<<-` and quoted delimiters included; `<<` inside
-   arithmetic is a shift, not a heredoc). A mention's run is the body of the frame that holds it — from the mention to
+   (ruling R35c): `"..."`, `'...'`, `$'...'` (with its `\'` / `\\` escapes), `$( )`, `$(( ))` / `(( ))`, `$[ ]`,
+   `${ }`, backticks, `( )` / `<( )` / `>( )` and heredoc bodies (`<<-` and quoted delimiters included; `<<` inside
+   arithmetic is a shift, and `<<<` a here-string, not a heredoc). A `)` closes a `( )` / `$( )` only when the
+   scanner is sure (R35d): while a `case` opened in that frame waits for its `esac`, a `)` is a pattern and closes
+   nothing; a frame the scanner is not sure has closed stays open. A mention's run is the body of the frame that holds it — from the mention to
    where the stack closes that frame, with `"..."` / backtick escapes and `$'...'` decoded — read as code from a fresh
    stack, and it ends at the first `;`, `&&`, `||`, `|`, bare `&` or newline at that fresh stack's top level, never
    inside a deeper frame; a redirection (`2>&1`, `>&2`, `&>`, `&>>`, `>|`, `<&`) never ends it, and a `\`-newline
    joins. Because that text may be a string inside other code (`python -c '…os.system("git -C \"a;b\" push")'`),
-   the run is the longer of two readings: `\"` / `\'` as shell escapes, and as quotes. A `#` drops the mentions after it (to the line end) only in the top frame at a true word start: text start,
-   or after whitespace, `;`, `&`, `|` or `(` — never after `)` (`x=$(true)#`, `a=(1 2)#`) and never inside a frame
-   (`${x:- #}`, a `$( )` or heredoc body). The fail direction is fixed: ending a run early or dropping a comment would
-   be a bypass, ending it late is at most a false block, so an unbalanced or unknown frame never closes — the run goes
-   to the end of the text and no comment is dropped in it. The verbs are: `push`; `commit`; `pr ... merge`, `pulls/<n>/merge`, `repos/.../merges`,
+   the run is the longer of two readings: `\"` / `\'` as shell escapes, and as quotes. **No mention is ever dropped
+   as a comment** (R35d: every round found a `#` bash does not treat as one — `x=$(true)#`, `${x:- #}`, `$[ #]`,
+   `[[ x =~ x|#b ]]`), and text the parser sets aside as a comment still counts for the non-data test. The fail
+   direction is fixed: ending a run early or dropping a mention would be a bypass, ending it late is at most a false
+   block, so an unbalanced or unknown frame never closes — the run goes to the end of the text. **Size cap** (R35d):
+   above 16 KB or 200 git/gh words the fine reading is skipped — every git/gh word followed on its own line by a
+   guard's verb is a mention and none is accounted — and the parser stays linear (about 0.1 s on 1 MB; nesting deeper
+   than the stack is one whole-command row). The verbs are: `push`; `commit`; `pr ... merge`, `pulls/<n>/merge`, `repos/.../merges`,
    `mergePullRequest` / `enablePullRequestAutoMerge` / `mergeBranch`; a branch creation (`checkout -b/-B`,
    `switch -c/-C`, `branch <name>`, `worktree add`). Each git/gh call the parser read accounts for the mention that
    starts in its own command word, by source position (not by counting); so does a call already reported as a row of
@@ -352,7 +357,10 @@ Each item is a path on which a rule above does NOT block. They are accepted resi
    (`npm test && git commit -m "fix: the push-guard (git push to main) false block"`), a PR body beside one
    (`npm test && gh pr create --body "fixes the git push docs"`), `git log --grep "git push" | head`,
    `echo 'git push later' | tee notes.md`, and (R35a) `echo "$(git log -1)"; echo 'run git push later'`;
-   workaround: split the command, or pass the message with `-F <file>`. **Residuals** (not seen by R35 either): text
+   a trailing comment that names a guarded command beside a test run (R35d:
+   `npm test && git commit -m "x" && git push origin t/12-x # git push origin main`), and any command over 16 KB that
+   names a guarded command beside a non-data program (the size cap); workaround: split the command, drop the comment,
+   or pass the message with `-F <file>`. **Residuals** (not seen by R35 either): text
    that never spells the command (`git $V`, `pu""sh`, `g""it`, `$'\x67it push'`, a command word renamed through the
    hash table: `hash -p /usr/bin/git ls; ls push origin main`), code in a file (`bash scripts/x.sh`), and a variable
    or git config (`git config core.sshCommand ...`) set by an earlier Bash call.

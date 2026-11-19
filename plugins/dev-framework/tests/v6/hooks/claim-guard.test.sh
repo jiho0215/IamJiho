@@ -134,6 +134,11 @@ for c in "printf -v x \$'git -C \\'.\\' checkout -b t/43-z'; sudo bash -c \"\$x\
   "a=(1 2)#; printf -v y 'git checkout -b t/43-z'; sudo bash -c \"\$y\""; do
   run "$W" "$c"; expect 2 "R35c: $c"
 done
+# --- R35 fix round 3 (ruling R35d) ---
+for c in "false && echo \$[ #]; printf -v y 'git checkout -b t/43-z'; sudo bash -c \"\$y\"" \
+  "printf -v x \"git -C \$(case a in a) echo \".\" ;; esac) checkout -b t/43-z\"; sudo bash -c \"\$x\""; do
+  run "$W" "$c"; expect 2 "R35d: $c"
+done
 
 run "$W" 'git worktree add ../wt -b t/41-x origin/t/41-x'; expect 0 "claimed worktree add"
 run "$W" 'git checkout -b t/41-x origin/t/41-x'; expect 0 "claimed checkout -b"

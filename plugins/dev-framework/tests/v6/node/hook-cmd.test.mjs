@@ -856,20 +856,16 @@ test('C1: the run is quote-aware relative to the mention, and a redirection neve
     assert.equal(r35Row(c), undefined, c);
   }
 });
-test('M2: a mention after an unquoted word-start # is a comment, not a mention', () => {
+test('R35d (was M2): no mention is dropped as a comment; a trailing comment naming a guarded command is the stated cost', () => {
+  // R35d: comment elision is gone (every round found a # bash does not treat as one), so these are rows now
   for (const c of ['npm test && git commit -m "x" && git push origin t/12-x # git push origin main', 'npm test # git push origin main',
-    "npm test\n# git push origin main\necho ok"]) {
-    assert.equal(r35Row(c), undefined, c);
-  }
-  // a # inside a word or a quote is not a comment
-  for (const c of [`echo "# x git push origin main"; npm test`, `x=a#b; echo 'git push origin main'; npm test`,
-    `echo a#'git push origin main'; npm test`]) {
+    "npm test\n# git push origin main\necho ok", `echo "# x git push origin main"; npm test`,
+    `x=a#b; echo 'git push origin main'; npm test`, `echo a#'git push origin main'; npm test`]) {
     assert.ok(unknownRow(c), c);
   }
   // a heredoc body is read as its own script: an apostrophe in it does not swallow what follows
   assert.ok(unknownRow("git commit -F - <<'EOF'\ndon't forget\nEOF\nnpm test && echo 'git push origin main'"));
-  // ... so a comment after it is still a comment (without the heredoc rule the apostrophe would hide the #)
-  assert.equal(r35Row("git commit -F - <<'EOF'\ndon't forget\nEOF\nnpm test # git push origin main"), undefined);
+  assert.deepEqual(stackAt("git commit -F - <<'EOF'\ndon't forget\nEOF\nnpm test", 'npm'), ['top']);
 });
 test('R35a: a data word that evaluates a subscript or indirection runs its $( ) / ` / ${!', () => {
   for (const c of [`printf -v 'a[$(cd ~/api && git push origin main)]' x`, `declare -i w='r[$(cd ~/api && git push origin main)]'`,
@@ -910,9 +906,15 @@ test('R35b: a git call that runs text is non-data and does not account for that 
 });
 
 // ---- R35 fix round 2 (ruling R35c: frames by a stack; fail toward a longer run) ----
-const { _mentions } = require('../../../lib/hook-cmd.js');
+const { _mentions, _frameScan } = require('../../../lib/hook-cmd.js');
 const SB = `sudo bash -c "$y"`;
-test('R35c A: a # after ) or inside ${ } is no comment; a true word-start # still is', () => {
+// stackAt(text, marker): the frame kinds open at the first occurrence of marker (bottom first).
+function stackAt(text, marker) {
+  const at = text.indexOf(marker); let kinds = null;
+  _frameScan(text, 0, text.length, { visit: (i, st) => { if (i === at) { kinds = st.map((f) => f.k); return true; } return false; } });
+  return kinds;
+}
+test('R35c A: a # after ) or inside ${ } keeps the mention (and so, since R35d, does every #)', () => {
   for (const c of [`x=$(true)#; printf -v y 'cd ~/api && git push origin main'; ${SB}`,
     `echo \${x:- #}; printf -v y 'cd ~/api && git push origin main'; ${SB}`,
     `z=\${x// #/}; printf -v y 'cd ~/api && git push origin main'; ${SB}`,
@@ -921,10 +923,15 @@ test('R35c A: a # after ) or inside ${ } is no comment; a true word-start # stil
     assert.ok(unknownRow(c), c);
     assert.deepEqual(r35Mentions(c), ['git push origin main'], c);
   }
-  for (const c of ['(true) # git push origin main', 'npm test && (true) # git push origin main',
-    'npm test;# git push origin main', 'npm test |# git push origin main']) {
-    assert.equal(r35Row(c), undefined, c);
+  // R35d: the old "true comment" negatives are rows now (the stated cost: split the command or drop the comment)
+  for (const c of ['npm test && (true) # git push origin main', 'npm test;# git push origin main',
+    'npm test |# git push origin main']) {
+    assert.ok(unknownRow(c), c);
   }
+  // still needs a non-data segment: data only (true, echo) with the mention in a comment is no row
+  for (const c of ['(true) # git push origin main', 'echo ok # git push origin main']) assert.equal(r35Row(c), undefined, c);
+  // a comment's own text counts for the non-data test: what the parser sets aside may be code to bash
+  assert.ok(unknownRow("echo ok # x; printf -v y 'git push origin main'; " + SB));
 });
 test('R35c B: a nested "..." inside $( ), ${ } or ` ` within an outer "..." does not close it', () => {
   for (const [c, m] of [
@@ -958,15 +965,96 @@ test('R35c: an unbalanced frame never closes: the run goes to the end of the tex
   assert.deepEqual(_mentions('y=$(echo a # git push origin main\n); npm test').map((m) => m.text), ['git push origin main']);
   assert.deepEqual(_mentions("bash <<'EOF'\necho a # git push origin main\nEOF").map((m) => m.text), ['git push origin main']);
 });
-test('R35c siblings: arithmetic << is no heredoc; <( ) >( ); heredoc delimiters <<- and quoted', () => {
-  // each one has a real comment after it that must still be dropped
-  for (const c of ['echo $((1<<2))\nnpm test # git push origin main', '((x=1<<2))\nnpm test # git push origin main',
-    'cat <(echo a) # git push origin main', 'echo a > >(cat) # git push origin main',
-    "cat <<-EOF\n\tx\n\tEOF\nnpm test # git push origin main", "cat <<'EOF'\nit's\nEOF\nnpm test # git push origin main",
-    'cat <<"EOF"\nx\nEOF\nnpm test # git push origin main', 'cat <<\\EOF\nx\nEOF\nnpm test # git push origin main',
-    'cat <<E"O"F\nx\nEOF\nnpm test # git push origin main']) {
-    assert.deepEqual(_mentions(c), [], c);
+test('R35c siblings: arithmetic << is no heredoc; <( ) >( ); heredoc delimiters <<- and quoted (frame structure)', () => {
+  // after each one, the next line is back in the top frame (no heredoc left open, no frame left open)
+  for (const c of ['echo $((1<<2))\nNEXT', '((x=1<<2))\nNEXT', 'cat <(echo a)\nNEXT', 'echo a > >(cat)\nNEXT',
+    "cat <<-EOF\n\tx\n\tEOF\nNEXT", "cat <<'EOF'\nit's\nEOF\nNEXT", 'cat <<"EOF"\nx\nEOF\nNEXT', 'cat <<\\EOF\nx\nEOF\nNEXT',
+    'cat <<E"O"F\nx\nEOF\nNEXT']) {
+    assert.deepEqual(stackAt(c, 'NEXT'), ['top'], c);
   }
+  // and inside: the arithmetic and the heredoc bodies are what they look like
+  assert.deepEqual(stackAt('echo $((1<<2)) x', '2'), ['top', '$((']);
+  assert.deepEqual(stackAt("cat <<-EOF\n\tBODY\n\tEOF", 'BODY'), ['top', 'hd']);
   // a heredoc body is code: its mention is read, and its newline ends the run
   assert.deepEqual(_mentions("cat <<-EOF\n\tgit push origin main\n\tEOF\nnpm test").map((m) => m.text), ['git push origin main']);
+});
+
+// ---- R35 fix round 3 (ruling R35d) ----
+test('R35d Crit1: $[ ] is a frame and # never drops a mention ($[ #], [[ =~ #]])', () => {
+  for (const [lead, hook] of [[': $[ #]', 'push'], ['false && echo $[ #]', 'push'], ['[[ x =~ x|#b ]]', 'push']]) {
+    const c = `${lead}; printf -v y 'cd ~/api && git ${hook} origin main'; ${SB}`;
+    assert.ok(unknownRow(c), c);
+    // the mention is kept (for [[ =~ x|#b ]] the whole row is R28c's, a | plus a runner, so check the reader directly)
+    assert.deepEqual(_mentions(c).map((m) => m.text), [`git ${hook} origin main`], c);
+  }
+  for (const v of ['commit -m x', 'checkout -b t/43-z']) {
+    assert.ok(unknownRow(`: $[ #]; printf -v y 'git ${v}'; ${SB}`), v);
+  }
+  assert.ok(unknownRow(`: $[ #]; printf -v y 'gh pr merge 5 --repo acme/api'; ${SB}`));
+  assert.deepEqual(stackAt('echo $[ 1 + [2] ] x', '2'), ['top', '$[']);
+  assert.deepEqual(stackAt('echo $[ 1 + [2] ] NEXT', 'NEXT'), ['top']);
+  assert.deepEqual(stackAt('echo $[ 1 + [2] MID ] NEXT', 'MID'), ['top', '$['], 'an inner ] does not close $[');
+  // the | inside $[ ] is arithmetic (bitwise or), not a run terminator: the merge after it is read
+  assert.deepEqual(r35Mentions(`printf -v x "gh pr --repo acme/api$[ 0|0 ] merge 1"; sudo bash -c "$x"`),
+    ['gh pr --repo acme/api$[ 0|0 ] merge 1']);
+});
+test('R35d Crit2: a case pattern ) does not close $( or (; esac ends the case', () => {
+  const rows = [
+    `printf -v x "cd ~/api && git -C $(case a in a) echo "." ;; esac) push origin main"; sudo bash -c "$x"`,
+    `printf -v x "git -C $(case a in a) echo "." ;; esac) commit -m x"; sudo bash -c "$x"`,
+    `printf -v x "gh pr --repo $(case a in a) echo "acme/api" ;; esac) merge 5"; sudo bash -c "$x"`,
+    `printf -v x "git -C $(case a in a) echo "." ;; esac) checkout -b t/43-z"; sudo bash -c "$x"`];
+  for (const c of rows) assert.ok(unknownRow(c), c);
+  assert.deepEqual(r35Mentions(rows[0]), ['git -C $(case a in a) echo "." ;; esac) push origin main']);
+  // structure: inside the case the ) is a pattern; after esac the ) closes $(
+  assert.deepEqual(stackAt('x=$(case a in a) PAT ;; esac) NEXT', 'PAT'), ['top', '$(']);
+  assert.deepEqual(stackAt('x=$(case a in a) PAT ;; esac) NEXT', 'NEXT'), ['top']);
+  assert.deepEqual(stackAt('(case a in a) PAT ;; esac) NEXT', 'PAT'), ['top', '(']);
+  // "case" inside a word is not a case: a ) after it closes as usual
+  assert.deepEqual(stackAt('x=$(echo showcase) NEXT', 'NEXT'), ['top']);
+  // unsure ) never pops: a case with no esac keeps $( open to the end
+  assert.deepEqual(stackAt('x=$(case a in a) echo ;; ) NEXT', 'NEXT'), ['top', '$(']);
+});
+test('R35d Min4: <<< is a here-string, not a heredoc', () => {
+  assert.deepEqual(stackAt("cat <<< x\nNEXT\nx\n", 'NEXT'), ['top']);
+  assert.deepEqual(stackAt("cat <<<x\nNEXT\nx\n", 'NEXT'), ['top']);
+});
+test('R35d Min5: $(( closes at )), a heredoc with no delimiter runs to the end, force-popped frames stay open', () => {
+  // X2: only )) closes $(( : the ; inside $( ) after $((1+1)) is not a terminator
+  assert.deepEqual(r35Mentions(`printf -v x "git -C $(echo $((1+1)); echo .) push origin main"; sudo bash -c "$x"`),
+    ['git -C $(echo $((1+1)); echo .) push origin main']);
+  // X3: a heredoc with no delimiter line keeps its body to the end: the ; after ) is inside it, not a terminator
+  assert.deepEqual(_mentions('printf -v x "git -C $(cat <<EOF\n); push origin main"').map((m) => m.text),
+    ['git -C $(cat <<EOF\n); push origin main"']);
+  // X5: a quote left open in a heredoc body never closes (end null): the run goes past the body to the end
+  assert.deepEqual(_mentions("cat <<EOF\necho \"git -C '\nEOF\n' push origin main").map((m) => m.text),
+    ["git -C '\nEOF\n' push origin main"]);
+});
+test('R35d size cap: above 16 KB or 200 git words, any line mention + a non-data segment is one row; fast to 1 MB', () => {
+  const tail = `printf -v y 'cd ~/api && git push origin main'; ${SB}`;
+  for (const [name, mk] of [['big string', (n) => 'echo "' + 'git x '.repeat(n) + '"; ' + tail],
+    ['many words', (n) => 'git status; '.repeat(n) + tail], ['git in $( )', (n) => 'echo "$(' + 'git '.repeat(n) + ')"; ' + tail]]) {
+    for (const kb of [100, 1024]) {
+      const c = mk(Math.floor(kb * 1024 / 8));
+      const t0 = process.hrtime.bigint();
+      const x = P(c);
+      const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+      assert.ok(ms < 3000, `${name} ${kb} KB parsed in ${ms.toFixed(0)} ms (bound 3000)`);
+      const at = x.opaque.indexOf(c);
+      assert.ok(at >= 0 && x.opaqueDirs[at].unknown === true, `${name} ${kb} KB: whole-command row`);
+    }
+  }
+  // the cap does not account: a mention at a read call's own word still counts above the cap
+  const big = 'git push origin t/12-x; ' + 'echo x; '.repeat(3000) + 'npm test';
+  assert.ok(big.length > 16 * 1024);
+  assert.ok(unknownRow(big));
+  // and it needs a non-data segment: data only stays no row, however big
+  const data = 'echo "' + 'git push '.repeat(4000) + '"';
+  assert.equal(r35Row(data), undefined);
+  // just under the cap the fine reading still holds: the same commit beside npm accounts for its own word
+  assert.equal(r35Row('npm test && git commit -m x' + ' '.repeat(16000)), undefined);
+  // nesting deeper than the stack is one whole-command row (fail closed), not a crash
+  const deep = 'echo ' + '$( ('.repeat(60000) + ') )'.repeat(60000) + '; git push origin main';
+  const d = P(deep);
+  assert.deepEqual(d.opaqueDirs, [{ dir: null, unknown: true }]);
 });

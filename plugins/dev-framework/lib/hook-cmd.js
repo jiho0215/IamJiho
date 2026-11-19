@@ -52,16 +52,32 @@
 //   raw text that no read call accounts for, in a command with a non-data program, is one whole-command row with an
 //   unknown dir that carries the unaccounted mentions (`opaqueDirs[i].mentions`).
 
-const MENTION = new RegExp([
-  String.raw`\bgh\b[\s\S]*\bpr\b[\s\S]*\bmerge\b`,
+// R35d (time cap): the "A anywhere before B" alternatives (gh ... pr ... merge, git ... push|commit|branch) are tested by
+// searching forward from the FIRST A, which answers the same question as the old [\s\S]* regex in linear time (that
+// regex backtracked from every A to the end: quadratic on a long command).
+const MENTION_FLAT = new RegExp([
   String.raw`pulls/\S*/merge`,
   String.raw`mergePullRequest|enablePullRequestAutoMerge|mergeBranch`,
   String.raw`repos/\S*/merges\b`,  // R34: the branch-merge endpoint
-  String.raw`\bgit\b[\s\S]*\b(push|commit|branch)\b`,
   String.raw`worktree\s+add`,
   String.raw`checkout\s+-[bB]`,
   String.raw`switch\s+(-[cC]\b|--create|--force-create)`,
 ].join('|'), 'i');  // R27: GIT push mentions push too
+// inOrder(s, [re1, re2, ...]): does s hold a match of re1, then (after it) one of re2, and so on? Each re is global.
+function inOrder(s, res) {
+  let at = 0;
+  for (const re of res) {
+    re.lastIndex = at;
+    const m = re.exec(s);
+    if (!m) return false;
+    at = m.index + m[0].length;
+  }
+  return true;
+}
+const M_GH = /\bgh\b/gi, M_PR = /\bpr\b/gi, M_MERGE = /\bmerge\b/gi, M_GIT = /\bgit\b/gi, M_GITVERB = /\b(push|commit|branch)\b/gi;
+const MENTION = {
+  test: (s) => MENTION_FLAT.test(s) || inOrder(s, [M_GH, M_PR, M_MERGE]) || inOrder(s, [M_GIT, M_GITVERB]),
+};
 
 // Commands that run their arguments (or a script) as code: unreadable when they mention a guarded command.
 const EXECS = new Set(['eval', 'xargs', 'sh', 'bash', 'zsh', 'dash', 'ksh', 'fish', 'pwsh', 'powershell', 'cmd',
@@ -164,26 +180,48 @@ const R35_VERBS = {
     `${r35b('branch')}(?:\\s+-\\S+)*\\s+[^\\s-]`, `${r35b('worktree')}\\s+add${'(?![A-Za-z0-9_])'}`].join('|'), 'i'),
 };
 // mentions(text): [{ at, text }] for every git/gh word followed in its run by a guard's verb.
-// Ruling R35c (fail direction): ending a run early or dropping a mention as a comment is a bypass; ending a run late is
-// at most a false block. So nesting is tracked with a frame stack (frameScan); a mention's run is the text of the frame
-// that holds it, from the mention to where the STACK says that frame closes, read again as code from a fresh stack, and
-// a terminator ends it only at that fresh stack's top level. An unbalanced or unknown frame never closes: the run goes
-// to the end of the text, and no comment is dropped inside it.
+// Ruling R35c (fail direction): ending a run early is a bypass; ending a run late is at most a false block. So nesting
+// is tracked with a frame stack (frameScan); a mention's run is the text of the frame that holds it, from the mention to
+// where the STACK says that frame closes, read again as code from a fresh stack, and a terminator ends it only at that
+// fresh stack's top level. An unbalanced or unknown frame never closes: the run goes to the end of the text.
+// Ruling R35d: no mention is ever dropped as a comment (every round found a `#` bash does not treat as one), and a `)`
+// the scanner is not sure closes a frame (a case pattern) does not close it.
 function mentions(text) {
   const t = text.replace(/\\\r?\n/g, (m) => ' '.repeat(m.length));  // a line continuation joins the run
   const words = [...t.matchAll(R35_GIT_WORD)];
+  if (t.length > R35_FINE_MAX_CHARS || words.length > R35_FINE_MAX_WORDS) return coarseMentions(t, words);
   const starts = new Map(words.map((m) => [m.index, null]));
-  frameScan(t, 0, t.length, { comments: true, visit: (i, st, comment) => {
-    if (starts.has(i) && starts.get(i) === null) starts.set(i, { frame: st[st.length - 1], comment });
+  frameScan(t, 0, t.length, { visit: (i, st) => {
+    if (starts.get(i) === null) starts.set(i, st[st.length - 1]);
   } });
   const found = [];
   for (const m of words) {
-    const c = starts.get(m.index) || { frame: { k: 'top', end: t.length }, comment: false };
-    if (c.comment) continue;  // M2: after a `#` at a true word start in the top frame
+    const f = starts.get(m.index) || { k: 'top', end: t.length };
     const from = m.index + m[0].length;
-    const end = c.frame.end === null || c.frame.end === undefined ? t.length : c.frame.end;
-    const run = relRun(frameText(t.slice(from, Math.max(from, end)), c.frame.k));
+    const end = f.end === null || f.end === undefined ? t.length : f.end;
+    const run = relRun(frameText(t.slice(from, Math.max(from, end)), f.k));
     if (Object.values(R35_VERBS).some((re) => re.test(run))) found.push({ at: m.index, text: m[0] + run });
+  }
+  return found;
+}
+// R35d size cap: fine accounting (frames, runs, positions) only up to 16 KB and 200 git/gh words. Above that, every
+// git/gh word followed on its own line by a guard's verb is a mention, and none is accounted, so with a non-data segment
+// the command is one unknown-dir row. Linear: one pass over the lines.
+const R35_FINE_MAX_CHARS = 16 * 1024;
+const R35_FINE_MAX_WORDS = 200;
+function coarseMentions(t, words) {
+  const found = [];
+  let lineEnd = -1, lineHit = false;
+  for (const m of words) {
+    if (m.index > lineEnd) {
+      const e = t.indexOf('\n', m.index);
+      lineEnd = e < 0 ? t.length : e;
+      lineHit = false;
+    }
+    if (lineHit) continue;  // one mention per line is enough to fire, and keeps this linear
+    const from = m.index + m[0].length;
+    const run = t.slice(from, lineEnd);
+    if (Object.values(R35_VERBS).some((re) => re.test(run))) { found.push({ at: m.index, text: m[0] + run, coarse: true }); lineHit = true; }
   }
   return found;
 }
@@ -206,7 +244,7 @@ function frameText(s, k) {
 function relRun(s) {
   const stopAt = (looseEsc) => {
     let stop = s.length;
-    frameScan(s, 0, s.length, { comments: false, looseEsc, visit: (i, st) => {
+    frameScan(s, 0, s.length, { looseEsc, visit: (i, st) => {
       if (st.length !== 1) return false;
       const ch = s[i];
       const term = ch === '\n' || ch === ';' || (ch === '|' && s[i - 1] !== '>')
@@ -218,43 +256,48 @@ function relRun(s) {
   };
   return s.slice(0, Math.max(stopAt(false), stopAt(true)));
 }
-// frameScan(t, lo, hi, { visit, comments }): walk t[lo, hi) with a stack of frames { k, end }: top, ( (a subshell,
-// <( ), >( )), $( , $(( and (( (arithmetic: no heredoc, no comment), ${ , ` , " , ' , $' , and hd (a heredoc body,
-// read as code). visit(i, stack, inComment) runs before each character; returning true stops the walk. A frame's
-// `end` is the index of its closing character (its body is t[open+len, end)); a frame that never closes keeps end null.
-// With comments, a `#` starts a comment only in the top frame, at a true word start (text start, or after whitespace
-// ; & | or ( — never after `)`).
-function frameScan(t, lo, hi, { visit, comments, looseEsc }) {
-  const st = [{ k: 'top', end: hi }];
-  let comment = false, pending = [];
-  const push = (k, extra) => { st.push({ k, end: null, ...extra }); };
+// frameScan(t, lo, hi, { visit, looseEsc }): walk t[lo, hi) with a stack of frames { k, end }: top, ( (a subshell,
+// <( ), >( )), $( , $(( and (( (arithmetic: no heredoc), $[ (old arithmetic), ${ , ` , " , ' , $' , and hd (a heredoc
+// body, read as code; <<< is a here-string, not a heredoc). visit(i, stack) runs before each character; returning true
+// stops the walk. A frame's `end` is the index of its closing character; a frame that never closes keeps end null.
+// R35d: there are no comments here (a `#` is an ordinary character), and a `)` closes a ( or $( only when no `case`
+// opened in that frame is still waiting for its `esac` — a case pattern's `)` closes nothing.
+const R35_WORD_START = /[\s;&|()]/;
+const R35_DELIM = /[^\s;&|<>()]+/y;
+function frameScan(t, lo, hi, { visit, looseEsc }) {
+  const st = [{ k: 'top', end: hi, cs: 0 }];
+  let pending = [], hdEnd = Infinity;  // hdEnd: the smallest bodyEnd of an open heredoc frame
+  const push = (k, extra) => { st.push({ k, end: null, cs: 0, ...extra }); };
   const pop = (i) => { st.pop().end = i; };
+  const resetHdEnd = () => { hdEnd = Infinity; for (const f of st) if (f.k === 'hd' && f.bodyEnd < hdEnd) hdEnd = f.bodyEnd; };
   const heredocAt = (b, list) => {  // the next heredoc body, starting at b: { bodyEnd, after }
     const h = list[0];
     let k = b;
     while (k < hi) {
       const eol = t.indexOf('\n', k); const e = eol < 0 || eol >= hi ? hi : eol;
       if ((h.strip ? t.slice(k, e).replace(/^\t+/, '') : t.slice(k, e)) === h.delim) {
-        return { k: 'hd', end: null, bodyEnd: k, after: Math.min(hi, e + 1), rest: list.slice(1) };
+        return { k: 'hd', end: null, cs: 0, bodyEnd: k, after: Math.min(hi, e + 1), rest: list.slice(1) };
       }
       k = e + 1;
     }
-    return { k: 'hd', end: null, bodyEnd: hi, after: hi, rest: [] };  // no delimiter line: the body runs to the end
+    return { k: 'hd', end: null, cs: 0, bodyEnd: hi, after: hi, rest: [] };  // no delimiter line: the body runs to the end
   };
+  const wordAt = (i, w) => t.startsWith(w, i) && (i === lo || R35_WORD_START.test(t[i - 1]))
+    && (i + w.length >= hi || /[\s;&|()]/.test(t[i + w.length]));
   for (let i = lo; i < hi;) {
     // a heredoc body ends at its delimiter line, whatever is still open inside it (unbalanced: those keep end null)
-    const hdAt = st.findIndex((f) => f.k === 'hd' && i >= f.bodyEnd);
-    if (hdAt > 0) {
+    if (i >= hdEnd) {
+      const hdAt = st.findIndex((f) => f.k === 'hd' && i >= f.bodyEnd);
       const h = st[hdAt];
       while (st.length > hdAt + 1) st.pop();
       pop(h.bodyEnd); i = h.after;
       if (h.rest.length) st.push(heredocAt(i, h.rest));
+      resetHdEnd();
       continue;
     }
     const f = st[st.length - 1];
-    if (visit && visit(i, st, comment)) return;
+    if (visit && visit(i, st)) return;
     const c = t[i], n1 = t[i + 1];
-    if (comment) { if (c === '\n') comment = false; else { i++; continue; } }
     if (f.k === "'") { if (c === "'") pop(i); i++; continue; }
     if (f.k === "$'") { if (c === '\\') { i += 2; continue; } if (c === "'") pop(i); i++; continue; }
     // looseEsc (relRun): \" and \' read as quotes, for text that is a string inside other code
@@ -263,30 +306,40 @@ function frameScan(t, lo, hi, { visit, comments, looseEsc }) {
     if (c === '$' && n1 === '(' && t[i + 2] === '(') { push('$((', { p: 0 }); i += 3; continue; }
     if (c === '$' && n1 === '(') { push('$('); i += 2; continue; }
     if (c === '$' && n1 === '{') { push('${'); i += 2; continue; }
+    if (c === '$' && n1 === '[') { push('$[', { p: 0 }); i += 2; continue; }
     if (c === '`') { push('`'); i++; continue; }
     if (f.k === '"') { if (c === '"') pop(i); i++; continue; }
     if (c === '$' && n1 === "'") { push("$'"); i += 2; continue; }
     if (c === "'") { push("'"); i++; continue; }
     if (c === '"') { push('"'); i++; continue; }
     if (f.k === '${') { if (c === '}') pop(i); i++; continue; }
+    if (f.k === '$[') {
+      if (c === '[') f.p++;
+      else if (c === ']') { if (f.p > 0) f.p--; else pop(i); }
+      i++; continue;
+    }
     if (f.k === '$((') {
       if (c === '(') f.p++;
       else if (c === ')') { if (f.p > 0) f.p--; else if (n1 === ')') { pop(i); i += 2; continue; } }
       i++; continue;
     }
     // code frames: top ( $( ` hd
+    if (wordAt(i, 'case')) { f.cs++; i += 4; continue; }
+    if (wordAt(i, 'esac')) { if (f.cs > 0) f.cs--; i += 4; continue; }
     if (c === '(' && n1 === '(') { push('$((', { p: 0 }); i += 2; continue; }  // (( arithmetic ))
     if ((c === '<' || c === '>') && n1 === '(') { push('('); i += 2; continue; }
     if (c === '(') { push('('); i++; continue; }
-    if (c === ')') { if (f.k === '(' || f.k === '$(') pop(i); i++; continue; }
-    if (comments && c === '#' && f.k === 'top' && (i === lo || /[\s;&|(]/.test(t[i - 1]))) { comment = true; i++; continue; }
-    if (c === '<' && n1 === '<' && t[i + 2] !== '<') {
+    // only a ) the scanner is sure of closes: none while a case in this frame waits for its esac (a pattern's `)`)
+    if (c === ')') { if ((f.k === '(' || f.k === '$(') && f.cs === 0) pop(i); i++; continue; }
+    if (c === '<' && n1 === '<' && t[i + 2] === '<') { i += 3; continue; }  // <<< here-string: not a heredoc
+    if (c === '<' && n1 === '<') {
       let j = i + 2; const strip = t[j] === '-'; if (strip) j++;
       while (t[j] === ' ' || t[j] === '\t') j++;
-      const d = /^[^\s;&|<>()]+/.exec(t.slice(j, hi));
+      R35_DELIM.lastIndex = j;
+      const d = j < hi ? R35_DELIM.exec(t) : null;
       if (d) { pending.push({ delim: d[0].replace(/['"\\]/g, ''), strip }); i = j + d[0].length; continue; }
     }
-    if (c === '\n' && pending.length) { st.push(heredocAt(i + 1, pending)); pending = []; i++; continue; }
+    if (c === '\n' && pending.length) { st.push(heredocAt(i + 1, pending)); pending = []; resetHdEnd(); i++; continue; }
     i++;
   }
 }
@@ -523,7 +576,14 @@ function scanAt(s, start, mode, opts = {}) {
     } else if (c === '(' && word && !word.quoted && /^[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?\+?=$/.test(word.text)) {
       word.arr = true; word.text += c; i++; continue;
     }
-    if (c === '#' && !word) { while (i < n && s[i] !== '\n') i++; continue; }
+    if (c === '#' && !word) {
+      const from = i;
+      while (i < n && s[i] !== '\n') i++;
+      // R35d: what this scanner reads as a comment may be code to bash ($[ #], [[ =~ x|#b ]]): kept for the R35 non-data
+      // test only (walk reads it with r35NonDataIn), never for anything else
+      items.push({ kind: 'comment', text: s.slice(from + 1, i) });
+      continue;
+    }
     if (c === ' ' || c === '\t' || c === '\r') { endWord(); i++; continue; }
     if (c === '\n') { endSeg('\n', i); i = consumeHeredocs(i + 1); segStart = i; continue; }
     if (c === ';') { endSeg(';', i); i += s[i + 1] === ';' ? 2 : 1; segStart = i; continue; }
@@ -1127,6 +1187,18 @@ function segment(it, st, out, ctx) {
   return null;
 }
 
+// r35NonDataIn(src, opts, depth): does src, read as a command, hold a non-data segment at any depth (its substitution
+// bodies and comments too)? Side-effect free: only the R35 non-data test, for text the scanner set aside as a comment.
+function r35NonDataIn(src, opts, depth) {
+  if (depth > 50) return true;  // deeper than we read: count it (fail closed)
+  for (const it of scanAt(src, 0, 'top', opts).items) {
+    if (it.kind === 'comment') { if (r35NonDataIn(it.text, opts, depth + 1)) return true; continue; }
+    if (it.kind !== 'seg') continue;
+    if (r35NonData(it.words)) return true;
+    for (const b of it.subs) if (r35NonDataIn(b.text, opts, depth + 1)) return true;
+  }
+  return false;
+}
 // map(x): where offset x of src sits in the whole command text (R35 spans).
 function walk(src, out, initial, opts, map = (x) => x) {
   const { items, fed } = scanAt(src, 0, 'top', opts);
@@ -1135,6 +1207,7 @@ function walk(src, out, initial, opts, map = (x) => x) {
   const stack = [];
   let prevSep = null;
   for (const it of items) {
+    if (it.kind === 'comment') { if (!out._nonData && r35NonDataIn(it.text, opts, 0)) out._nonData = true; continue; }
     if (it.kind === 'open') { stack.push(st); st = { ...st }; prevSep = null; continue; }
     if (it.kind === 'close') { if (stack.length) st = stack.pop(); prevSep = null; continue; }
     for (const body of it.subs) {  // substitutions run, in the segment's cwd
@@ -1154,8 +1227,16 @@ function parseCommand(cmd, opts = {}) {
   const out = { merges: [], pushes: [], branches: [], commits: [], opaque: [], opaqueDirs: [], aliases: [], _acct: [] };
   const o = opts || {};
   const text = String(cmd == null ? '' : cmd);
-  walk(text, out,
-    { dir: null, cdOpaque: false, ghRepo: null, gitDir: false, gitConfig: false, ghConfig: false, cdpath: !!o.cdpath }, o);
+  try {
+    walk(text, out,
+      { dir: null, cdOpaque: false, ghRepo: null, gitDir: false, gitConfig: false, ghConfig: false, cdpath: !!o.cdpath }, o);
+  } catch (e) {
+    if (!(e instanceof RangeError)) throw e;
+    // nesting deeper than the stack (thousands of $( ): unreadable. One whole-command row, unknown dir, matched on its
+    // text: every guard whose verb the text names blocks (fail closed, as a parser failure would)
+    return { merges: [], pushes: [], branches: [], commits: [], opaque: [text], opaqueDirs: [{ dir: null, unknown: true }],
+      aliases: [] };
+  }
   // R28c (NC1, NC2): a pipe or a < redirection (heredoc, here-string, file, process substitution) anywhere, a code
   // runner / eval / source / . / dynamic command word at any depth, and git/gh in the text: some runner may read its
   // code from that stdin, inside a subshell, loop or if as well, so the whole command is one row with an unknown dir.
@@ -1178,7 +1259,8 @@ function parseCommand(cmd, opts = {}) {
   // text (R28c-R28e, or a one-segment row) is made unknown and keeps matching on its text, as before.
   const acct = out._acct, nonData = !!out._nonData;
   delete out._acct; delete out._nonData;
-  const loose = mentions(text).filter((m) => !acct.some(([s, e]) => m.at >= s && m.at < e));
+  // a coarse mention (R35d size cap) is never accounted: above the cap no position is trusted
+  const loose = mentions(text).filter((m) => m.coarse || !acct.some(([s, e]) => m.at >= s && m.at < e));
   if (loose.length && nonData) {
     const at = out.opaque.indexOf(text);
     if (at >= 0) out.opaqueDirs[at] = { ...out.opaqueDirs[at], unknown: true };
@@ -1188,5 +1270,6 @@ function parseCommand(cmd, opts = {}) {
 }
 
 // R29: the command names an alias step may resolve to (the hook walks alias chains with these).
-// _mentions: the R35 mention reader alone, for its fences (no guard reads it).
-module.exports = { parseCommand, GIT_COMMANDS: [...GIT_COMMANDS], GH_COMMANDS: [...GH_COMMANDS], _mentions: mentions };
+// _mentions / _frameScan: the R35 mention reader and its frame scanner alone, for their fences (no guard reads them).
+module.exports = { parseCommand, GIT_COMMANDS: [...GIT_COMMANDS], GH_COMMANDS: [...GH_COMMANDS], _mentions: mentions,
+  _frameScan: frameScan };
