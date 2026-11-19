@@ -126,6 +126,14 @@ g -C "$TMP/a" push -q origin "$SHA41:refs/heads/t/43-y"
 g clone -q "$TMP/origin.git" "$TMP/c" 2>/dev/null
 git -C "$TMP/c" remote set-url origin "$TMP/does-not-exist.git"
 [ "$(claim_ok "$TMP/c" t/41-x)" = 1 ] || fail "hook_claim_ok: missing origin must be 1"
+# lib_claim_budget_exits_hook: hook_claim_ok's network goes through bin/_scope.sh's scope_net, which must run hook_net
+# in the hook's OWN shell: a run budget spent before the claim fetch exits the whole hook with the budget message,
+# not a subshell's rc 2 turned into the caller's generic "cannot verify" block.
+R=$(DEVFW_HOOK_BUDGET= run '{}' "hook_init x 1; rc=0; hook_claim_ok '$TMP/b' t/41-x || rc=\$?; [ \"\$rc\" -ne 1 ] || hook_block 'cannot verify the claim'; echo \"after rc=\$rc\"")
+[ "$R" = "2||devfw x: time budget ran out (1s per run) before a network call; not allowing this (retry when the network is faster)" ] \
+  || fail "lib_claim_budget_exits_hook: $R"
+# ...and nothing after it: a subshell block would print its line first and let the caller's generic block follow
+[ "$(wc -l < "$TMP/err")" -eq 1 ] || fail "lib_claim_budget_exits_hook: the hook went on after the budget block: $(cat "$TMP/err")"
 
 # ---- hook_net: one deadline per run (ruling R19)
 R=$(DEVFW_HOOK_BUDGET=0 run '{}' 'hook_init t 25; hook_net o null 5 echo hi; echo after')

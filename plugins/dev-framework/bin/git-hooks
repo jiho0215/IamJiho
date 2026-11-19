@@ -1,0 +1,194 @@
+#!/bin/bash
+# git-hooks install --core-dir <dir> [--config <file>] [--state-dir <dir>]
+# git-hooks verify --dir <dir>
+#
+# install writes a content-addressed hook dir <state>/git-hooks/<hash>/ holding:
+#   pre-push, reference-transaction, pre-commit   the shims, copied from the plugin's hooks/git/<name> templates
+#                  (identical but for the name; they exec hooks/git/dispatch.sh)
+#   plugin-root    the absolute plugin dir the shims run
+#   scope.env      fixed DEVFW_HK_* lines (read line by line, never sourced)
+#   managed.tsv    <lowercase owner/name> TAB <default branch> TAB <merge method>, one line per managed repo
+#   manifest       "<blob sha> <path>" for each file above, then for the plugin-side files the shims execute
+#                  (hooks/git/dispatch.sh, hooks/git/_git-lib.sh, hooks/git/rules/*.sh, bin/_scope.sh, bin/_lib.sh,
+#                  bin/lease; paths relative to the plugin root, so they always contain a "/", which the six
+#                  hook-dir names never do)
+# <hash> = the first 16 hex of `git hash-object --stdin` over the six hook-dir files' contents, in that order,
+# followed by the manifest's plugin-side lines. (The plugin lines are hashed in too, so an edited plugin gets a NEW
+# dir, and the old dir's manifest still tells a running session that its plugin changed under it.)
+# The dir is built in a temp dir beside the target and renamed with `mv -T`; a target that already exists (another
+# session installed the same inputs) is kept and verified, never overwritten or nested into. stdout:
+# {"dir":"<abs>","hash":"<16 hex>"}, exit 0. Exit 2 usage/config errors, 1 I/O errors, 5 when an existing dir of the
+# same hash fails verify.
+#
+# verify exits 0, or 5 with stdout {"reason":"<missing dir | manifest mismatch: <file> | plugin not found |
+# plugin changed since session start: <file> | config changed>"}.
+set -euo pipefail
+BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$BIN/_lib.sh"
+devfw_require git jq
+
+HDFILES=(pre-push reference-transaction pre-commit plugin-root scope.env managed.tsv)
+SHIMS=(pre-push reference-transaction pre-commit)
+USAGE="usage: git-hooks install --core-dir <dir> [--config <file>] [--state-dir <dir>] | git-hooks verify --dir <dir>"
+
+_blob() { git hash-object --no-filters -- "$(devfw_path "$1")" | tr -d '\r'; }
+_absdir() { (cd "$1" && devfw_path "$(pwd)"); }   # an existing dir, absolute, cygpath -m
+_envval() { sed -n "s/^$1=//p" "$2" 2>/dev/null | tr -d '\r' | head -1; }
+
+# _plugin_files <root>: the plugin-side files the shims execute, relative to <root>, in manifest order.
+_plugin_files() {
+  local f
+  printf '%s\n' hooks/git/dispatch.sh hooks/git/_git-lib.sh
+  for f in "$1"/hooks/git/rules/*.sh; do [ -f "$f" ] && printf 'hooks/git/rules/%s\n' "${f##*/}"; done
+  printf '%s\n' bin/_scope.sh bin/_lib.sh bin/lease
+}
+
+# _dir_hash <dir>: the content hash of a hook dir, from its six files and its manifest's plugin-side lines.
+_dir_hash() {
+  local f
+  { for f in "${HDFILES[@]}"; do cat "$1/$f"; done; grep '^[0-9a-f]* .*/' "$1/manifest" | tr -d '\r'; } \
+    | git hash-object --stdin | tr -d '\r' | cut -c1-16
+}
+
+# _verify <dir>: sets REASON; returns 0 ok, 5 not.
+_verify() {
+  local d="$1" r sha path f want got cfg chash
+  REASON=""
+  if [ ! -d "$d" ]; then REASON="missing dir"; return 5; fi
+  if [ ! -f "$d/manifest" ]; then REASON="manifest mismatch: manifest"; return 5; fi
+  r=$(tr -d '\r\n' < "$d/plugin-root" 2>/dev/null) || r=""
+  if [ -z "$r" ] || [ ! -f "$r/hooks/git/dispatch.sh" ]; then REASON="plugin not found"; return 5; fi
+  # the hook-dir files: each listed, each matching
+  for f in "${HDFILES[@]}"; do
+    want=$(awk -v p="$f" '$2 == p { print $1; exit }' "$d/manifest" | tr -d '\r')
+    got=""; [ -f "$d/$f" ] && got=$(_blob "$d/$f")
+    if [ -z "$want" ] || [ "$want" != "$got" ]; then REASON="manifest mismatch: $f"; return 5; fi
+  done
+  # the dir name is the content hash (a manifest rewritten to match an edited file is caught here)
+  if [ "$(_dir_hash "$d")" != "$(basename "$d")" ]; then REASON="manifest mismatch: manifest"; return 5; fi
+  # the plugin-side files: each listed one unchanged, and no rule file added since install
+  while read -r sha path; do
+    path="${path%$'\r'}"
+    case "$path" in */*) ;; *) continue ;; esac
+    got=""; [ -f "$r/$path" ] && got=$(_blob "$r/$path")
+    if [ "$sha" != "$got" ]; then REASON="plugin changed since session start: $path"; return 5; fi
+  done < "$d/manifest"
+  while IFS= read -r path; do
+    awk -v p="$path" '$2 == p { f = 1 } END { exit !f }' "$d/manifest" \
+      || { REASON="plugin changed since session start: $path"; return 5; }
+  done < <(_plugin_files "$r")
+  cfg=$(_envval DEVFW_HK_CONFIG "$d/scope.env"); chash=$(_envval DEVFW_HK_CONFIG_HASH "$d/scope.env")
+  got=""; [ -n "$cfg" ] && [ -f "$cfg" ] && got=$(_blob "$cfg")
+  if [ -z "$chash" ] || [ "$got" != "$chash" ]; then REASON="config changed"; return 5; fi
+  return 0
+}
+
+cmd_verify() {
+  local dir=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dir) [ $# -ge 2 ] || devfw_die 2 "$USAGE"; dir="$2"; shift 2 ;;
+      *) devfw_die 2 "$USAGE" ;;
+    esac
+  done
+  [ -n "$dir" ] || devfw_die 2 "$USAGE"
+  local rc=0
+  _verify "$dir" || rc=$?
+  [ "$rc" -eq 0 ] && return 0
+  jq -cn --arg r "$REASON" '{reason:$r}' | tr -d '\r'
+  exit 5
+}
+
+cmd_install() {
+  local core="" cfg="" state="" root
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --core-dir) [ $# -ge 2 ] || devfw_die 2 "$USAGE"; core="$2"; shift 2 ;;
+      --config) [ $# -ge 2 ] || devfw_die 2 "$USAGE"; cfg="$2"; shift 2 ;;
+      --state-dir) [ $# -ge 2 ] || devfw_die 2 "$USAGE"; state="$2"; shift 2 ;;
+      *) devfw_die 2 "$USAGE" ;;
+    esac
+  done
+  [ -n "$core" ] && [ -d "$core" ] || devfw_die 2 "--core-dir must name an existing dir; $USAGE"
+  core=$(_absdir "$core")
+  [ -n "$cfg" ] || cfg="$core/orchestrator.json"
+  [ -f "$cfg" ] || devfw_die 2 "config not found: $cfg"
+  cfg="$(_absdir "$(dirname "$cfg")")/$(basename "$cfg")"
+  [ -n "$state" ] || state="${DEVFW_STATE_DIR:-$HOME/.devfw}"
+  mkdir -p "$state/git-hooks" || devfw_die 1 "cannot create $state/git-hooks"
+  state=$(_absdir "$state")
+  root=$(_absdir "$BIN/..")
+
+  # config -> scope.env values and managed.tsv rows
+  jq -e 'type == "object"' "$cfg" >/dev/null 2>&1 || devfw_die 2 "unreadable config: $cfg"
+  local vals plan_repo plan_path plan_branch allow_force
+  vals=$(jq -r '[((.plan.repo // "") | ascii_downcase), (.plan.path // "docs/plan"), (.plan.branch // "main"),
+                 ((.hooks.pushGuard.allowForce // false) | tostring)] | join("\u001f")' "$cfg" 2>/dev/null | tr -d '\r') \
+    || devfw_die 2 "unreadable config: $cfg"
+  # \037, not a tab: tab is IFS whitespace, so an empty field (no plan.repo) would collapse and shift the rest
+  IFS=$'\037' read -r plan_repo plan_path plan_branch allow_force <<<"$vals"
+  # repos.<x>: default = repos.<x>.default, else plan.default, else main; merge method = repos.<x>.mergeMethod,
+  # else squash. plan.repo, when no repos.<x> names it, gets plan.default / main and squash.
+  local rows
+  rows=$(jq -r '(.plan.default // "main") as $pd
+      | [(.repos // {}) | to_entries[] | select((.value.github // "") != "")
+         | {k: .key, s: (.value.github | ascii_downcase), d: (.value.default // $pd), m: (.value.mergeMethod // "squash")}] as $r
+      | ((.plan.repo // "") | ascii_downcase) as $pr
+      | (if $pr != "" and ([$r[] | .s] | index($pr)) == null then [{k: "", s: $pr, d: $pd, m: "squash"}] else [] end) + $r
+      | .[] | [.k, .s, .d, (.m | tostring)] | join("\u001f")' "$cfg" 2>/dev/null | tr -d '\r') \
+    || devfw_die 2 "unreadable config: $cfg"
+  local managed="" k s d m
+  while IFS=$'\037' read -r k s d m; do
+    [ -n "$s" ] || continue
+    case "$m" in merge|squash|rebase) ;; *) devfw_die 2 "repos.$k.mergeMethod must be merge, squash or rebase" ;; esac
+    managed+="$s"$'\t'"$d"$'\t'"$m"$'\n'
+  done <<<"$rows"
+
+  # build in a temp dir beside the target
+  local tmp
+  tmp=$(mktemp -d "$state/git-hooks/.tmp-XXXXXXXX") || devfw_die 1 "cannot create a temp dir in $state/git-hooks"
+  trap 'rm -rf "$tmp" 2>/dev/null' EXIT
+  # the shims: the plugin's hooks/git/<name> templates, copied byte for byte (CRs stripped: a CR would end up in
+  # `exec bash ... <name>\r`)
+  local n
+  for n in "${SHIMS[@]}"; do
+    [ -f "$root/hooks/git/$n" ] || devfw_die 1 "plugin file missing: $root/hooks/git/$n"
+    tr -d '\r' < "$root/hooks/git/$n" > "$tmp/$n" || devfw_die 1 "cannot write $tmp/$n"
+    chmod 755 "$tmp/$n"
+  done
+  printf '%s\n' "$root" > "$tmp/plugin-root"
+  printf '%s\n' "DEVFW_HK_CORE=$core" "DEVFW_HK_CONFIG=$cfg" "DEVFW_HK_CONFIG_HASH=$(_blob "$cfg")" \
+    "DEVFW_HK_PLAN_REPO=$plan_repo" "DEVFW_HK_PLAN_PATH=$plan_path" "DEVFW_HK_PLAN_BRANCH=$plan_branch" \
+    "DEVFW_HK_ALLOW_FORCE=$allow_force" "DEVFW_HK_STATE=$state" "DEVFW_HK_BIN=$root/bin" > "$tmp/scope.env"
+  printf '%s' "$managed" > "$tmp/managed.tsv"
+  local f p
+  {
+    for f in "${HDFILES[@]}"; do printf '%s %s\n' "$(_blob "$tmp/$f")" "$f"; done
+    while IFS= read -r p; do
+      [ -f "$root/$p" ] || devfw_die 1 "plugin file missing: $root/$p"
+      printf '%s %s\n' "$(_blob "$root/$p")" "$p"
+    done < <(_plugin_files "$root")
+  } > "$tmp/manifest"
+  local hash target
+  hash=$(_dir_hash "$tmp")
+  [[ "$hash" =~ ^[0-9a-f]{16}$ ]] || devfw_die 1 "cannot hash the hook dir"
+  target="$state/git-hooks/$hash"
+
+  # publish: keep an existing target (same inputs, another session); else rename; a lost rename race keeps theirs
+  if [ -d "$target" ]; then
+    rm -rf "$tmp"
+  elif ! mv -T "$tmp" "$target" 2>/dev/null; then
+    rm -rf "$tmp"
+    [ -d "$target" ] || devfw_die 1 "cannot create $target"
+  fi
+  trap - EXIT
+  _verify "$target" || devfw_die 5 "the existing install $target failed verify: $REASON"
+  jq -cn --arg d "$target" --arg h "$hash" '{dir:$d, hash:$h}' | tr -d '\r'
+}
+
+SUB="${1:-}"; shift || true
+case "$SUB" in
+  install) cmd_install "$@" ;;
+  verify) cmd_verify "$@" ;;
+  *) devfw_die 2 "$USAGE" ;;
+esac

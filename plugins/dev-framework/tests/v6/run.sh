@@ -1,5 +1,5 @@
 #!/bin/bash
-# Run every tests/v6/*.test.sh and tests/v6/hooks/*.test.sh (phase "shell") and the node tests (phase "node"); print
+# Run every tests/v6/*.test.sh, tests/v6/hooks/*.test.sh and tests/v6/git-hooks/*.test.sh (phase "shell") and the node tests (phase "node"); print
 # PASS/FAIL per file; exit non-zero on any failure. `--phase shell|node` runs one phase (default: both).
 # Run it bounded, one phase at a time (ruling R32): `timeout 25m bash tests/v6/run.sh --phase shell`, then
 # `timeout 25m bash tests/v6/run.sh --phase node`. Measured on Windows Git Bash (2026-11-17): the shell phase alone
@@ -16,7 +16,7 @@ done
 case "$PHASE" in all|shell|node) ;; *) echo "usage: run.sh [--phase shell|node]" >&2; exit 2 ;; esac
 fail=0
 if [ "$PHASE" != node ]; then
-  for t in "$DIR"/*.test.sh "$DIR"/hooks/*.test.sh; do
+  for t in "$DIR"/*.test.sh "$DIR"/hooks/*.test.sh "$DIR"/git-hooks/*.test.sh; do
     [ -e "$t" ] || continue
     name=${t#"$DIR"/}
     if out=$(bash "$t" 2>&1); then echo "PASS $name"; else echo "FAIL $name"; echo "$out" | tail -5 | sed 's/^/    /'; fail=1; fi

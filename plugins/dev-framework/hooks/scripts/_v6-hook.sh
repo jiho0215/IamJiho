@@ -8,6 +8,8 @@
 HOOK_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # devfw_path, devfw_require; also exports MSYS_NO_PATHCONV for Git Bash.
 . "$HOOK_LIB_DIR/../../bin/_lib.sh"
+# scope_slug, scope_claim_ok (shared with the git hooks); their network calls go through scope_net, defined below.
+. "$HOOK_LIB_DIR/../../bin/_scope.sh"
 
 # ---- run deadline (ruling R19) ----
 # A hooks.json timeout does not block (fail-open), so each hook run has ONE budget, strictly below its hooks.json
@@ -74,6 +76,10 @@ hook_net() {
   printf -v "$__hn_v" '%s' "$__hn_o"
   return "$__hn_rc"
 }
+
+# scope_net <out-var> <per-call-seconds> <command> [args...]: bin/_scope.sh's network seam. hook_net with stderr
+# dropped, in this shell (so a budget block exits the hook and HOOK_NET_SPENT_MS stays here). Never inside $( ... ).
+scope_net() { hook_net "$1" null "$2" "${@:3}"; }
 
 # hook_init <hook-name> [<run-budget-seconds>]: read the hook's stdin JSON once and set the run budget (default
 # 25; every wired hook passes its own, fenced by tests/v6/hooks/hooks-json.test.sh). Empty or non-JSON stdin
@@ -331,16 +337,8 @@ hook_managed_repos() {
   hook_cfg '.plan.repo, ((.repos // {}) | .[] | .github)'
 }
 
-# _hook_slug <url>: owner/name for the three GitHub URL forms, else nothing.
-_hook_slug() {
-  local u="${1%/}"
-  u="${u%.git}"
-  if [[ "$u" =~ ^https://([^/@]+@)?github\.com/([^/]+)/([^/]+)$ ]]; then
-    printf '%s/%s\n' "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"
-  elif [[ "$u" =~ ^(git@github\.com:|ssh://git@github\.com/)([^/]+)/([^/]+)$ ]]; then
-    printf '%s/%s\n' "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"
-  fi
-}
+# _hook_slug <url>: owner/name for the three GitHub URL forms, else nothing (bin/_scope.sh scope_slug).
+_hook_slug() { scope_slug "$1"; }
 
 # hook_repo_for_remote <dir> <remote>: the managed owner/name (config spelling) that <remote> of the repo at
 # <dir> points to, read from the RAW url (git config, never `git remote get-url`, which applies insteadOf).
@@ -366,39 +364,11 @@ hook_repo_of() {
   hook_repo_for_remote "$1" origin
 }
 
-# hook_claim_ok <repo-dir> <branch> [<remote>]: is <branch> (t/<n>-<slug>) claimed on <remote> (a name or URL; default origin) right now? Fresh reads:
-# ls-remote finds the default branch and whether <branch> exists, then one fetch into refs/devfw/claim-check/
-# (--no-write-fetch-head: no FETCH_HEAD race; --refmap=: no remote-tracking updates; --no-tags).
-# Exit 0 claimed (a commit in base..<branch> carries "Claim-Issue: <n>"), 3 not claimed (no issue number in
-# the name, branch missing, or no such trailer), 1 network/git error.
+# hook_claim_ok <repo-dir> <branch> [<remote>]: is <branch> (t/<n>-<slug>) claimed on <remote> (a name or URL;
+# default origin) right now? bin/_scope.sh scope_claim_ok, each network call bounded per call by HOOK_NET_TIMEOUT
+# (default 60) and by the run budget (scope_net = hook_net). Exit 0 claimed, 3 not claimed, 1 network/git error.
+# Never call it inside $( ... ).
 hook_claim_ok() {
-  local dir branch="$2" remote="${3:-origin}" n ls base body t="${HOOK_NET_TIMEOUT:-60}"
-  dir=$(devfw_path "$1")
-  [[ "$branch" =~ ^t/([1-9][0-9]*)- ]] || return 3
-  n="${BASH_REMATCH[1]}"
-  git check-ref-format "refs/heads/$branch" || return 3
-  hook_net ls null "$t" git -C "$dir" ls-remote --symref "$remote" HEAD "refs/heads/$branch" || return 1
-  ls="${ls//$'\r'/}"
-  base=$(sed -n 's#^ref: refs/heads/\([^[:space:]]*\)[[:space:]]HEAD$#\1#p' <<<"$ls" | head -1)
-  [ -n "$base" ] || return 1
-  awk -v r="refs/heads/$branch" '$2 == r { f = 1 } END { exit !f }' <<<"$ls" || return 3
-  # per-process refs (M1): claim-guard and push-guard run in parallel and must not lock the same ref; deleted after
-  # the read (a killed run can leave one behind under refs/devfw/claim-check/<pid>/, harmless).
-  local cr="refs/devfw/claim-check/$$" rc=3
-  hook_net body null "$t" git -C "$dir" -c gc.auto=0 -c maintenance.auto=false fetch -q --no-tags --no-write-fetch-head \
-    --refmap= --no-recurse-submodules "$remote" \
-    "+refs/heads/$branch:$cr/b/$branch" "+refs/heads/$base:$cr/base" \
-    || { _hook_claim_refs_rm "$dir" "$cr"; return 1; }
-  if body=$(git -C "$dir" log --format=%B "$cr/base..$cr/b/$branch" 2>/dev/null); then
-    grep -q "^Claim-Issue: $n\$" <<<"${body//$'\r'/}" && rc=0
-  else rc=1; fi
-  _hook_claim_refs_rm "$dir" "$cr"
-  return "$rc"
-}
-_hook_claim_refs_rm() {  # _hook_claim_refs_rm <dir> <ref-prefix>: delete this run's claim-check refs
-  local r
-  while IFS= read -r r; do
-    [ -n "$r" ] && git -C "$1" update-ref -d "$r" >/dev/null 2>&1
-  done < <(git -C "$1" for-each-ref --format='%(refname)' "$2/" 2>/dev/null | tr -d '\r')
-  return 0
+  local SCOPE_NET_SECS="${HOOK_NET_TIMEOUT:-60}"
+  scope_claim_ok "$1" "$2" "${3:-origin}"
 }

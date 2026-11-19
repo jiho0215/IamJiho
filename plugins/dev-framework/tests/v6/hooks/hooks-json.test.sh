@@ -36,15 +36,19 @@ while IFS= read -r cmd; do
   else [ -x "$SCRIPTS/$name" ] || fail "hooks/scripts/$name is not executable"; fi
 done < <(J '.hooks[][].hooks[].command')
 
-# 1b. (I3) every file in bin/ and every hooks/scripts/*.sh is 100755 in the git index: hooks exec bin/merge-gate,
-#     bin/lease and bin/stop-check directly, and a 100644 entry works on Windows only (Git Bash ignores the bit).
+# 1b. (I3) every file in bin/, every hooks/scripts/*.sh and every file under hooks/git/** (shim templates' dispatcher,
+#     _git-lib.sh, rules/*.sh) is 100755 in the git index: hooks exec bin/merge-gate, bin/lease and bin/stop-check
+#     directly, and a 100644 entry works on Windows only (Git Bash ignores the bit).
 while IFS= read -r line; do
   [ -n "$line" ] || continue
   mode=${line%% *}; path=${line#*$'\t'}
   [ "$mode" = 100755 ] || fail "$path is mode $mode in the git index, not 100755"
-done < <(git -C "$PLUGIN" ls-files -s -- bin hooks/scripts | tr -d '\r' | awk -F'\t' '$2 ~ /^bin\// || $2 ~ /^hooks\/scripts\/[^\/]*\.sh$/')
+done < <(git -C "$PLUGIN" ls-files -s -- bin hooks/scripts hooks/git | tr -d '\r' \
+           | awk -F'\t' '$2 ~ /^bin\// || $2 ~ /^hooks\/scripts\/[^\/]*\.sh$/ || $2 ~ /^hooks\/git\//')
 n=$(git -C "$PLUGIN" ls-files -- bin | wc -l)
 [ "$n" -gt 0 ] || fail "no bin/ files in the git index (is the plugin checked out from git?)"
+n=$(git -C "$PLUGIN" ls-files -- hooks/git | wc -l)
+[ "$n" -gt 0 ] || fail "no hooks/git/ files in the git index (the mode fence would be vacuous)"
 
 # 2. no `if` on any PreToolUse entry or hook.
 n=$(J '[.hooks.PreToolUse // [] | .[] | select(has("if") or any(.hooks[]; has("if")))] | length')
@@ -99,14 +103,16 @@ while IFS=$'\t' read -r cmd to; do
   [ $((b + MARGIN)) -le "$to" ] || fail "$name: run budget ${b}s + ${MARGIN}s margin exceeds its hook timeout ${to}s"
 done < <(J '.hooks[][].hooks[] | [.command, (.timeout|tostring)] | @tsv')
 
-# 6. every network call goes through the deadline helper. In each wired script and in _v6-hook.sh, outside the
-#    hook_net definition: (a) no `timeout` command at all; (b) every line that calls gh api / gh pr, git fetch /
-#    ls-remote, or bin/lease / merge-gate / stop-check carries hook_net. Quoted text is ignored for (b)'s gh/git
-#    words (a block message may name a command), never a whole line.
-offenders() {  # offenders <file>: prints "lineno: text" for each violation
-  awk '
+# 6. every network call goes through the deadline helper of its layer (controller ruling 7): hook_net in the
+#    PreToolUse code (each wired script and _v6-hook.sh), scope_net in bin/_scope.sh, gk_net in the git hooks
+#    (every file under hooks/git/**). In each file, outside its helper's own definition: (a) no `timeout` command at
+#    all; (b) every line that calls gh api / gh pr, git fetch / ls-remote, or bin/lease / merge-gate / stop-check
+#    carries that helper. Quoted text is ignored for (b)'s gh/git words (a block message may name a command), never
+#    a whole line.
+offenders() {  # offenders <file> [<helper>, default hook_net]: prints "lineno: text" for each violation
+  awk -v h="${2:-hook_net}" '
     /^[[:space:]]*#/ { next }
-    /^hook_net\(\)[[:space:]]*\{/ { inhn = 1 }
+    $0 ~ ("^" h "\\(\\)[[:space:]]*\\{") { inhn = 1 }
     inhn { if ($0 ~ /^\}/) inhn = 0; next }
     {
       line = $0; sub(/[[:space:]]#[^"]*$/, "", line)
@@ -117,15 +123,62 @@ offenders() {  # offenders <file>: prints "lineno: text" for each violation
               line ~ /\/(lease|merge-gate|stop-check)"?([[:space:])]|$)/)
       pure = (line ~ /^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*="[^"]*"[[:space:]]*$/)
       if (bare) print NR ": bare timeout: " $0
-      else if (net && !pure && line !~ /(^|[^A-Za-z0-9_])hook_net[[:space:]]/) print NR ": network call outside hook_net: " $0
+      else if (net && !pure && line !~ ("(^|[^A-Za-z0-9_])" h "[[:space:]]")) print NR ": network call outside " h ": " $0
     }' "$1" | tr -d '\r'
 }
-NETFILES=(_v6-hook.sh)
-while IFS= read -r cmd; do [ -n "$cmd" ] && NETFILES+=("${cmd#"$PREFIX"}"); done < <(J '.hooks[][].hooks[].command' | sort -u)
-for name in "${NETFILES[@]}"; do
-  [ -f "$SCRIPTS/$name" ] || continue
-  while IFS= read -r o; do [ -z "$o" ] || fail "$name:$o"; done < <(offenders "$SCRIPTS/$name")
+# NETSCAN rows: "<helper>\t<path relative to the plugin>"
+NETSCAN=("hook_net"$'\t'"hooks/scripts/_v6-hook.sh" "scope_net"$'\t'"bin/_scope.sh")
+while IFS= read -r cmd; do [ -n "$cmd" ] && NETSCAN+=("hook_net"$'\t'"hooks/scripts/${cmd#"$PREFIX"}"); done < <(J '.hooks[][].hooks[].command' | sort -u)
+while IFS= read -r f; do [ -n "$f" ] && NETSCAN+=("gk_net"$'\t'"$f"); done < <(cd "$PLUGIN" && find hooks/git -type f | sort)
+for row in "${NETSCAN[@]}"; do
+  helper=${row%%$'\t'*}; rel=${row#*$'\t'}
+  [ -f "$PLUGIN/$rel" ] || continue
+  while IFS= read -r o; do [ -z "$o" ] || fail "$rel:$o"; done < <(offenders "$PLUGIN/$rel" "$helper")
 done
+# net_scope_files_scanned: the scan list really holds bin/_scope.sh and every file under hooks/git/ (a list that
+# lost them would make the scan vacuous for the claim fetch and every git-hook network call)
+scanned() { local r; for r in "${NETSCAN[@]}"; do [ "${r#*$'\t'}" = "$1" ] && [ "${r%%$'\t'*}" = "$2" ] && return 0; done; return 1; }
+scanned bin/_scope.sh scope_net || fail "net_scope_files_scanned: bin/_scope.sh is not in the network scan"
+n=0
+while IFS= read -r f; do
+  [ -n "$f" ] || continue; n=$((n + 1))
+  scanned "$f" gk_net || fail "net_scope_files_scanned: $f is not in the network scan"
+done < <(git -C "$PLUGIN" ls-files -- hooks/git | tr -d '\r')
+[ "$n" -gt 0 ] || fail "net_scope_files_scanned: no tracked file under hooks/git/"
+
+# 6b. eol fence (controller ruling 5): every tracked file under the LF-only paths new in Plan 3b carries
+#    `attr/text eol=lf` and `i/lf` in the index, and a scratch `git clone -c core.autocrlf=true` of this repo checks
+#    them out without a CR (what a Windows machine with the system default gets). Tasks 8 and 9 add lib/ and
+#    hooks/tripwire/.
+EOL_PATHS=(hooks/git)
+EOLFILES=()
+while IFS= read -r line; do
+  [ -n "$line" ] || continue
+  path=${line#*$'\t'}; EOLFILES+=("$path")
+  [[ "$line" == *"attr/text eol=lf"* ]] || fail "eol_new_paths_lf: $path is not attr/text eol=lf ($line)"
+  [[ "$line" == "i/lf "* ]] || fail "eol_new_paths_lf: $path is not i/lf in the index ($line)"
+done < <(git -C "$PLUGIN" ls-files --eol -- "${EOL_PATHS[@]}" | tr -d '\r')
+[ "${#EOLFILES[@]}" -gt 0 ] || fail "eol_new_paths_lf: no tracked file under ${EOL_PATHS[*]}"
+EC=$(mktemp -d)
+TOP=$(git -C "$PLUGIN" rev-parse --show-toplevel | tr -d '\r'); PFX=$(git -C "$PLUGIN" rev-parse --show-prefix | tr -d '\r')
+HEADSHA=$(git -C "$PLUGIN" rev-parse HEAD | tr -d '\r')
+if git -c core.autocrlf=true clone -q --no-checkout -c core.autocrlf=true "$(p "$TOP")" "$(p "$EC/c")" 2>/dev/null \
+   && git -C "$(p "$EC/c")" checkout -q "$HEADSHA" -- .gitattributes 2>/dev/null; then
+  committed=()
+  for f in "${EOLFILES[@]}"; do git -C "$(p "$EC/c")" cat-file -e "$HEADSHA:$PFX$f" 2>/dev/null && committed+=("$PFX$f"); done
+  if [ "${#committed[@]}" -gt 0 ]; then
+    git -C "$(p "$EC/c")" checkout -q "$HEADSHA" -- "${committed[@]}" 2>/dev/null || fail "eol_new_paths_lf: scratch checkout failed"
+    for f in "${committed[@]}"; do
+      [ -f "$EC/c/$f" ] || { fail "eol_new_paths_lf: $f missing in the scratch clone"; continue; }
+      ! grep -q $'\r' "$EC/c/$f" || fail "eol_new_paths_lf: $f has a CR in a core.autocrlf=true clone"
+    done
+  else
+    echo "note: eol_new_paths_lf clone half skipped: no file under ${EOL_PATHS[*]} committed at HEAD yet"
+  fi
+else
+  fail "eol_new_paths_lf: cannot make the scratch core.autocrlf=true clone"
+fi
+rm -rf "$EC"
 
 # 7. self-checks: each reader on samples, so a reader regression cannot make sections 5-6 vacuous.
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
@@ -144,6 +197,18 @@ x ok   'hook_block "cannot read this merge command exactly; write it as: gh pr m
 x ok   'SC="${DEVFW_BIN_DIR:-$HOOK_LIB_DIR/../../bin}/stop-check"'
 x ok   '# timeout 20 gh api in a comment'
 printf 'hook_net() {\n  __o=$(timeout "$s" "$@")\n}\n' > "$T/s.sh"; [ -z "$(offenders "$T/s.sh")" ] || fail "offenders reader flagged the hook_net body"
+# per-layer helpers: each file is held to ITS helper, and only that helper's own body is exempt
+xh() { printf '%s\n' "$3" > "$T/s.sh"; local got; got=$(offenders "$T/s.sh" "$1"); if [ "$2" = flag ]; then [ -n "$got" ] || fail "offenders reader ($1) missed: $3"; else [ -z "$got" ] || fail "offenders reader ($1) flagged: $3 ($got)"; fi; }
+xh scope_net flag 'git -C "$d" fetch -q origin main'
+xh scope_net flag 'hook_net o null 5 git -C "$d" ls-remote origin HEAD'
+xh scope_net ok   'scope_net _sc_ls "$_sc_t" git -C "$_sc_dir" ls-remote --symref "$_sc_remote" HEAD'
+xh gk_net    flag 'out=$(gh api "repos/$R/issues/$n")'
+xh gk_net    flag 'scope_net o 20 git fetch origin'
+xh gk_net    ok   'gk_net out 20 gh api "repos/$GK_PLAN_REPO/issues/$n" || rc=$?'
+xh gk_net    ok   'scope_net() { gk_net "$1" 20 "${@:3}"; }'
+printf 'gk_net() {\n  timeout "$t" "$@" >"$o"\n}\nx=$(timeout 3 true)\n' > "$T/s.sh"
+[ "$(offenders "$T/s.sh" gk_net | wc -l)" -eq 1 ] || fail "offenders reader: gk_net body exempt, the bare timeout after it flagged: $(offenders "$T/s.sh" gk_net)"
+[ "$(offenders "$T/s.sh" hook_net | wc -l)" -eq 2 ] || fail "offenders reader: a gk_net body is not exempt under hook_net"
 printf '#!/bin/bash\n. "$D/_v6-hook.sh"\nhook_init a 31\n' > "$T/b.sh";  [ "$(budget "$T/b.sh")" = 31 ] || fail "budget reader: hook_init <name> <N>"
 printf '#!/bin/bash\n. "$D/_v6-hook.sh"\nhook_init a\n' > "$T/c.sh";     [ "$(budget "$T/c.sh")" = "$LIBDEF" ] || fail "budget reader: library default"
 printf '#!/bin/bash\necho v5\n' > "$T/d.sh";                            [ -z "$(budget "$T/d.sh")" ] || fail "budget reader: a v5 script has no budget"
