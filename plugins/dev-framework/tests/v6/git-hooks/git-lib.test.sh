@@ -20,7 +20,7 @@ gl 'gk_net o 1 sleep 3; echo "rc=$?"'
 
 # gl_net_no_timeout_blocks: no `timeout` binary -> block, never an unbounded call
 mkdir -p "$TMP/notimeout"
-for t in cat mktemp rm tr date mkdir jq cygpath awk; do
+for t in cat mktemp rm tr date mkdir jq cygpath awk basename dirname; do
   p=$(command -v "$t" 2>/dev/null) && ln -s "$p" "$TMP/notimeout/$t" 2>/dev/null || cp "$p" "$TMP/notimeout/$t" 2>/dev/null
 done
 rc=0; out=$(PATH="$TMP/notimeout" "$BASH" -c "$LIBS; GK_HOOK=pre-push; gk_net o 5 echo hi; echo after" 2>"$TMP/.gle") || rc=$?
