@@ -1169,8 +1169,8 @@ test('R35e timing: adversarial shapes at 27 KB, 100 KB and 1 MB (and just under 
     const ms = Number(process.hrtime.bigint() - t0) / 1e6;
     assert.ok(ms < 3000, `${name} took ${ms.toFixed(0)} ms (bound 3000)`);
     assert.ok(ok, `${name} blocks push`);
-    // deep $( is budget-stopped; case / esac / # ) shapes are exempt from the mentions-array check below
-    if (!/^(\$\(|case |echo esac|: # \))/.test(name)) assert.ok(Array.isArray(r35Row(c).mentions), `${name}: read, not stopped by the budget`);
+    // deep $( is budget-stopped
+    if (!/^\$\(/.test(name)) assert.ok(Array.isArray(r35Row(c).mentions), `${name}: read, not stopped by the budget`);
   };
   for (const [name, mk] of Object.entries(SLOW)) {
     for (const kb of [27, 100, 1024]) one(`${name} ${kb} KB`, mk(Math.floor(kb * 1024)));
@@ -1222,7 +1222,6 @@ const AWK = `awk 'BEGIN{system(ARGV[1])}' "$x"`;
 const R35F_VERBS = [['push', 'git -C', 'push origin main'], ['commit', 'git -C', 'commit -m x'],
   ['branch', 'git -C', 'checkout -b t/43-z'], ['merge', 'gh pr --repo', 'merge 1']];
 // wholeRow(c): the whole command is a row with an unknown dir matched on its TEXT (no mentions list)
-const textRow = (c) => { const d = r35Row(c); return !!d && d.unknown === true && d.mentions === undefined; };
 test('R35f B1: esac after a pattern-list | (case a in b|esac) does not end the case', () => {
   for (const [g, pre, v] of R35F_VERBS) {
     const dot = g === 'merge' ? 'acme/api' : '.';
@@ -1255,4 +1254,7 @@ test('Plan 3b: a case word or a quote in a comment no longer makes a whole-comma
   const r = parseCommand('git commit -m "fix the upper case bug" && git push origin t/12-x');
   assert.equal(r.opaque.length, 0);
   assert.deepEqual(r.pushes[0].refspecs, ['t/12-x']);
+  const c = parseCommand("git push origin t/12-x # don't (re)push");
+  assert.equal(c.opaque.length, 0);
+  assert.deepEqual(c.pushes[0].refspecs, ['t/12-x']);
 });

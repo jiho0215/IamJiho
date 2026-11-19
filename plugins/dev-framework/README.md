@@ -321,10 +321,9 @@ Each item is a path on which a rule above does NOT block. They are accepted resi
    which also separates case patterns (`case a in b|esac)`) — so an argument `esac` (`echo esac`) keeps it open; and
    after a word-start `#` (not after `)`) nothing opens or closes until the line ends (it may be a comment: `$(: # )`,
    and R35f: a quote or `<<` there would swallow bash's real one on the next line); a frame the scanner is not sure
-   has closed stays open. **Complexity fallback** (R35f): because four rounds of precise reading each left a gap in
-   exotic syntax, a command whose text has a guard's verb anywhere after a git/gh word AND either a `case` word
-   anywhere or a comment (as the parser sets it aside) holding `'` `"` `` ` `` `$(` `)` or `<<` is one whole-command
-   row with an unknown dir, matched on its text — whatever the precise reading found. A mention's run is the body of the frame that holds it — from the mention to
+   has closed stays open. **Complexity fallback** (R35f(2)): reverted in Plan 3b Task 2 (it falsely blocked ordinary work such as
+   `git commit -m "fix the upper case bug"`, which now exits 0); the legacy text layer is being retired and its
+   `case`/exotic-comment gaps are no longer fix targets. The hook-level time budget (R35f(1)) stays. A mention's run is the body of the frame that holds it — from the mention to
    where the stack closes that frame, with `"..."` / backtick escapes and `$'...'` decoded — read as code from a fresh
    stack, and it ends at the first `;`, `&&`, `||`, `|`, bare `&` or newline at that fresh stack's top level, never
    inside a deeper frame; a redirection (`2>&1`, `>&2`, `&>`, `&>>`, `>|`, `<&`) never ends it, and a `\`-newline
@@ -378,12 +377,8 @@ Each item is a path on which a rule above does NOT block. They are accepted resi
    budget and whose text names a guard's verb, and a word-start `#` that is no comment
    (`[[ x =~ a|#b ]]` inside `$( )`) holding that frame open to the line end; and in `merge-gate-hook.sh`, a
    whole-command row (unknown dir, matched on its text) counts any path segment `merges` (`(?<=/)merges`, R35e: the
-   old `repos/\S*/merges` was quadratic on a long text); and (R35f fallback) any command with a `case` word, or a
-   comment holding a quote / backtick / `$(` / `)` / `<<`, whose text names a guard's verb after a git/gh word —
-   even one the parser reads exactly, with no non-data program: `git commit -m "fix the upper case bug"` (plan-edit
-   lease check), `case "$1" in a) npm test ;; esac; git push origin t/12-x`, `x=1 # it's done⏎git push origin
-   t/12-x`; workaround: split the command, drop the comment,
-   or pass the message with `-F <file>`. **Residuals** (not seen by R35 either): text
+   old `repos/\S*/merges` was quadratic on a long text); (the R35f(2) fallback that also counted any command with a `case` word or an exotic comment was
+   reverted in Plan 3b Task 2; such commands are read exactly again). **Residuals** (not seen by R35 either): text
    that never spells the command (`git $V`, `pu""sh`, `g""it`, `$'\x67it push'`, a command word renamed through the
    hash table: `hash -p /usr/bin/git ls; ls push origin main`), code in a file (`bash scripts/x.sh`), and a variable
    or git config (`git config core.sshCommand ...`) set by an earlier Bash call.
