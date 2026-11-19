@@ -328,6 +328,7 @@ function relRun(s) {
 // waiting for its `esac` — a case pattern's `)` closes nothing. R35e: a word-start `#` only stops `)` and `esac` from
 // closing anything until the line ends (f.cm), and only an esac in command position ends a case (cmdPos).
 const R35_WORD_START = /[\s;&|()]/;
+const R35_CM_START = /[\s;&|(]/;
 const R35_DELIM = /[^\s;&|<>()]+/y;
 function frameScan(t, lo, hi, { visit, looseEsc }) {
   const st = [{ k: 'top', end: hi, cs: 0 }];
@@ -359,6 +360,9 @@ function frameScan(t, lo, hi, { visit, looseEsc }) {
     if (j < lo) return false;
     if (!';&|\n'.includes(t[j])) return false;
     const p = j > lo ? t[j - 1] : '';
+    // R35f (B1): a single | separates case PATTERNS (case a in b|esac) as well as pipeline commands: unsure, so no.
+    // || is a command boundary (and |& reaches here as its &)
+    if (t[j] === '|' && p !== '|') return false;
     return p !== '\\' && p !== '>' && p !== '<';
   };
   for (let i = lo; i < hi;) {
@@ -376,6 +380,9 @@ function frameScan(t, lo, hi, { visit, looseEsc }) {
     const f = st[st.length - 1];
     if (visit && visit(i, st)) return;
     const c = t[i], n1 = t[i + 1];
+    // R35f (B2): inside what may be a comment (f.cm, set by a word-start #) nothing opens or closes — no quote,
+    // substitution or heredoc (a quote there would swallow bash's real one on the next line); the newline ends it
+    if (f.cm && c !== '\n') { i++; continue; }
     if (f.k === "'") { if (c === "'") pop(i); i++; continue; }
     if (f.k === "$'") { if (c === '\\') { i += 2; continue; } if (c === "'") pop(i); i++; continue; }
     // looseEsc (relRun): \" and \' read as quotes, for text that is a string inside other code
@@ -404,7 +411,8 @@ function frameScan(t, lo, hi, { visit, looseEsc }) {
     // code frames: top ( $( ` hd
     // R35e: a # at word start may begin a comment, and a comment's ) or esac closes nothing for bash; so until the
     // line ends neither closes anything here (if the # was not a comment, the frame just stays open: late is safe)
-    if (c === '#' && (i === lo || R35_WORD_START.test(t[i - 1]))) { f.cm = true; i++; continue; }
+    // (R35f: word start without `)`: in x=$(true)# the # is inside the word, as R35c says)
+    if (c === '#' && (i === lo || R35_CM_START.test(t[i - 1]))) { f.cm = true; i++; continue; }
     if (c === '\n') f.cm = false;
     if (wordAt(i, 'case')) { f.cs++; i += 4; continue; }
     // R35e (3): esac ends a case only as a command word: at the start, or after ; & | or a newline (so after ;; ;&
@@ -1303,7 +1311,11 @@ function walk(src, out, initial, opts, map = (x) => x) {
   let prevSep = null;
   for (const it of items) {
     tick();
-    if (it.kind === 'comment') { if (!out._nonData && r35NonDataIn(it.text, opts, 0)) out._nonData = true; continue; }
+    if (it.kind === 'comment') {
+      if (R35F_COMMENT.test(it.text)) out._exoticComment = true;  // R35f (2)
+      if (!out._nonData && r35NonDataIn(it.text, opts, 0)) out._nonData = true;
+      continue;
+    }
     if (it.kind === 'open') { stack.push(st); st = { ...st }; prevSep = null; continue; }
     if (it.kind === 'close') { if (stack.length) st = stack.pop(); prevSep = null; continue; }
     for (const body of it.subs) {  // substitutions run, in the segment's cwd
@@ -1370,8 +1382,24 @@ function readCommand(text, o) {
     if (at >= 0) out.opaqueDirs[at] = { ...out.opaqueDirs[at], unknown: true };
     else { out.opaque.push(text); out.opaqueDirs.push({ dir: null, unknown: true, mentions: loose.map((m) => m.text) }); }
   }
+  // R35f (2) complexity fallback: syntax the frame reader has misread in every round — a `case` word anywhere, or a
+  // comment (as the scanner sets it aside) holding ' " ` $( ) or << — together with the coarse predicate (a guard's
+  // verb anywhere after a git/gh word) makes the whole command one unknown-dir row matched on its TEXT (no mentions
+  // list: every guard whose verb the text names reads it as its own). No precise reading is trusted for it.
+  const exotic = !!out._exoticComment;
+  delete out._exoticComment;
+  if ((exotic || R35F_CASE.test(text)) && coarseHit(text)) {
+    const at = out.opaque.indexOf(text);
+    if (at >= 0) out.opaqueDirs[at] = { dir: null, unknown: true };
+    else { out.opaque.push(text); out.opaqueDirs.push({ dir: null, unknown: true }); }
+  }
   return out;
 }
+// R35f (2): a `case` word (not part of a longer word, path or option) and a comment holding a quote, backtick, $(, )
+// or <<; coarseHit(t): the size-cap predicate on the whole text (a guard verb anywhere after the first git/gh word).
+const R35F_CASE = /(?<![A-Za-z0-9_.\-/$])case(?![A-Za-z0-9_.\-/])/;
+const R35F_COMMENT = /['"`)]|\$\(|<</;
+const coarseHit = (t) => coarseMentions(t, [...t.matchAll(R35_GIT_WORD)].slice(0, 1)).length > 0;
 
 // R29: the command names an alias step may resolve to (the hook walks alias chains with these).
 // _mentions / _frameScan: the R35 mention reader and its frame scanner alone, for their fences (no guard reads them).

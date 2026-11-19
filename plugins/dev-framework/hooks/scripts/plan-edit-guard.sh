@@ -47,6 +47,7 @@ _commit_touches_plan() {
   [ "$ra$rb" != 11 ] || return 0
   names=$(printf '%s\n%s\n' "$a" "$b" | tr -d '\r')
   while IFS= read -r n; do
+    hook_tick   # R35f
     [ -n "$n" ] || continue
     [[ "$n" == "$PLAN/"* || "$n" == "$PLAN" ]] && return 0
   done <<<"$names"
@@ -78,6 +79,7 @@ case "$HOOK_TOOL" in
         _text_names_core "$CMD" && IN_SCOPE=1
       fi
       while IFS= read -r d; do
+        hook_tick   # R35f
         d=$(jq -r '.' <<<"$d" | tr -d '\r')
         [ "$d" != null ] || d=""
         [ -n "$d" ] && d=$(hook_abs "$d") || d="$HOOK_CWD"

@@ -294,5 +294,17 @@ expect 2 "R35e: 1 MB whole-command row over repos/ words"
 [ "$ms" -lt 10000 ] || fail "R35e: 1 MB repos/ row took ${ms} ms (bound 10000; the hook timeout is 30 s)"
 run "sudo gh api -X PUT repos/acme/api/merges -f base=main -f head=x"; expect 2 "R34/R35e: a branch-merge API path in a whole-segment row"
 run "sudo gh api repos/acme/api/mergesx"; expect 0 "R35e: mergesx is not the merges endpoint"
+# --- R35 fix round 5 (ruling R35f) ---
+AWK="awk 'BEGIN{system(ARGV[1])}' \"\$x\""
+run "printf -v x \"gh pr --repo \$(case a in b|esac) echo X ;; a) echo acme/api ;; esac) merge 1\"; $AWK"
+expect 2 "R35f B1: esac after a pattern-list | (merge)"
+run "printf -v x \"gh pr --repo \$(: # '${NL}: '${NL}) \" '; echo acme/api) merge 1\"; sudo bash -c \"\$x\""
+expect 2 "R35f B2: a quote inside a # comment (merge)"
+t0=$(date +%s%N)
+run "$(printf 'gh pr merge 1 --repo other/x; %.0s' $(seq 120))gh pr merge 1 --repo acme/api"
+ms=$(( ($(date +%s%N) - t0) / 1000000 ))
+expect 2 "R35f O1: 120 merge calls"
+grep -q 'too complex to check in time' <<<"$ERR" || fail "R35f O1 text: $ERR"
+[ "$ms" -lt 20000 ] || fail "R35f O1: 120 calls took ${ms} ms end to end (bound 20000)"
 unset DEVFW_CORE_DIR; run 'gh pr merge 1 --repo acme/api'; expect 0 "DEVFW_CORE_DIR unset"
 echo "PASS: merge-gate-hook"

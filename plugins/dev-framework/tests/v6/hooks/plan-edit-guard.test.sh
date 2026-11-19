@@ -189,6 +189,19 @@ run "$(bash_ "echo $(printf 'gh pr %.0s' $(seq 4500))${NL}printf -v x 'import os
 ms=$(( ($(date +%s%N) - t0) / 1000000 ))
 expect 2 "R35e Imp3: 27 KB of gh pr words, commit on the next line"
 [ "$ms" -lt 10000 ] || fail "R35e Imp3: 27 KB took ${ms} ms (bound 10000; the hook timeout is 30 s)"
+# --- R35 fix round 5 (ruling R35f) ---
+AWK="awk 'BEGIN{system(ARGV[1])}' \"\$x\""
+run "$(bash_ "printf -v x \"git -C \$(case a in b|esac) echo X ;; a) echo . ;; esac) commit -m x\"; $AWK" "$TMP")"
+expect 2 "R35f B1: esac after a pattern-list | (commit)"
+run "$(bash_ "printf -v x \"git -C \$(: # '${NL}: '${NL}) \" '; echo .) commit -m x\"; sudo bash -c \"\$x\"" "$TMP")"
+expect 2 "R35f B2: a quote inside a # comment (commit)"
+[ -d "$TMP/U2" ] || git init -q "$TMP/U2"
+t0=$(date +%s%N)
+run "$(bash_ "$(printf 'git -C ../U2 commit -m x; %.0s' $(seq 120))git commit -m x" "$CORE")"
+ms=$(( ($(date +%s%N) - t0) / 1000000 ))
+expect 2 "R35f O1: 120 commit calls"
+grep -q 'too complex to check in time' <<<"$ERR" || fail "R35f O1 text: $ERR"
+[ "$ms" -lt 20000 ] || fail "R35f O1: 120 calls took ${ms} ms end to end (bound 20000; the hook timeout is 30 s)"
 g -C "$CORE" reset -q; g -C "$CORE" checkout -q -- docs/plan/PLAN.md
 echo r2 >> "$CORE/README.md"; g -C "$CORE" add README.md
 run "$(bash_ 'git commit -m x')"; expect 0 "only README staged"

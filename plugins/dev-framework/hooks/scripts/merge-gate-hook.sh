@@ -36,6 +36,7 @@ if [ "$PARSER_OK" -eq 1 ]; then
   # retried from every `repos/` (quadratic: a 1 MB whole-command row of repos/repos/... passed the hook timeout)
   hook_opaque_rows 'merge|pulls/|mergePullRequest|enablePullRequestAutoMerge|mergeBranch|(?<=/)merges' 'merge|pulls/' '\bgh\b|merge|pulls/'
   for row in "${HOOK_OPQ_ROWS[@]}"; do
+    hook_tick   # R35f
     case "$row" in
       2*) NUNRES=$((NUNRES + 1)) ;;
       3*)   # R29a: a `!` alias whose text names no merge counts only where it was looked up in a managed repo
@@ -64,6 +65,7 @@ _done() { rm -f "$ERRF"; }
 HOOK_CLEANUP=_done   # runs on every exit from here: hook_block, the EXIT trap, the internal-error path
 
 while IFS= read -r m; do
+  hook_tick   # R35f
   [ -n "$m" ] || continue
   pr=$(jq -r '.pr' <<<"$m" | tr -d '\r'); repo=$(jq -r '.repo // empty' <<<"$m" | tr -d '\r')
   auto=$(jq -r '.auto' <<<"$m" | tr -d '\r')
@@ -74,14 +76,14 @@ while IFS= read -r m; do
     # R34: a branch-merge API (REST repos/<o>/<n>/merges, GraphQL mergeBranch) moves a branch with no PR and no gate
     BRANCH_MSG="branch merges into a managed repo go through a PR: gh pr create, then gh pr merge <n> --repo <owner/name> --squash"
     [ -n "$repo" ] || hook_block "$BRANCH_MSG" "(this branch merge names no repo the hook can read, so it is treated as managed)"
-    while IFS= read -r r; do [ -n "$r" ] && [ "${r,,}" = "${repo,,}" ] && hook_block "$BRANCH_MSG" "(repo: $r)"; done <<<"$MANAGED"
+    while IFS= read -r r; do hook_tick; [ -n "$r" ] && [ "${r,,}" = "${repo,,}" ] && hook_block "$BRANCH_MSG" "(repo: $r)"; done <<<"$MANAGED"
     continue
   fi
   [ "$pr" != null ] || hook_block "give the PR number: gh pr merge <n> --repo <owner/name>"
   [ "$auto" != true ] || hook_block "never use gh pr merge --auto (it merges at once here)"
   [ -n "$repo" ] || hook_block "pass --repo <owner/name>; the repo is not inferred"
   managed=0
-  while IFS= read -r r; do [ -n "$r" ] && [ "${r,,}" = "${repo,,}" ] && managed=1; done <<<"$MANAGED"
+  while IFS= read -r r; do hook_tick; [ -n "$r" ] && [ "${r,,}" = "${repo,,}" ] && managed=1; done <<<"$MANAGED"
   [ "$managed" -eq 1 ] || continue
   if [ -n "$PLAN_REPO" ] && [ "${PLAN_REPO,,}" = "${repo,,}" ]; then
     # R23: a plan PR is decided by the lease alone; bin/merge-gate gates code repos only

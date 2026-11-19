@@ -58,6 +58,7 @@ _managed_dir() {
 # Scope pass.
 INSCOPE=()
 while IFS= read -r p; do
+  hook_tick   # R35f
   [ -n "$p" ] || continue
   if _resolve "$p"; then [ -z "$P_REPO" ] || INSCOPE+=("$p"); else INSCOPE+=("$p"); fi
 done < <(jq -c '.pushes[]' <<<"$PARSED" | tr -d '\r')
@@ -70,6 +71,7 @@ if [ "${#HOOK_OPQ_ROWS[@]}" -gt 0 ]; then
   rc=0; mrepos=$(hook_managed_repos) || rc=1
   if [ "$rc" -ne 0 ]; then OPAQUE_HIT=1; fi
   while IFS= read -r m; do
+    hook_tick   # R35f
     [ -n "$m" ] || continue
     if [[ "${CMD,,}" == *"${m,,}"* ]]; then OPAQUE_HIT=1; fi
   done <<<"$mrepos"
@@ -139,6 +141,7 @@ _check_dst() {  # _check_dst <dir> <repo> <dst-branch> <remote>
 }
 
 for p in "${INSCOPE[@]}"; do
+  hook_tick   # R35f
   _resolve "$p" || hook_block "cannot resolve this push's repository"
   [ -n "$P_REPO" ] || continue
   force=$(jq -r '.force' <<<"$p" | tr -d '\r'); del=$(jq -r '.del' <<<"$p" | tr -d '\r')
@@ -148,6 +151,7 @@ for p in "${INSCOPE[@]}"; do
   mapfile -t specs < <(jq -r '.refspecs[]' <<<"$p" | tr -d '\r')
   if [ "${#specs[@]}" -eq 0 ]; then _bare_dst "$P_DIR" "$P_REMOTE"; specs=("$BARE_DST"); fi
   for s in "${specs[@]}"; do
+    hook_tick   # R35f
     s="${s#+}"
     if [[ "$s" == *:* ]]; then dst="${s#*:}"; else dst="$s"; fi
     [ -n "$dst" ] || hook_block "cannot tell what this push updates"
@@ -167,6 +171,7 @@ for p in "${INSCOPE[@]}"; do
       *) names=("$dst") ;;
     esac
     for b in "${names[@]}"; do
+      hook_tick   # R35f
       # anything git would not take as a branch name (~ ^ : ? * [ \, a glob, @{...}) cannot be resolved here
       git check-ref-format "refs/heads/$b" >/dev/null 2>&1 || hook_block "cannot tell what this push updates ($dst); name the branch"
       _check_dst "$P_DIR" "$P_REPO" "$b" "$P_REMOTE"

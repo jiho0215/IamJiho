@@ -27,6 +27,19 @@ _hook_set_budget() {  # _hook_set_budget <seconds>
 _hook_now_ms; HOOK_START_MS=$HOOK_NOW_MS
 _hook_set_budget 25
 
+# ---- local-work budget (ruling R35f) ----
+# A command with many calls makes the guards' per-call loops (jq / git per row) run long, and a hooks.json timeout
+# ALLOWS the command. So the hook's local work (everything but hook_net calls, which have their own bound above) has
+# a 10 s budget; hook_tick, called at the top of every per-row / per-call loop and after the parse, blocks past it.
+# Not configurable (an agent could set it).
+HOOK_LOCAL_MS=10000; HOOK_NET_SPENT_MS=0
+hook_tick() {
+  _hook_now_ms
+  [ $(( HOOK_NOW_MS - HOOK_START_MS - HOOK_NET_SPENT_MS )) -gt "$HOOK_LOCAL_MS" ] || return 0
+  [ -z "${HOOK_BUDGET_SOFT:-}" ] || return 0
+  hook_block "command too complex to check in time (over $(( HOOK_LOCAL_MS / 1000 )) s of local checking); split it into smaller commands"
+}
+
 # hook_net <out-var> <stderr: null|merge|<file>> <per-call-seconds> <command> [args...]: run the command with its
 # stdout in <out-var>, bounded by min(per-call, time left in the run budget); returns the command's exit code
 # (124 on a timeout). When less than 1 s is left it does not run the command: it blocks (hook_block), or, with
@@ -48,13 +61,14 @@ hook_net() {
   # stdout goes to a temp FILE, not a $( ... ) pipe: a pipe is read until EOF, so a grandchild that outlives the
   # command (a background helper, a native process a Windows timeout cannot kill) holding stdout would keep the
   # hook waiting past the deadline. Waiting on `timeout` alone ends at the deadline.
-  local __hn_f
+  local __hn_f __hn_t0="$HOOK_NOW_MS"
   __hn_f=$(mktemp 2>/dev/null) || { printf -v "$__hn_v" '%s' ""; return 125; }
   case "$__hn_e" in
     null)  timeout "$__hn_s" "$@" >"$__hn_f" 2>/dev/null || __hn_rc=$? ;;
     merge) timeout "$__hn_s" "$@" >"$__hn_f" 2>&1 || __hn_rc=$? ;;
     *)     timeout "$__hn_s" "$@" >"$__hn_f" 2>"$__hn_e" || __hn_rc=$? ;;
   esac
+  _hook_now_ms; HOOK_NET_SPENT_MS=$(( HOOK_NET_SPENT_MS + HOOK_NOW_MS - __hn_t0 ))   # R35f: not local work
   __hn_o=$(cat "$__hn_f" 2>/dev/null) || __hn_o=""
   rm -f "$__hn_f" 2>/dev/null || true
   printf -v "$__hn_v" '%s' "$__hn_o"
@@ -113,6 +127,7 @@ hook_abs() {
 hook_parse() {
   PARSED=$(node "$(devfw_path "$HOOK_LIB_DIR/../../bin/hook-parse")" <<<"$1" | tr -d '\r') || PARSED=""
   if [ -n "$PARSED" ] && ! jq -e . >/dev/null 2>&1 <<<"$PARSED"; then PARSED=""; fi
+  hook_tick
 }
 
 # hook_opaque_rows <jq-regex> [<alias-regex>]: rulings R20/R25/R35, the ONE place opaque scope facts are read. From
@@ -135,6 +150,7 @@ hook_opaque_rows() {
   local -A cmds=()
   HOOK_OPQ_ROWS=()
   while IFS= read -r row; do
+    hook_tick   # R35f
     [ -n "$row" ] && HOOK_OPQ_ROWS+=("$row")
   # R33: the verb must stand as a word in the row text (mergeStateStatus, --merges, pushd are not merge / push): no
   # word character right before it, and none right after it unless it ends in one that is not a word char (pulls/5)
@@ -146,9 +162,11 @@ hook_opaque_rows() {
                 else ((.[0] // "") | test($wre; "i")) end) or (.[1].any == true))
       | "\(if .[1].unknown == false then 0 else 1 end)\t\(.[1].dir // "")"' <<<"$PARSED" | tr -d '\r')
   while IFS= read -r w; do
+    hook_tick   # R35f
     [ -n "$w" ] && cmds["$w"]=1
   done < <(jq -r '((.gitCommands // [])[] | "git:\(.)"), ((.ghCommands // [])[] | "gh:\(.)")' <<<"$PARSED" | tr -d '\r')
   while IFS=$'\037' read -r tool name dir unk; do   # \037: an empty dir must not collapse (tab is IFS whitespace)
+    hook_tick   # R35f
     [ -n "$tool" ] || continue
     if [ "$unk" = true ] || [ -z "$dir" ]; then d="${HOOK_CWD:-.}"; else d=$(hook_abs "$dir"); fi
     if [ "$tool" = gh ] && [ "$ghrc" -lt 0 ]; then
@@ -157,6 +175,7 @@ hook_opaque_rows() {
     if [ "$tool" = gh ] && [ "$ghrc" -ne 0 ]; then HOOK_OPQ_ROWS+=("2"$'\t'); continue; fi   # cannot list gh aliases: kind 2
     n="$name"; depth=0; hit=0
     while :; do
+      hook_tick   # R35f
       depth=$((depth + 1))
       if [ "$depth" -gt 10 ]; then hit=1; break; fi                 # too deep (or a loop)
       if [ "$tool" = git ]; then
@@ -194,6 +213,7 @@ hook_opaque_hit() {
   [ "${#HOOK_OPQ_ROWS[@]}" -gt 0 ] || return 1
   "$1" "${HOOK_CWD:-.}" && return 0
   for row in "${HOOK_OPQ_ROWS[@]}"; do
+    hook_tick   # R35f
     u="${row%%$'\t'*}"; d="${row#*$'\t'}"
     [ "$u" != 1 ] || return 0   # kind 2 falls through: only the cwd test above applies to it
     if [ -n "$d" ] && "$1" "$(hook_abs "$d")"; then return 0; fi

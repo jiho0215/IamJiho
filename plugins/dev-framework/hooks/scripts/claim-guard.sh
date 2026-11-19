@@ -41,6 +41,7 @@ _managed_dir() {
 # Scope pass: ticket-named branches in a managed repo (an unreadable config counts as in scope).
 INSCOPE=()
 while IFS= read -r b; do
+  hook_tick   # R35f
   [ -n "$b" ] || continue
   name=$(jq -r '.name // empty' <<<"$b" | tr -d '\r')
   [[ "$name" =~ ^t/[1-9][0-9]*- ]] || continue
@@ -62,6 +63,7 @@ if [ "${#HOOK_OPQ_ROWS[@]}" -gt 0 ]; then
   rc=0; mrepos=$(hook_managed_repos) || rc=1
   if [ "$rc" -ne 0 ]; then OPAQUE_HIT=1; fi
   while IFS= read -r m; do
+    hook_tick   # R35f
     [ -n "$m" ] || continue
     if [[ "${CMD,,}" == *"${m,,}"* ]]; then OPAQUE_HIT=1; fi
   done <<<"$mrepos"
@@ -79,6 +81,7 @@ hook_fail_closed
 
 export HOOK_NET_TIMEOUT="${DEVFW_HOOK_NET_TIMEOUT:-20}"
 for e in "${INSCOPE[@]}"; do
+  hook_tick   # R35f
   d="${e%%$'\t'*}"; name="${e#*$'\t'}"
   [[ "$name" =~ ^t/([1-9][0-9]*)- ]]
   n="${BASH_REMATCH[1]}"

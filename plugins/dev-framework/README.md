@@ -258,10 +258,14 @@ Each item is a path on which a rule above does NOT block. They are accepted resi
    `DEVFW_HOOK_NET_TIMEOUT` default 20 s, `DEVFW_HOOK_GATE_TIMEOUT` default 100 s; the time left), and a call with
    under 1 s left blocks with "time budget ran out" (the digest only marks itself stale). `hooks-json.test.sh` fences
    budget + 5 s <= timeout and that every network call goes through `hook_net`. `hook_net` captures output in a temp
-   file, not a pipe, so a grandchild that outlives the command and holds stdout cannot stretch the run. What remains:
-   local work after the last network call (node/jq/git, normally well under the 5 s margin) is not bounded, and
-   `DEVFW_HOOK_BUDGET` raised past the hook timeout is a fail-open (user-controlled, like the per-call env vars,
-   ruling R10).
+   file, not a pipe, so a grandchild that outlives the command and holds stdout cannot stretch the run. **Local work**
+   (ruling R35f) has its own 10 s budget: `hook_tick` runs after the parse and at the top of every per-row / per-call
+   loop of the four guards and of `hook_opaque_rows`, and past 10 s of wall time not spent inside `hook_net` it blocks
+   with "command too complex to check in time" (a command with ~120 ordinary calls used to run push-guard,
+   claim-guard and plan-edit-guard past their 30 s timeout, which allows the command; now each blocks in ~10.5 s). It
+   is not configurable. What remains: a single local step between two ticks is not interrupted (each is one
+   node/jq/git call), and `DEVFW_HOOK_BUDGET` raised past the hook timeout is a fail-open (user-controlled, like the
+   per-call env vars, ruling R10). Cost: on a very slow machine a large ordinary command can block.
 3. **`cd` and opaque commands** (rulings R1, R9, R15, R20, R28, R31). A literal `cd <dir>` / `pushd <dir>` is tracked
    within one command; a leading `~`, `~/`, `$HOME` or `${HOME}` reads as `$HOME` (so `cd ~/repo` scopes like the full
    path). For every segment it cannot read exactly, the parser (`lib/hook-cmd.js`) also reports where it runs: dir
@@ -312,10 +316,15 @@ Each item is a path on which a rule above does NOT block. They are accepted resi
    `${ }`, backticks, `( )` / `<( )` / `>( )` and heredoc bodies (`<<-` and quoted delimiters included; `<<` inside
    arithmetic is a shift, and `<<<` a here-string, not a heredoc). A `)` closes a `( )` / `$( )` only when the
    scanner is sure (R35d): while a `case` opened in that frame waits for its `esac`, a `)` is a pattern and closes
-   nothing, and (R35e) an `esac` ends the case only as a command word — after `;` / `&` / `|` / a
-   newline (so after `;;` / `;&` / `;;&`), not escaped, not a redirection target — so an argument `esac`
-   (`echo esac`) keeps it open; nor does a `)` or an `esac` close anything after a word-start `#` until the line
-   ends (it may be a comment: `$(: # )`); a frame the scanner is not sure has closed stays open. A mention's run is the body of the frame that holds it — from the mention to
+   nothing, and (R35e) an `esac` ends the case only as a command word — after `;` / `&` / `||` / `|&` / a
+   newline (so after `;;` / `;&` / `;;&`), not escaped, not a redirection target, and (R35f) not after a single `|`,
+   which also separates case patterns (`case a in b|esac)`) — so an argument `esac` (`echo esac`) keeps it open; and
+   after a word-start `#` (not after `)`) nothing opens or closes until the line ends (it may be a comment: `$(: # )`,
+   and R35f: a quote or `<<` there would swallow bash's real one on the next line); a frame the scanner is not sure
+   has closed stays open. **Complexity fallback** (R35f): because four rounds of precise reading each left a gap in
+   exotic syntax, a command whose text has a guard's verb anywhere after a git/gh word AND either a `case` word
+   anywhere or a comment (as the parser sets it aside) holding `'` `"` `` ` `` `$(` `)` or `<<` is one whole-command
+   row with an unknown dir, matched on its text — whatever the precise reading found. A mention's run is the body of the frame that holds it — from the mention to
    where the stack closes that frame, with `"..."` / backtick escapes and `$'...'` decoded — read as code from a fresh
    stack, and it ends at the first `;`, `&&`, `||`, `|`, bare `&` or newline at that fresh stack's top level, never
    inside a deeper frame; a redirection (`2>&1`, `>&2`, `&>`, `&>>`, `>|`, `<&`) never ends it, and a `\`-newline
@@ -369,7 +378,11 @@ Each item is a path on which a rule above does NOT block. They are accepted resi
    budget and whose text names a guard's verb, and a word-start `#` that is no comment
    (`[[ x =~ a|#b ]]` inside `$( )`) holding that frame open to the line end; and in `merge-gate-hook.sh`, a
    whole-command row (unknown dir, matched on its text) counts any path segment `merges` (`(?<=/)merges`, R35e: the
-   old `repos/\S*/merges` was quadratic on a long text); workaround: split the command, drop the comment,
+   old `repos/\S*/merges` was quadratic on a long text); and (R35f fallback) any command with a `case` word, or a
+   comment holding a quote / backtick / `$(` / `)` / `<<`, whose text names a guard's verb after a git/gh word —
+   even one the parser reads exactly, with no non-data program: `git commit -m "fix the upper case bug"` (plan-edit
+   lease check), `case "$1" in a) npm test ;; esac; git push origin t/12-x`, `x=1 # it's done⏎git push origin
+   t/12-x`; workaround: split the command, drop the comment,
    or pass the message with `-F <file>`. **Residuals** (not seen by R35 either): text
    that never spells the command (`git $V`, `pu""sh`, `g""it`, `$'\x67it push'`, a command word renamed through the
    hash table: `hash -p /usr/bin/git ls; ls push origin main`), code in a file (`bash scripts/x.sh`), and a variable

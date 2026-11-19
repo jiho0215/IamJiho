@@ -154,6 +154,18 @@ run "$W" "echo $(printf 'gh pr %.0s' $(seq 4500))${NL}printf -v x 'import os; os
 ms=$(( ($(date +%s%N) - t0) / 1000000 ))
 expect 2 "R35e Imp3: 27 KB of gh pr words, checkout -b on the next line"
 [ "$ms" -lt 10000 ] || fail "R35e Imp3: 27 KB took ${ms} ms (bound 10000; the hook timeout is 30 s)"
+# --- R35 fix round 5 (ruling R35f) ---
+AWK="awk 'BEGIN{system(ARGV[1])}' \"\$x\""
+run "$W" "printf -v x \"git -C \$(case a in b|esac) echo X ;; a) echo . ;; esac) checkout -b t/43-z\"; $AWK"
+expect 2 "R35f B1: esac after a pattern-list | (branch)"
+run "$W" "printf -v x \"git -C \$(: # '${NL}: '${NL}) \" '; echo .) checkout -b t/43-z\"; sudo bash -c \"\$x\""
+expect 2 "R35f B2: a quote inside a # comment (branch)"
+t0=$(date +%s%N)
+run "$W" "$(printf 'git -C ../U checkout -b t/9-x; %.0s' $(seq 120))git checkout -b t/43-z"
+ms=$(( ($(date +%s%N) - t0) / 1000000 ))
+expect 2 "R35f O1: 120 branch calls"
+says 'too complex to check in time' "R35f O1 text"
+[ "$ms" -lt 20000 ] || fail "R35f O1: 120 calls took ${ms} ms end to end (bound 20000; the hook timeout is 30 s)"
 
 run "$W" 'git worktree add ../wt -b t/41-x origin/t/41-x'; expect 0 "claimed worktree add"
 run "$W" 'git checkout -b t/41-x origin/t/41-x'; expect 0 "claimed checkout -b"

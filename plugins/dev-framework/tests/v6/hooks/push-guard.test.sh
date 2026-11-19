@@ -31,7 +31,7 @@ cat > "$TMP/fakebin/gh" <<'STUB'
 echo "$*" >> "${GH_LOG:-/dev/null}"
 case "${GH_MODE:-ok}" in
   fail) exit 1 ;;
-  slow) sleep 10 ;;
+  slow) sleep "${GH_SLEEP:-10}" ;;
   ack) [ "$*" = "api repos/acme/core/issues/41" ] && { echo '{"labels":[{"name":"needs-ack"}]}'; exit 0; }; exit 1 ;;
   *) case "$*" in "api repos/acme/core/issues/41"|"api repos/acme/core/issues/12") echo '{"labels":[{"name":"p1"}]}'; exit 0 ;; esac; exit 1 ;;
 esac
@@ -310,12 +310,40 @@ run "$W" "printf -v x \"git -C \$(case a in b) echo esac ;; a) echo . ;; esac) p
 expect 2 "R35e Crit2: an argument esac does not end the case"
 run "$W" "printf -v x \"git -C \$(: # )${NL}) push origin main\"; sudo bash -c \"\$x\""
 expect 2 "R35e: a ) in a comment does not close \$("
-run "$W" "x=\$(case a in a) echo . ;; esac); npm test && git push origin t/12-x"; expect 0 "R35e: an ordinary case in \$( )"
+run "$W" "x=\$(case a in a) echo . ;; esac); npm test && git push origin t/12-x"; expect 2 "R35f stated cost: a case word beside a git push (was R35e: 0)"
 t0=$(date +%s%N)
 run "$W" "echo $(printf 'gh pr %.0s' $(seq 4500))${NL}printf -v x 'import os; os.system(\"git push origin main\")'; $PYS"
 ms=$(( ($(date +%s%N) - t0) / 1000000 ))
 expect 2 "R35e Imp3: 27 KB of gh pr words, push on the next line"
 [ "$ms" -lt 10000 ] || fail "R35e Imp3: 27 KB took ${ms} ms (bound 10000; the hook timeout is 30 s)"
+# --- R35 fix round 5 (ruling R35f) ---
+AWK="awk 'BEGIN{system(ARGV[1])}' \"\$x\""
+run "$W" "printf -v x \"git -C \$(case a in b|esac) echo X ;; a) echo . ;; esac) push origin main\"; $AWK"
+expect 2 "R35f B1: esac after a pattern-list | does not end the case"
+run "$W" "printf -v x \"git -C \$(: # '${NL}: '${NL}) \" '; echo .) push origin main\"; $AWK"
+expect 2 "R35f B2: a quote inside a # comment opens nothing"
+run "$W" "printf -v x \"git -C \$(: # <<E${NL}: '${NL}E${NL}) \" '; echo .) push origin main\"; sudo bash -c \"\$x\""
+expect 2 "R35f B2: a << inside a # comment opens no heredoc"
+run "$W" "x=1 # it's done${NL}git push origin t/12-x"; expect 2 "R35f stated cost: a quote in a comment beside a git push"
+run "$W" "x=1 # done${NL}git push origin t/12-x"; expect 0 "R35f: a plain comment beside a git push"
+# O1: many ordinary calls must not run the hook past its timeout (which would allow the command): past the 10 s
+# local-work budget the hook blocks; measured end to end
+t0=$(date +%s%N)
+run "$W" "$(printf 'git -C ../U push origin x; %.0s' $(seq 120))git push origin main"
+ms=$(( ($(date +%s%N) - t0) / 1000000 ))
+expect 2 "R35f O1: 120 calls"
+says 'too complex to check in time' "R35f O1 text"
+[ "$ms" -lt 20000 ] || fail "R35f O1: 120 calls took ${ms} ms end to end (bound 20000; the hook timeout is 30 s)"
+# the alias loop (an unknown git subcommand is looked up as an alias, once per call)
+t0=$(date +%s%N)
+run "$W" "$(printf 'git zq; %.0s' $(seq 400))git push origin main"
+ms=$(( ($(date +%s%N) - t0) / 1000000 ))
+expect 2 "R35f O1: 400 alias calls"
+says 'too complex to check in time' "R35f O1 alias text"
+[ "$ms" -lt 20000 ] || fail "R35f O1: 400 alias calls took ${ms} ms end to end (bound 20000)"
+# network time is not local work: two claimed pushes whose issue lookups take 6 s each (12 s) are still allowed
+GH_MODE=slow GH_SLEEP=6 DEVFW_HOOK_NET_TIMEOUT=15 run "$W" 'git push origin t/41-x && git push origin t/41-x'
+expect 0 "R35f: hook_net time does not count against the 10 s local budget"
 # C2 / R21: destinations as git resolves them (W is on main)
 run "$W" 'git push origin @'; expect 2 "C2: @ is the current branch (main)"
 says 'merge to main goes through the merge gate' "@ text"
