@@ -6,7 +6,8 @@
 # into a branch, an alias, a commit on an orphan) meets the same rule. Deletions (old and new zeros on git 2.53) and
 # updates of an existing branch are never blocked. `branch -m` / `branch -c` are NOT seen by this hook (git sends no
 # line for the new name): rt_branch_m_not_seen_push_blocks / rt_branch_c_not_seen_push_blocks pin that gap and that
-# pre-push still refuses the push.
+# pre-push still refuses the push; a COMMIT on such a branch is refused by pre-commit (plan-lease.test.sh
+# pc_renamed_unclaimed_branch_blocks, pc_copied_unclaimed_branch_blocks).
 unset GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS DEVFW_SESSION_ID DEVFW_CONFIG DEVFW_CORE_DIR CDPATH
 for v in $(compgen -e | grep -E '^GIT_CONFIG_(KEY|VALUE)_'); do unset "$v"; done
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_fixture.sh"
@@ -134,12 +135,15 @@ HK_SESSION= expect rt_no_session_blocks block "no session id; start a new sessio
   && { has "$W" refs/heads/t/41-x && fail "rt_no_session_blocks: t/41-x exists" || ok rt_no_session_blocks; }
 g -C "$W" branch -q t/41-x origin/t/41-x || fx_die "restore t/41-x"
 
-# --- not a creation: commits on existing branches, including t/55-x whose tracking ref was pruned
+# --- not a creation: commits on existing branches, including t/55-x whose tracking ref was pruned.
+# --no-verify skips only pre-commit, which (Task 6) refuses a commit on t/55-x because its claim evidence was
+# pruned (plan-lease.test.sh pc_pruned_t_branch_blocks); this row is about the reference-transaction rule, which
+# still runs for every commit, and t/55-x is the seed that makes its zero-old check discriminate.
 c_on() {  # c_on <branch>: an empty commit on <branch> with the hooks; the branch must advance
   local before after
   g -C "$W" checkout -q "$1" || return 1
   before=$(git -C "$W" rev-parse HEAD | tr -d '\r')
-  hk git -C "$W" commit -q --allow-empty -m "c on $1" || return 1
+  hk git -C "$W" commit -q --no-verify --allow-empty -m "c on $1" || return 1
   after=$(git -C "$W" rev-parse "$1" | tr -d '\r')
   [ "$before" != "$after" ]
 }
@@ -178,7 +182,7 @@ g -C "$W" checkout -q -f main || fx_die "leave the orphan"
 
 # --- known gap (git 2.53, measured): branch -m / -c create the new name with no reference-transaction line for it.
 # The rule cannot see them; these rows pin that (a fix would turn the first expect red on purpose) and that the
-# push of such a branch is still refused by pre-push.
+# push of such a branch is still refused by pre-push. A commit on it is refused by pre-commit (plan-lease.test.sh).
 g -C "$W" branch feat77 main || fx_die "feat77"
 if expect rt_branch_m_not_seen_push_blocks 0 - hk git -C "$W" branch -m feat77 t/77-x \
    && has "$W" refs/heads/t/77-x; then

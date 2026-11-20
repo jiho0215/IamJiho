@@ -52,13 +52,15 @@ fi
 until_row pf_fast_path_commit
 
 # pf_fast_path_t_branch: a commit on an existing t/ branch (an update: old oid non-zero) and the checkout of it
-# (HEAD's symref line names ref:refs/heads/t/...) both stay fast; the rule has nothing to check
-g -C "$W" branch t/41-x >/dev/null 2>&1 || fx_die "branch t/41-x"
+# (HEAD's symref line names ref:refs/heads/t/...) keep every reference-transaction run fast; the ref-tx rule has
+# nothing to check. Since Task 6 the pre-commit run on a t/ branch is the one full run (rules/pre-commit.sh checks the
+# current t/ branch's claim), so the branch carries local claim evidence (its tracking ref) and the commit lands.
+g -C "$W" branch t/41-x >/dev/null 2>&1 && g -C "$W" update-ref refs/remotes/origin/t/41-x t/41-x || fx_die "branch t/41-x"
 tr_on
 DEVFW_GK_TRACE=1 expect pf_fast_path_t_branch 0 - hk git -C "$W" checkout -q t/41-x \
   && DEVFW_GK_TRACE=1 expect pf_fast_path_t_branch 0 - hk git -C "$W" commit -q --allow-empty -m on-t \
   && { F=$(tr_lines full)
-       [ -z "$F" ] && tr_lines fast | grep -q "	prepared" && ok pf_fast_path_t_branch \
+       [ "$F" = "full	pre-commit	rule" ] && tr_lines fast | grep -q "	prepared" && ok pf_fast_path_t_branch \
          || fail "pf_fast_path_t_branch: $(cat "$LOG")"; }
 g -C "$W" checkout -q main || fx_die "back to main"
 

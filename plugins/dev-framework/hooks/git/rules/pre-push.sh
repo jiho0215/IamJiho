@@ -12,13 +12,17 @@
 #     off unless hooks.pushGuard.allowForce;
 #   4 refs/tags/* and refs/devfw/* skip 5-7; any other non-branch destination blocks;
 #   5 the managed repo's default branch is merged through bin/merge, never pushed;
+#   5b the plan repo only, a non-deletion: when the pushed range (<remote sha>..<local sha>, or for a new branch
+#     <local sha> --not --remotes) has a commit touching <plan.path>/, the plan-edit lease must hold
+#     (gk_lease_check, reason prefix "plan change in pushed range: "). This catches a plan commit made with the
+#     pre-commit hook skipped, or made before the lease moved;
 #   6 t/<n>-...: claimed (scope_claim_ok), unless the line is bin/claim's own create-only push (_gk_claim_push_exempt);
 #   7 t/<n>-...: issue <n> in the plan repo must not carry needs-ack.
 # Every network call goes through gk_net (constant 20 s bound); scope_claim_ok's go through scope_net -> gk_net.
 
 gk_pre_push() {
   local remote="$1" url="$2" in="$3" raw slug line lref lsha rref rsha first="" b n def rc out lab
-  local -a lines=()
+  local -a lines=() range=()
   raw=$(git config --get "remote.$remote.url" 2>/dev/null) || raw=""
   slug=$(gk_managed "${raw%$'\r'}" "$remote" "$url")
   [ -n "$slug" ] || return 0
@@ -51,6 +55,13 @@ gk_pre_push() {
     # 5: the default branch
     def=$(gk_default_of "$slug")
     [ "${b,,}" != "${def,,}" ] || gk_block "merge to $def goes through bin/merge, not a push" "$slug" "$rref"
+    # 5b: the plan-edit lease over the pushed range (the plan repo only; a deletion pushes no commits)
+    if [ "$slug" = "$GK_PLAN_REPO" ] && ! [[ "$lsha" =~ ^0+$ ]]; then
+      if [[ "$rsha" =~ ^0+$ ]]; then range=("$lsha" --not --remotes); else range=("$rsha..$lsha"); fi
+      rc=0; out=$(git log --format=%H --name-only "${range[@]}" -- "$GK_PLAN_PATH/" 2>/dev/null) || rc=$?
+      [ "$rc" -eq 0 ] || gk_block "cannot list the pushed range (git log exit $rc)" "$slug" "$rref"
+      [ -z "${out//[$'\r\n']/}" ] || gk_lease_check "plan change in pushed range: " "$slug" "$rref"
+    fi
     # 6: claim
     [[ "$b" =~ ^t/([1-9][0-9]*)- ]] || continue
     n="${BASH_REMATCH[1]}"

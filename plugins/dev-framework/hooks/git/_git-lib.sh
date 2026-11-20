@@ -214,8 +214,12 @@ _gk_cache_key() {
 }
 
 # _gk_cache_load: 0 and GK_CHAIN_DIR when the cache entry for this key holds (see the format above). Builtins only.
+# On success also GK_CACHE_OK=1 and GK_CACHE_WATCHED = the entry's `f` files: every non-command config file git
+# reads for this key (an entry is never written for a config that uses an include), which a rule's <fn>_idle may
+# scan (_gk_config_may_name).
 _gk_cache_load() {
   _gk_cache_key
+  GK_CACHE_OK=0; GK_CACHE_WATCHED=()
   local c="$GK_CACHE_FILE" line n=0 dir="" done=0
   [ -n "$c" ] && [ -f "$c" ] || return 1
   while IFS= read -r line; do
@@ -225,7 +229,7 @@ _gk_cache_load() {
       2:"key $GK_CACHE_KEY") ;;
       3:"dir "?*) dir="${line#dir }" ;;
       [12]:*|3:*) return 1 ;;
-      *:"f "?*) [ -f "${line#f }" ] && [ "$c" -nt "${line#f }" ] || return 1 ;;
+      *:"f "?*) [ -f "${line#f }" ] && [ "$c" -nt "${line#f }" ] || return 1; GK_CACHE_WATCHED+=("${line#f }") ;;
       *:"a "?*) [ ! -e "${line#a }" ] && [ ! -L "${line#a }" ] || return 1 ;;
       *:end) done=1; break ;;
       *) return 1 ;;
@@ -233,6 +237,7 @@ _gk_cache_load() {
   done < "$c"
   [ "$done" = 1 ] || return 1
   GK_CHAIN_DIR="$dir"
+  GK_CACHE_OK=1
 }
 
 # _gk_cache_watch: the watch list, collected BEFORE the resolver reads config: GK_WATCH_F (config files that exist,
@@ -335,6 +340,133 @@ gk_fast() {
   [ -n "${GK_RULE_FN:-}" ] || return 0
   declare -F "${GK_RULE_FN}_idle" >/dev/null || { GK_FAST_WHY="rule"; return 1; }
   "${GK_RULE_FN}_idle" "$@" || { GK_FAST_WHY="rule"; return 1; }
+}
+
+# _gk_config_may_name <lowercase text>: 0 when <text> may appear in a config value git reads for this repo, so
+# "some remote URL names <text>" cannot be ruled out; 1 only when it provably does not. The haystack: the command
+# scope (GIT_CONFIG_PARAMETERS and every GIT_CONFIG_VALUE_<i> below GIT_CONFIG_COUNT) and every file of the valid
+# chain-cache entry (GK_CACHE_WATCHED, set by _gk_cache_load), compared case-insensitively with backslash-newline
+# continuations joined. Without a valid entry (GK_CACHE_OK != 1), an empty <text>, or a malformed GIT_CONFIG_COUNT,
+# it answers 0. Builtins only (for a rule's <fn>_idle).
+_gk_config_may_name() {
+  local want="${1,,}" f txt i v
+  [ -n "$want" ] && [ "${GK_CACHE_OK:-0}" = 1 ] || return 0
+  txt="${GIT_CONFIG_PARAMETERS-}"; [[ "${txt,,}" != *"$want"* ]] || return 0
+  if [ -n "${GIT_CONFIG_COUNT-}" ]; then
+    [[ "$GIT_CONFIG_COUNT" =~ ^[0-9]{1,4}$ ]] || return 0
+    for ((i = 0; i < GIT_CONFIG_COUNT; i++)); do
+      v="GIT_CONFIG_VALUE_$i"; txt="${!v-}"
+      [[ "${txt,,}" != *"$want"* ]] || return 0
+    done
+  fi
+  for f in "${GK_CACHE_WATCHED[@]}"; do
+    txt=""
+    [ -f "$f" ] || return 0
+    IFS= read -r -d '' txt < "$f" || true
+    txt="${txt//$'\r'/}"; txt="${txt//\\$'\n'/}"
+    [[ "${txt,,}" != *"$want"* ]] || return 0
+  done
+  return 1
+}
+
+# _gk_head_ref: GK_HEAD_REF = the ref HEAD points at (refs/heads/<branch>), or "" for a detached HEAD, read from
+# <git dir>/HEAD with builtins. The git dir: GIT_DIR (git exports it to hooks in a linked worktree), else $PWD/.git
+# (a hook's cwd is the work tree top), following a `gitdir: <path>` file. 1 when it cannot be decided this way: no git
+# dir found, no readable HEAD, a reftable repo (its HEAD file holds the placeholder `ref: refs/heads/.invalid`), or
+# any other content; the caller then asks git (or, in an <fn>_idle, takes the full path).
+_gk_head_ref() {
+  local gd="${GIT_DIR-}" line=""
+  GK_HEAD_REF=""
+  if [ -z "$gd" ]; then
+    gd="$PWD/.git"
+    if [ -f "$gd" ]; then
+      IFS= read -r line < "$gd" || [ -n "$line" ] || return 1
+      line="${line%$'\r'}"
+      case "$line" in "gitdir: "?*) gd="${line#gitdir: }" ;; *) return 1 ;; esac
+    fi
+  fi
+  case "$gd" in /*|[A-Za-z]:/*) ;; *) gd="$PWD/$gd" ;; esac
+  [ -f "$gd/HEAD" ] || return 1
+  line=""
+  IFS= read -r line < "$gd/HEAD" || [ -n "$line" ] || return 1
+  line="${line%$'\r'}"
+  case "$line" in
+    "ref: refs/heads/.invalid") return 1 ;;
+    "ref: refs/heads/"?*) GK_HEAD_REF="${line#ref: }" ;;
+    *) [[ "$line" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] || return 1 ;;
+  esac
+  return 0
+}
+
+# gk_managed_remotes: GK_MREMOTES = the remotes whose raw URL (remote.<r>.url, never the insteadOf result) is managed,
+# in config order; GK_MSLUG = the first one's slug (for block rows). A remote name is the key minus `remote.` and
+# `.url`, so a name with dots works. One git call (plus gk_managed per remote).
+gk_managed_remotes() {
+  local line key url r u
+  GK_MREMOTES=(); GK_MSLUG=""
+  while IFS= read -r line; do
+    line="${line%$'\r'}"
+    key="${line%% *}"; url="${line#* }"
+    r="${key#remote.}"; r="${r%.url}"
+    u=$(gk_managed "$url")
+    [ -n "$u" ] || continue
+    GK_MREMOTES+=("$r")
+    [ -n "$GK_MSLUG" ] || GK_MSLUG="$u"
+  done < <(git config --get-regexp '^remote\..*\.url$' 2>/dev/null)
+  return 0
+}
+
+# gk_t_evidence <ref> <slug> [<tracking ref created or updated by the same transaction>...]: the LOCAL claim evidence
+# for the local branch <ref> = refs/heads/t/... (GK_MREMOTES set by gk_managed_remotes, non-empty). No network.
+#   - a t/ name must be all lowercase (bin/claim's slugs always are; on a case-insensitive file system a loose
+#     tracking ref also matches a case variant, so an upper-case name could borrow another slug's evidence);
+#   - a t/ branch with no issue number is not a ticket branch: 0;
+#   - t/<n>-<slug>: 0 when some managed remote <r> has refs/remotes/<r>/t/<n>-<slug>, or it is one of the extra args;
+#     else blocks: "issue <n> is claimed as t/<n>-<other>" when a managed remote holds another slug for <n>, otherwise
+#     "no claim for issue <n> (no <r>/<branch>); run bin/claim, then git fetch <r> +refs/heads/<branch>:refs/remotes/<r>/<branch>"
+#     with <r> = the first managed remote.
+# Shared by reference-transaction (a branch being created) and pre-commit (the current branch).
+gk_t_evidence() {
+  local ref="$1" slug="$2" b n r t u other
+  shift 2
+  b="${ref#refs/heads/}"
+  [ "$b" = "${b,,}" ] || gk_block "branch names under t/ must be lowercase ($b); use ${b,,}" "$slug" "$ref"
+  [[ "$b" =~ ^t/([1-9][0-9]*)- ]] || return 0
+  n="${BASH_REMATCH[1]}"
+  for r in "${GK_MREMOTES[@]}"; do
+    t="refs/remotes/$r/$b"
+    if git show-ref --verify -q "$t" 2>/dev/null; then return 0; fi
+    for u in "$@"; do
+      [ "$u" != "$t" ] || return 0
+    done
+  done
+  other=""
+  for r in "${GK_MREMOTES[@]}"; do
+    other=$(git for-each-ref --count=1 --format='%(refname)' "refs/remotes/$r/t/$n-*" 2>/dev/null | tr -d '\r')
+    [ -z "$other" ] || { other="${other#refs/remotes/$r/}"; break; }
+  done
+  [ -z "$other" ] || gk_block "issue $n is claimed as $other" "$slug" "$ref"
+  r="${GK_MREMOTES[0]}"
+  gk_block "no claim for issue $n (no $r/$b); run bin/claim, then git fetch $r +refs/heads/$b:refs/remotes/$r/$b" "$slug" "$ref"
+}
+
+# gk_lease_check <reason prefix> <slug> <ref>: `bin/lease check --core-dir GK_CORE` (it fetches the plan branch, so
+# through gk_net), run with the git env that locates the CURRENT repo removed (git exports GIT_DIR in a linked worktree
+# and GIT_INDEX_FILE always; lease must read the core clone, not this repo). 0 when it passes; else blocks with
+# <prefix> + by lease's exit code: 4 "only the lease holder commits plan changes: <lease's first stderr line>",
+# 3 "no lease: <line>", any other "cannot verify the lease (lease exit <rc>: <line>)".
+gk_lease_check() {
+  local pre="$1" slug="$2" ref="$3" out rc=0 err
+  local -a iso=(-u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_COMMON_DIR -u GIT_OBJECT_DIRECTORY
+                -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_PREFIX)
+  gk_net out 20 env "${iso[@]}" "$GK_BIN/lease" check --core-dir "$GK_CORE" || rc=$?
+  [ "$rc" -ne 0 ] || return 0
+  err="${GK_NET_ERR%%$'\n'*}"
+  case "$rc" in
+    4) gk_block "${pre}only the lease holder commits plan changes: $err" "$slug" "$ref" ;;
+    3) gk_block "${pre}no lease: $err" "$slug" "$ref" ;;
+    *) gk_block "${pre}cannot verify the lease (lease exit $rc: $err)" "$slug" "$ref" ;;
+  esac
 }
 
 # _gk_restore_caller_env: MSYS_NO_PATHCONV and MSYS2_ARG_CONV_EXCL back to the caller's values from
