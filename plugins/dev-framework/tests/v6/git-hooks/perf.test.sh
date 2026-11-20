@@ -198,6 +198,37 @@ hk git -C "$W" commit -q --allow-empty -m rewarm >/dev/null 2>&1
 [ -n "$(w_cache)" ] || fail "pf_future_mtime_not_cached: no cache after the mtime was restored"
 until_row pf_future_mtime_not_cached
 
+# pf_deleted_during_refresh_not_cached (Task 5b fix round 1, review I1): a config file that set core.hooksPath is
+# deleted in the middle of a refresh, right after the resolver's read. The resolver has returned the old dir; the
+# entry must not be stored, so the next run resolves again and chains the repo's own hook. A PATH `git` wrapper
+# deletes ~/.gitconfig once, right after the first `--get-all core.hooksPath` call (a deterministic race). git puts its
+# own dirs first on a hook's PATH, so the refreshing run is the installed pre-commit shim run directly in W (as git
+# runs it) with the wrapper first on PATH; the run after it is a real commit.
+mkdir -p "$TMP/rhooks" "$TMP/racebin"
+REALGIT=$(command -v git)
+printf '%s\n' '#!/bin/bash' "\"$REALGIT\" \"\$@\"; rc=\$?" \
+  'case " $* " in *" --get-all core.hooksPath "*) [ -e "$RACE_ONCE" ] || { : > "$RACE_ONCE"; rm -f "$HOME/.gitconfig"; } ;; esac' \
+  'exit $rc' > "$TMP/racebin/git"
+chmod +x "$TMP/racebin/git"
+export RACE_ONCE="$TMP/race.once"; rm -f "$RACE_ONCE"
+git config --global core.hooksPath "$(mp "$TMP/rhooks")"
+rm -rf "$CACHE"
+( cd "$W" && hk_env && export "${HKENV[@]}" && PATH="$TMP/racebin:$PATH" "$HK/pre-commit" ) </dev/null >/dev/null 2>"$TMP/.e" \
+  || fail "pf_deleted_during_refresh_not_cached: the racing pre-commit run failed: $(cat "$TMP/.e")"
+[ -e "$RACE_ONCE" ] || fail "pf_deleted_during_refresh_not_cached: setup: the git wrapper never ran in a hook"
+[ ! -e "$HOME/.gitconfig" ] || fail "pf_deleted_during_refresh_not_cached: setup: ~/.gitconfig still exists"
+# the claim itself: the racing refresh stored no entry (the load-time -f would also reject one whose `f` file is
+# gone, so this is what fences the store-side check on its own)
+[ -z "$(w_cache)" ] || fail "pf_deleted_during_refresh_not_cached: the racing refresh stored: $(tr '\n' '|' < "$(w_cache)")"
+hookfile "$W/.git/hooks/pre-commit" "echo race-pc >> '$(mp "$TMP/race.log")'"
+rm -f "$TMP/race.log"
+tr_on
+DEVFW_GK_TRACE=1 expect pf_deleted_during_refresh_not_cached 0 - hk git -C "$W" commit -q --allow-empty -m race2 \
+  && { grep -q race-pc "$TMP/race.log" 2>/dev/null && ok pf_deleted_during_refresh_not_cached \
+         || fail "pf_deleted_during_refresh_not_cached: the repo hook did not run: $(cat "$LOG" 2>&1)"; }
+reset_w
+until_row pf_deleted_during_refresh_not_cached
+
 # --- pf_cache_corrupt_falls_back: a forged entry is obeyed only when it is well formed. The forged dir is an empty
 # dir, so obeying it skips W's .git/hooks/pre-commit. v0 (well formed) proves the forgery would be obeyed; every
 # corrupt variant must fall back to the full path, which runs the hook.

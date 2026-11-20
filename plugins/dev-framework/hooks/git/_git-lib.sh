@@ -139,19 +139,23 @@ _gk_chain_target() {
 }
 
 # _gk_chain_dir <hook-name>: GK_CHAIN_DIR = the repo's own hooks dir: from a valid chain cache entry, else resolved
-# through git (_gk_chain_resolve, which blocks when it cannot) and then cached (best effort). The refresh stamp is
-# made BEFORE git reads any config, so a config edited while the refresh runs is never cached as unchanged.
+# through git (_gk_chain_resolve, which blocks when it cannot) and then cached (best effort). A refresh runs in this
+# order: stamp, watch list (_gk_cache_watch), resolve, write, recheck (_gk_cache_store). Every config file the resolver
+# could have read is therefore on the watch list before it reads, and the recheck after it refuses the entry when
+# any of them was edited (not older than the stamp), deleted or replaced (no longer a regular file), or created (an
+# absent one now exists) while the refresh ran.
 _gk_chain_dir() {
   _gk_cache_load && return 0
-  local stamp=""
+  local stamp="" watched=0
   if [ -n "$GK_CACHE_FILE" ]; then
     [ -d "${GK_CACHE_FILE%/*}" ] || mkdir -p "${GK_CACHE_FILE%/*}" 2>/dev/null
     stamp="$GK_CACHE_FILE.s$$"
     { printf x > "$stamp"; } 2>/dev/null || stamp=""
     GK_CACHE_TMP="$stamp"
   fi
+  [ -z "$stamp" ] || ! _gk_cache_watch || watched=1
   _gk_chain_resolve "$1"
-  [ -z "$stamp" ] || _gk_cache_store "$stamp"
+  [ "$watched" = 0 ] || _gk_cache_store "$stamp"
 }
 
 # _gk_chain_resolve <hook-name>: GK_CHAIN_DIR resolved through git (the rule described at gk_chain).
@@ -231,57 +235,68 @@ _gk_cache_load() {
   GK_CHAIN_DIR="$dir"
 }
 
-# _gk_cache_store <stamp>: write the cache entry for GK_CACHE_KEY -> GK_CHAIN_DIR, best effort; <stamp> was written
-# before the resolution read any config. Not stored (silently; the next run resolves again) when: a config uses an
-# include, a config file origin is not a plain file path, a path or the key has a newline, or a watched file is not
-# older than <stamp> (it may have changed while git read it). Written to a temp file and renamed into place.
-_gk_cache_store() {
-  local stamp="$1" out line scope origin key p tmp="$GK_CACHE_FILE.t$$"
-  local -a fs=() as=() cand=()
-  [[ "$GK_CACHE_KEY$GK_CHAIN_DIR" != *$'\n'* ]] || return 0
-  out=$(git config --list --show-origin --show-scope --name-only 2>/dev/null) || return 0
+# _gk_cache_watch: the watch list, collected BEFORE the resolver reads config: GK_WATCH_F (config files that exist,
+# each a regular file) and GK_WATCH_A (config files git would read that are absent). 1 (do not cache) when a config
+# uses an include, a config file origin is not a plain file path, a path or the key has a newline, an existing path
+# is not a regular file, or git cannot list them.
+_gk_cache_watch() {
+  local out line scope origin key p
+  local -a cand=()
+  GK_WATCH_F=(); GK_WATCH_A=()
+  [[ "$GK_CACHE_KEY" != *$'\n'* ]] || return 1
+  out=$(git config --list --show-origin --show-scope --name-only 2>/dev/null) || return 1
   while IFS= read -r line; do
     line="${line%$'\r'}"
     [ -n "$line" ] || continue
     scope="${line%%$'\t'*}"; line="${line#*$'\t'}"; origin="${line%%$'\t'*}"; key="${line#*$'\t'}"
     [ "$scope" != command ] || continue
-    case "${key,,}" in include.*|includeif.*) return 0 ;; esac
+    case "${key,,}" in include.*|includeif.*) return 1 ;; esac
     case "$origin" in
-      file:\"*) return 0 ;;
+      file:\"*) return 1 ;;
       file:?*) cand+=("${origin#file:}") ;;
-      *) return 0 ;;
+      *) return 1 ;;
     esac
   done <<<"$out"
-  out=$(git var -l 2>/dev/null) || return 0
+  out=$(git var -l 2>/dev/null) || return 1
   while IFS= read -r line; do
     line="${line%$'\r'}"
     case "$line" in GIT_CONFIG_SYSTEM=?*|GIT_CONFIG_GLOBAL=?*) cand+=("${line#*=}") ;; esac
   done <<<"$out"
-  out=$(git rev-parse --path-format=absolute --git-common-dir --git-dir 2>/dev/null) || return 0
+  out=$(git rev-parse --path-format=absolute --git-common-dir --git-dir 2>/dev/null) || return 1
   while IFS= read -r line; do
     line="${line%$'\r'}"
     [ -z "$line" ] || cand+=("$line/config" "$line/config.worktree")
   done <<<"$out"
   # (show-origin may print a path relative to the cwd, `.git/config`; the cwd is part of the key, so it stays valid)
   for p in "${cand[@]}"; do
-    [[ "$p" != *$'\n'* ]] || return 0
+    [[ "$p" != *$'\n'* ]] || return 1
     if [ -e "$p" ] || [ -L "$p" ]; then
-      [ -f "$p" ] || return 0
-      fs+=("$p")
+      [ -f "$p" ] || return 1
+      GK_WATCH_F+=("$p")
     else
-      as+=("$p")
+      GK_WATCH_A+=("$p")
     fi
   done
+  return 0
+}
+
+# _gk_cache_store <stamp>: write the entry GK_CACHE_KEY -> GK_CHAIN_DIR with the watch list _gk_cache_watch took
+# before the resolver ran, best effort; <stamp> was written before both. The entry is renamed into place only when,
+# AFTER it is written, every GK_WATCH_F file is still a regular file older than <stamp> (`-nt` alone is true for a
+# missing file, so the -f is what catches a deletion) and every GK_WATCH_A path is still absent. Else nothing is
+# stored and the next run resolves again.
+_gk_cache_store() {
+  local stamp="$1" p tmp="$GK_CACHE_FILE.t$$"
+  [[ "$GK_CHAIN_DIR" != *$'\n'* ]] || return 0
   {
     printf 'devfw-chain 1\nkey %s\ndir %s\n' "$GK_CACHE_KEY" "$GK_CHAIN_DIR"
-    [ "${#fs[@]}" -eq 0 ] || printf 'f %s\n' "${fs[@]}"
-    [ "${#as[@]}" -eq 0 ] || printf 'a %s\n' "${as[@]}"
+    [ "${#GK_WATCH_F[@]}" -eq 0 ] || printf 'f %s\n' "${GK_WATCH_F[@]}"
+    [ "${#GK_WATCH_A[@]}" -eq 0 ] || printf 'a %s\n' "${GK_WATCH_A[@]}"
     printf 'end\n'
   } > "$tmp" 2>/dev/null || { rm -f "$tmp" "$stamp" 2>/dev/null; return 0; }
-  # after the entry is written: every watched file still older than the stamp, every absent one still absent
   local okk=1
-  for p in "${fs[@]}"; do [ "$stamp" -nt "$p" ] || { okk=0; break; }; done
-  for p in "${as[@]}"; do [ ! -e "$p" ] && [ ! -L "$p" ] || { okk=0; break; }; done
+  for p in "${GK_WATCH_F[@]}"; do [ -f "$p" ] && [ "$stamp" -nt "$p" ] || { okk=0; break; }; done
+  for p in "${GK_WATCH_A[@]}"; do [ ! -e "$p" ] && [ ! -L "$p" ] || { okk=0; break; }; done
   if [ "$okk" = 1 ]; then mv -f "$tmp" "$GK_CACHE_FILE" 2>/dev/null; fi
   rm -f "$tmp" "$stamp" 2>/dev/null
   return 0
