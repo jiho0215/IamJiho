@@ -94,4 +94,44 @@ if command -v cygpath >/dev/null 2>&1; then
   [ "$R" = "$HK|acme/core|$(mp "$TMP/state")" ] && ok gl_init_normalises || fail "gl_init_normalises: $R"
 fi
 
+# gl_init_hk_forms (Task 5b): GK_HK equals `cygpath -m` of the dir in every form, now that the normal C:/ form skips
+# the cygpath fork: a path with spaces, MSYS /c/ and /tmp/ forms, lower-case drive, backslashes, //, /./, trailing /
+if command -v cygpath >/dev/null 2>&1; then
+  SPD="$TMP/hk with space"; mkdir -p "$SPD"; cp -r "$HK" "$SPD/"; SPH="$(mp "$SPD")/${HK##*/}"
+  r=0
+  for form in "$HK" "$SPH" "$(cygpath -u "$SPH")" "/$(tr 'A-Z' 'a-z' <<<"${SPH:0:1}")${SPH:2}" \
+              "$(tr 'A-Z' 'a-z' <<<"${SPH:0:1}")${SPH:1}" "${SPH//\//\\}" "${SPH%/*}\\${SPH##*/}" "${SPH%/*}//${SPH##*/}" "${SPH%/*}/./${SPH##*/}" \
+              "${SPH%/*}/../${SPD##*/}/${SPH##*/}" "$SPH/"; do
+    want=$(cygpath -m -- "$form" | tr -d '\r')
+    got=$(bash -c "$LIBS; gk_init pre-push \"\$1\"; printf '%s' \"\$GK_HK\"" _ "$form" 2>&1 | tr -d '\r')
+    [ "$got" = "$want" ] || { fail "gl_init_hk_forms: '$form' -> '$got', want '$want'"; r=1; }
+  done
+  [ "$r" -eq 1 ] || ok gl_init_hk_forms
+fi
+
+# gl_init_managed_crlf (Task 5b): GK_MANAGED read with builtins equals $(tr -d '\r' < managed.tsv): every CR gone
+# (also one inside a line), trailing newlines gone, inner lines kept
+cp -r "$HK" "$TMP/hk-crlf"; printf 'acme/core\tmain\tsquash\r\nac\rme/api\tdev\tmerge\r\n\r\n\n' > "$TMP/hk-crlf/managed.tsv"
+want=$(tr -d '\r' < "$TMP/hk-crlf/managed.tsv")
+got=$(bash -c "$LIBS; gk_init pre-push '$(mp "$TMP/hk-crlf")'; printf '%s|' \"\$GK_MANAGED\"" 2>&1)
+[ "$got" = "$want|" ] && ok gl_init_managed_crlf || fail "gl_init_managed_crlf: got '$got' want '$want|'"
+
+# gl_lib_script_name (Task 5b): bin/_lib.sh's DEVFW_SCRIPT, now builtins, equals `basename "${0:-devfw}"`
+r=0
+for z in 'C:/Users/x y/bin/claim' '/c/Users/x/bin/lease' 'C:\Users\x\bin\claim' 'bin/claim' 'claim' 'a/b/' './x' 'a//b' '///'; do
+  want=$(basename "$z" | tr -d '\r')
+  got=$(bash -c ". '$PLUGIN/bin/_lib.sh'; printf '%s' \"\$DEVFW_SCRIPT\"" "$z" 2>&1)
+  [ "$got" = "$want" ] || { fail "gl_lib_script_name: \$0='$z' -> '$got', want '$want'"; r=1; }
+done
+got=$(bash -c ". '$PLUGIN/bin/_lib.sh'; printf '%s' \"\$DEVFW_SCRIPT\"" '' 2>&1)
+[ "$got" = devfw ] || { fail "gl_lib_script_name: empty \$0 -> '$got', want devfw"; r=1; }
+[ "$r" -eq 1 ] || ok gl_lib_script_name
+
+# gl_stdin_take (Task 5b): at most <n> lines into GK_STDIN_DATA, byte-exact, EOF flag; the rest stays on stdin
+printf 'a 1\n  b\\x \nc' > "$TMP/take.in"
+got=$(bash -c "$LIBS; gk_stdin_take 2; printf '[%s][%s]' \"\$GK_STDIN_DATA\" \"\$GK_STDIN_EOF\"; cat" < "$TMP/take.in" 2>&1)
+[ "$got" = $'[a 1\n  b\\x \n][0]c' ] || fail "gl_stdin_take partial: '$got'"
+got=$(bash -c "$LIBS; gk_stdin_take 5; printf '[%s][%s]' \"\$GK_STDIN_DATA\" \"\$GK_STDIN_EOF\"; cat" < "$TMP/take.in" 2>&1)
+[ "$got" = $'[a 1\n  b\\x \nc][1]' ] && ok gl_stdin_take || fail "gl_stdin_take all: '$got'"
+
 fx_done

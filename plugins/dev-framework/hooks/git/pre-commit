@@ -1,5 +1,5 @@
-#!/bin/sh
-d=$(cd "$(dirname "$0")" && pwd)
-r=$(cat "$d/plugin-root" 2>/dev/null)
+#!/bin/bash
+case "$0" in /*|[A-Za-z]:/*) d="${0%/*}" ;; *) d=$(cd "$(dirname "$0")" && pwd) ;; esac
+r=; { IFS= read -r -d '' r < "$d/plugin-root"; } 2>/dev/null; while [ "${r%$'\n'}" != "$r" ]; do r="${r%$'\n'}"; done
 [ -f "$r/hooks/git/dispatch.sh" ] || { echo "devfw git-hook: plugin not found at ${r:-?}; start a new session" >&2; exit 1; }
-exec bash "$r/hooks/git/dispatch.sh" pre-commit "$d" "$@"
+. "$r/hooks/git/dispatch.sh" pre-commit "$d" "$@"

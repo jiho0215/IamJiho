@@ -35,6 +35,26 @@ _gk_zero() {
   return 1
 }
 
+# gk_ref_tx_idle <state>: the dispatcher's fast-path pre-filter (gk_fast). 0 when gk_ref_tx provably has nothing
+# to check, without a fork: a state other than `prepared` (rule 1; stdin is not read), or a prepared input of at
+# most 64 lines none of which could be selected by rule 2. The test per raw line is a SUPERSET of rule 2: it names
+# " refs/heads/t/" in any case (rule 2's ref is the third space-separated field, so a space precedes it) AND holds
+# 40 zeros in a row (an all-zero old oid, SHA-1 or SHA-256). A commit on a t/ branch (old non-zero) and HEAD's
+# `ref:refs/heads/t/...` symref line are idle; a creation or deletion of a t/ branch is not (gk_ref_tx decides).
+# More than 64 lines -> 1 (the full path reads the rest and runs the rule).
+gk_ref_tx_idle() {
+  [ "$1" = prepared ] || return 0
+  gk_stdin_take 64
+  [ "$GK_STDIN_EOF" = 1 ] || return 1
+  local rest="$GK_STDIN_DATA" line
+  while [ -n "$rest" ]; do
+    line="${rest%%$'\n'*}"
+    if [ "$line" = "$rest" ]; then rest=""; else rest="${rest#*$'\n'}"; fi
+    [[ "${line,,}" == *" refs/heads/t/"* && "$line" == *0000000000000000000000000000000000000000* ]] && return 1
+  done
+  return 0
+}
+
 gk_ref_tx() {
   local state="$1" in="$2" old new ref key url r b n t u ok other slug="" line
   local -a sel=() upd=() managed=()

@@ -42,8 +42,9 @@ for f in pre-push reference-transaction pre-commit plugin-root scope.env managed
 done
 for f in pre-push reference-transaction pre-commit; do
   [ -x "$HK/$f" ] || { fail "in_absolute_lf: $f is not executable"; r=1; }
-  [ "$(head -1 "$HK/$f")" = '#!/bin/sh' ] || { fail "in_absolute_lf: $f first line"; r=1; }
-  grep -qx "exec bash \"\$r/hooks/git/dispatch.sh\" $f \"\$d\" \"\$@\"" "$HK/$f" || { fail "in_absolute_lf: $f exec line"; r=1; }
+  [ "$(head -1 "$HK/$f")" = '#!/bin/bash' ] || { fail "in_absolute_lf: $f first line"; r=1; }
+  # the shim sources the dispatcher into its own bash process (Task 5b: one process per hook run, not sh + bash)
+  grep -qx ". \"\$r/hooks/git/dispatch.sh\" $f \"\$d\" \"\$@\"" "$HK/$f" || { fail "in_absolute_lf: $f source line"; r=1; }
   cmp -s "$HK/$f" "$PLUGIN/hooks/git/$f" || { fail "in_absolute_lf: $f differs from the plugin template"; r=1; }
   [ "$(sed "s/ $f / NAME /" "$PLUGIN/hooks/git/$f")" = "$(sed "s/ pre-push / NAME /" "$PLUGIN/hooks/git/pre-push")" ] \
     || { fail "in_absolute_lf: template $f differs from pre-push by more than the name"; r=1; }

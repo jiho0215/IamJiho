@@ -4,7 +4,7 @@
 #
 # install writes a content-addressed hook dir <state>/git-hooks/<hash>/ holding:
 #   pre-push, reference-transaction, pre-commit   the shims, copied from the plugin's hooks/git/<name> templates
-#                  (identical but for the name; they exec hooks/git/dispatch.sh)
+#                  (identical but for the name; they source hooks/git/dispatch.sh)
 #   plugin-root    the absolute plugin dir the shims run
 #   scope.env      fixed DEVFW_HK_* lines (read line by line, never sourced)
 #   managed.tsv    <lowercase owner/name> TAB <default branch> TAB <merge method>, one line per managed repo
@@ -149,7 +149,7 @@ cmd_install() {
   tmp=$(mktemp -d "$state/git-hooks/.tmp-XXXXXXXX") || devfw_die 1 "cannot create a temp dir in $state/git-hooks"
   trap 'rm -rf "$tmp" 2>/dev/null' EXIT
   # the shims: the plugin's hooks/git/<name> templates, copied byte for byte (CRs stripped: a CR would end up in
-  # `exec bash ... <name>\r`)
+  # `. ".../dispatch.sh" <name>\r`)
   local n
   for n in "${SHIMS[@]}"; do
     [ -f "$root/hooks/git/$n" ] || devfw_die 1 "plugin file missing: $root/hooks/git/$n"

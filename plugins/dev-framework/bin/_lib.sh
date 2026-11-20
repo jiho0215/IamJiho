@@ -4,7 +4,11 @@
 # Git Bash on Windows rewrites "origin/main:<path>" into a Windows path unless these are set.
 export MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*'
 
-DEVFW_SCRIPT="$(basename "${0:-devfw}")"
+# = $(basename "${0:-devfw}"), with builtins: the git hooks source this file on every run, and a fork costs ~20 ms
+# on Windows. Git Bash's basename also splits on backslashes, so they are separators there too.
+DEVFW_SCRIPT="${0:-devfw}"
+case "${OSTYPE:-}" in msys*|cygwin*) DEVFW_SCRIPT="${DEVFW_SCRIPT//\\//}" ;; esac
+DEVFW_SCRIPT="${DEVFW_SCRIPT%"${DEVFW_SCRIPT##*[!/]}"}"; DEVFW_SCRIPT="${DEVFW_SCRIPT##*/}"; DEVFW_SCRIPT="${DEVFW_SCRIPT:-/}"
 
 # With MSYS_NO_PATHCONV set, a POSIX path like /tmp/x reaches git.exe unconverted and fails.
 # Every path a script passes to git must go through devfw_path first.
