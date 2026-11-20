@@ -1,9 +1,12 @@
 #!/bin/bash
 # hooks/git/rules/reference-transaction.sh (gk_ref_tx): creating a local t/<n>-<slug> branch in a managed repo needs
 # local evidence of the claim: a managed remote's refs/remotes/<r>/t/<n>-<slug>, already there or created by the
-# same transaction. Read from git's own prepared ref lines (<old> <new> <ref>), so every way of creating a branch
-# (checkout -b, switch -c, branch, worktree add -b, update-ref, fetch into a branch, an alias, a commit on an orphan)
-# meets the same rule. Deletions (old and new zeros on git 2.53) and updates of an existing branch are never blocked.
+# same transaction. Read from git's own prepared ref lines (<old> <new> <ref>), so every command that creates a
+# branch through a ref transaction (checkout -b, switch -c, branch, branch -f, worktree add -b, update-ref, fetch
+# into a branch, an alias, a commit on an orphan) meets the same rule. Deletions (old and new zeros on git 2.53) and
+# updates of an existing branch are never blocked. `branch -m` / `branch -c` are NOT seen by this hook (git sends no
+# line for the new name): rt_branch_m_not_seen_push_blocks / rt_branch_c_not_seen_push_blocks pin that gap and that
+# pre-push still refuses the push.
 unset GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS DEVFW_SESSION_ID DEVFW_CONFIG DEVFW_CORE_DIR CDPATH
 for v in $(compgen -e | grep -E '^GIT_CONFIG_(KEY|VALUE)_'); do unset "$v"; done
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_fixture.sh"
@@ -89,6 +92,22 @@ expect rt_update_ref block "no claim for issue 77" hk git -C "$W" update-ref ref
 expect rt_fetch_dot block "no claim for issue 77" hk git -C "$W" fetch . main:t/77-x && absent rt_fetch_dot
 expect rt_alias block "no claim for issue 77" hk git -C "$W" -c alias.nb="checkout -b" nb t/77-x && absent rt_alias
 
+# --- case variants (Windows: refs/heads/T/x is written into the existing loose refs/heads/t/ directory)
+[ -d "$W/.git/refs/heads/t" ] || fx_die "no loose refs/heads/t/ directory (the case rows would not discriminate)"
+[ -f "$W/.git/refs/remotes/origin/t/41-x" ] || fx_die "origin/t/41-x is not loose (rt_case_slug_blocks would not discriminate)"
+noref() {  # noref <row> <ref>...: none of the refs exist (any case) after the block
+  local row="$1" r; shift
+  for r in "$@"; do has "$W" "$r" && { fail "$row: $r exists after the block"; return 1; }; done
+  [ -z "$(git -C "$W" for-each-ref --format=x 'refs/heads/t/77-y' 'refs/heads/T/77-y' | tr -d '\r')" ] \
+    || { fail "$row: a t/77-y ref is listed"; return 1; }
+  ok "$row"
+}
+expect rt_case_variant_blocks block "branch names under t/ must be lowercase (T/77-y)" hk git -C "$W" branch T/77-y \
+  && noref rt_case_variant_blocks refs/heads/t/77-y refs/heads/T/77-y
+# a case-variant slug of a claimed issue: the loose origin/t/41-x would match t/41-X on NTFS without the rule
+expect rt_case_slug_blocks block "branch names under t/ must be lowercase (t/41-X)" hk git -C "$W" checkout -b t/41-X \
+  && noref rt_case_slug_blocks refs/heads/t/41-X refs/heads/t/41-x
+
 # --- allowed: a claimed creation
 expect rt_dwim_checkout 0 - hk git -C "$W" checkout -q t/41-x && present rt_dwim_checkout "$W" refs/heads/t/41-x
 g -C "$W" checkout -q main && g -C "$W" branch -q -D t/41-x || fx_die "reset t/41-x (dwim)"
@@ -156,6 +175,49 @@ expect rt_orphan_checkout 0 - hk git -C "$W" checkout -q --orphan t/77-x && ok r
 expect rt_no_verify_not_a_bypass block "no claim for issue 77" hk git -C "$W" commit -q --no-verify -m orphan \
   && absent rt_no_verify_not_a_bypass
 g -C "$W" checkout -q -f main || fx_die "leave the orphan"
+
+# --- known gap (git 2.53, measured): branch -m / -c create the new name with no reference-transaction line for it.
+# The rule cannot see them; these rows pin that (a fix would turn the first expect red on purpose) and that the
+# push of such a branch is still refused by pre-push.
+g -C "$W" branch feat77 main || fx_die "feat77"
+if expect rt_branch_m_not_seen_push_blocks 0 - hk git -C "$W" branch -m feat77 t/77-x \
+   && has "$W" refs/heads/t/77-x; then
+  expect rt_branch_m_not_seen_push_blocks block "no claim for issue 77; run bin/claim first" \
+    hk git -C "$W" push origin t/77-x && ok rt_branch_m_not_seen_push_blocks
+else fail "rt_branch_m_not_seen_push_blocks: the rename did not create t/77-x (rc=$RC)"; fi
+g -C "$W" branch -q -D t/77-x || fx_die "drop t/77-x (-m)"
+if expect rt_branch_c_not_seen_push_blocks 0 - hk git -C "$W" branch -c main t/78-x && has "$W" refs/heads/t/78-x; then
+  expect rt_branch_c_not_seen_push_blocks block "no claim for issue 78; run bin/claim first" \
+    hk git -C "$W" push origin t/78-x && ok rt_branch_c_not_seen_push_blocks
+else fail "rt_branch_c_not_seen_push_blocks: the copy did not create t/78-x (rc=$RC)"; fi
+g -C "$W" branch -q -D t/78-x || fx_die "drop t/78-x (-c)"
+
+# --- more than one remote
+# fork layout: origin = the user's own fork (unmanaged) comes FIRST in the config, upstream = acme/api (managed)
+F="$TMP/F"
+g clone -q "$ORIGIN" "$F" 2>/dev/null || fx_die "clone F"
+git -C "$F" remote set-url origin https://github.com/me/api.git
+git -C "$F" remote add upstream https://github.com/acme/api.git
+git -C "$F" config --add "url.$(mp "$ORIGIN").insteadOf" https://github.com/me/api.git
+git -C "$F" config --add "url.$(mp "$ORIGIN").insteadOf" https://github.com/acme/api.git
+g -C "$F" fetch -q upstream || fx_die "F fetch upstream"
+[ "$(git -C "$F" config --get-regexp '^remote\..*\.url$' | head -1 | cut -d' ' -f1 | tr -d '\r')" = remote.origin.url ] \
+  || fx_die "F: origin is not the first remote"
+has "$F" refs/remotes/upstream/t/41-x || fx_die "F: no upstream/t/41-x"
+expect rt_fork_layout_blocks_unclaimed block \
+  'no claim for issue 77 (no upstream/t/77-x); run bin/claim, then git fetch upstream +refs/heads/t/77-x:refs/remotes/upstream/t/77-x' \
+  hk git -C "$F" checkout -b t/77-x && absent rt_fork_layout_blocks_unclaimed "$F"
+expect rt_fork_layout_claimed_allowed 0 - hk git -C "$F" checkout -q -b t/41-x upstream/t/41-x \
+  && present rt_fork_layout_claimed_allowed "$F" refs/heads/t/41-x
+# two managed remotes; the evidence exists ONLY under the second one (origin's tracking ref was removed)
+M2="$TMP/M2"
+clone_managed "$M2"
+git -C "$M2" remote add upstream git@github.com:acme/api.git
+git -C "$M2" config --add "url.$(mp "$ORIGIN").insteadOf" git@github.com:acme/api.git
+g -C "$M2" fetch -q upstream && g -C "$M2" update-ref -d refs/remotes/origin/t/41-x || fx_die "M2 setup"
+! has "$M2" refs/remotes/origin/t/41-x && has "$M2" refs/remotes/upstream/t/41-x || fx_die "M2 tracking refs"
+expect rt_second_managed_evidence_allowed 0 - hk git -C "$M2" checkout -q -b t/41-x upstream/t/41-x \
+  && present rt_second_managed_evidence_allowed "$M2" refs/heads/t/41-x
 
 # --- deletion is never blocked (controller ruling 3)
 has "$W" refs/remotes/origin/t/55-x && fx_die "the pruned origin/t/55-x came back (the deletion rows would not discriminate)"
