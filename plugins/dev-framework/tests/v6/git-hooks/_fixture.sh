@@ -9,7 +9,7 @@
 #          `bin/lease check --core-dir $CORE` really fetches and passes (checked here).
 #   W      a work clone of bare origin.git; origin https://github.com/acme/api.git (insteadOf -> origin.git).
 #   U      unmanaged; origin https://github.com/other/x.git (insteadOf -> other.git). Nothing reaches github.com.
-#   gh     fake: GH_MODE ok|ack|fail, every call logged to $GH_LOG.
+#   gh     fake: GH_MODE ok|ack|fail|junk (junk: exit 0 with a body that is not JSON), every call logged to $GH_LOG.
 #   HK     the hook dir `bin/git-hooks install --core-dir $CORE --state-dir $TMP/state` returned.
 #
 #   hk <cmd...>            run <cmd...> with the hooks: GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath
@@ -87,6 +87,7 @@ cat > "$TMP/fakebin/gh" <<'STUB'
 echo "$*" >> "${GH_LOG:-/dev/null}"
 case "${GH_MODE:-ok}" in
   fail) exit 1 ;;
+  junk) echo 'not json'; exit 0 ;;
   ack) case "$*" in "api repos/acme/core/issues/41") echo '{"labels":[{"name":"needs-ack"}]}'; exit 0 ;; esac; exit 1 ;;
   *) case "$*" in "api repos/acme/core/issues/"[0-9]*) echo '{"labels":[{"name":"p1"}]}'; exit 0 ;; esac; exit 1 ;;
 esac
